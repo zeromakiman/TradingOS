@@ -6,6 +6,7 @@ import { Shell } from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { StatusBanner } from "@/components/status-banner";
 import { SessionRibbon } from "@/components/session-ribbon";
+import { rTone } from "@/components/numeric";
 import { AccountSetup } from "@/components/account-setup";
 import { ActionForm, Field } from "@/components/forms";
 import { saveContext } from "@/app/actions";
@@ -17,7 +18,7 @@ export default async function TodayPage({searchParams}:{searchParams:Promise<{ac
   const state = await loadWorkspace(accountId), c = state.current;
   if (!c) return <Shell active="Today"><div className="page-heading"><div className="eyebrow">START YOUR FORWARD TEST</div></div><AccountSetup/></Shell>;
   const clock=strategyClock(c.context.now),activity=await loadTodayActivity(c.account.id,clock.day),next=activity.active.find(t=>t.execution_id)||activity.active[0],status=dailyStatus(c.context,next?.status??null),blocked=status.reasons.length>0;
-  const closed=Number(activity.result);
+  const todayR=formatR(activity.result);
   return <Shell active="Today" accountId={c.account.id}><div className="page-heading"><div><div className="eyebrow">{clock.day} · FIXED UTC−5</div><h1>{c.account.name}</h1><p>USD demo account · manual observation</p></div><Button asChild><Link href={`/analyze?account=${c.account.id}`}>New trade<ArrowRight size={16}/></Link></Button></div>
   {state.accounts.length > 1 && <form action="/today" className="row" style={{marginBottom:20}}><Field label="Active account"><select name="account" defaultValue={c.account.id}>{state.accounts.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}</select></Field><Button type="submit" variant="outline">Switch account</Button></form>}
   <StatusBanner
@@ -28,7 +29,7 @@ export default async function TodayPage({searchParams}:{searchParams:Promise<{ac
     readout={[
       {label:"SLOTS LEFT",value:`${status.slots} / ${c.riskPlan.maxDailyTrades}`,tone:status.slots===0?"red":undefined},
       {label:"RISK / TRADE",value:`${Number(c.riskPlan.maxRiskPercent).toFixed(2)}%`},
-      {label:"TODAY",value:formatR(activity.result),tone:closed>0?"permit":closed<0?"red":undefined}
+      {label:"TODAY",value:todayR,tone:rTone(todayR)}
     ]}
     action={next&&<Button asChild><Link href={`/journal/${next.id}`}>{next.execution_id?"Manage active trade":"Continue active plan"}<ArrowRight size={16}/></Link></Button>}/>
   <SessionRibbon now={c.context.now}/>

@@ -58,15 +58,16 @@ A signed thumbnail variant (or a width parameter on the existing authorized rout
 
 ---
 
-## 5. Exact session boundaries for the ribbon
+## 5. A boundary API for the session ribbon
 
-The session ribbon samples `strategyClock` at fifteen-minute marks and collapses the runs, so it can
-never contradict the clock. Every current boundary falls on a fifteen-minute mark, so the ribbon is
-exact today — but it would silently lose precision if a future session boundary did not.
+The session ribbon samples `strategyClock` minute by minute — 1,440 calls to draw the day, and up to
+2,880 more to find the next transition across the UTC−5 date boundary. It is exact at minute
+resolution and cannot contradict the clock, which is the property that matters, but it is brute force:
+the UI asks the clock 4,000 times what a single `nextBoundary(instant)` helper could answer once.
 
-Exporting the boundary table (or a `nextBoundary(instant)` helper) from `src/domain/session.ts` would
-make the ribbon exact by construction, and would also allow an accurate "time remaining in session"
-readout, which the UI does not currently compute.
+Exporting that helper (or the boundary table) from `src/domain/session.ts` would make the ribbon exact
+by construction rather than by exhaustion, and would also allow an accurate "time remaining in this
+session" readout, which the UI deliberately does not compute today.
 
 *Blocked by:* session/timezone logic is protected.
 

@@ -1,7 +1,8 @@
 import { Activity, CircleAlert, ShieldCheck } from "lucide-react";
 
 type Tier = "clear" | "working" | "restricted";
-export type Readout = { label: string; value: string; tone?: "permit" | "amber" | "red" };
+/** `tone` is a presentation class only; callers derive it from authoritative formatted output. */
+export type Readout = { label: string; value: string; tone?: "success" | "red" | "muted" | "amber" };
 
 /** Presentation tier only. Derived from the authoritative dailyStatus output; no rule is re-evaluated here. */
 export function statusTier(label: string, reasons: string[]): Tier {
@@ -32,7 +33,7 @@ export function StatusBanner({ label, reasons, clock, note, readout, action }: {
       {reasons.length > 0 && <ul className="status-reasons">{reasons.map(reason => <li key={reason}><CircleAlert size={15} className="red" aria-hidden="true"/><span>{reason}</span></li>)}</ul>}
       <p className="status-note">{note}</p>
     </div>
-    <div className="status-readout">{readout.map(r => <span key={r.label}><b>{r.label}</b><i className={r.tone ? r.tone === "permit" ? "success" : r.tone : undefined}>{r.value}</i></span>)}</div>
+    <div className="status-readout">{readout.map(r => <span key={r.label}><b>{r.label}</b><i className={r.tone}>{r.value}</i></span>)}</div>
     {action && <div className="status-banner-action">{action}</div>}
   </section>;
 }
