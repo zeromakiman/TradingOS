@@ -1,0 +1,22 @@
+{
+  "started_at": "2026-09-06T11:04:11.150Z",
+  "mode": "NORMAL",
+  "evidence": "Synthetic blank images; validates transport/persistence, not chart-analysis accuracy.",
+  "checks": [
+    "Password sign-in",
+    "Immutable proposal saved regardless of risk status",
+    "Four private screenshots uploaded through real byte-validation routes"
+  ],
+  "completed": false,
+  "proposal_id": "82bef0ed-5bb7-40e7-a4d2-4f994ed8f366",
+  "evaluation_id": "17d0ca52-d44a-470c-991e-af0634c7b245",
+  "error": "[{\"status\":\"QUEUED\",\"payload\":{}},{\"status\":\"RUNNING\",\"payload\":{}},{\"status\":\"FAILED\",\"payload\":{\"error\":\"RATE_LIMIT\"}}]",
+  "finished_at": "2026-09-06T11:04:19.451Z",
+  "diagnostic": {
+    "httpStatus": 429,
+    "errorCode": "credit_balance_exhausted",
+    "errorType": "insufficient_quota",
+    "retryAfter": null
+  },
+  "next_action": "Fund the OpenAI API organization associated with this key, then rerun live acceptance."
+}

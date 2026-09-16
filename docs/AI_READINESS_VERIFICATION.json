@@ -1,0 +1,14 @@
+{
+  "verified_at": "2026-09-05T17:11:56.984Z",
+  "schema_available": false,
+  "schema_error_code": "PGRST205",
+  "sign_in": "PASS",
+  "journal_status": 200,
+  "journal_pending_message": true,
+  "existing_locked_plan_visible": true,
+  "analyze_status": 200,
+  "unauthenticated_image_status": 401,
+  "openai_configured": false,
+  "server_storage_configured": false,
+  "paid_requests": 0
+}

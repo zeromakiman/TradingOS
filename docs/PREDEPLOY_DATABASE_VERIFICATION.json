@@ -1,0 +1,25 @@
+{
+  "verified_on": "2026-09-13",
+  "method": "Read-only catalog queries in the authenticated Supabase SQL Editor, plus real two-user REST/RPC acceptance",
+  "application_tables": 32,
+  "tenant_tables": 31,
+  "shared_authenticated_read_tables": ["evaluator_versions"],
+  "tables_without_rls": 0,
+  "tables_without_update_delete_immutable_guard": 0,
+  "unvalidated_public_constraints": 0,
+  "applied_migrations": 7,
+  "migration_0007_applied_on": "2026-09-12",
+  "migration_0007_recorded_crlf_md5": "29c621b8ba86982d11fbc6e9e04f21f2",
+  "source_checksum_evidence": "MIGRATION_CHECKSUMS.json",
+  "prior_catalog_checks": {
+    "owner_select_policies": 31,
+    "authenticated_direct_table_write_grants": 0,
+    "anonymous_table_crud_grants": 0,
+    "anonymous_security_definer_execute_grants": 0,
+    "unsafe_security_definer_search_paths": 0,
+    "journal_analytics_security_invoker": true,
+    "storage_policy_count": 5
+  },
+  "immutability_query": "select count(*) from pg_class c where c.relnamespace='public'::regnamespace and c.relkind='r' and not exists(select 1 from pg_trigger t where t.tgrelid=c.oid and t.tgfoid='private.reject_mutation()'::regprocedure and (t.tgtype::int & 24)=24)",
+  "limitations": ["Database owners and the service role remain trusted administrators", "No full disaster-recovery restore was performed"]
+}

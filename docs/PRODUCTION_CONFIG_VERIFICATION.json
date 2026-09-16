@@ -1,0 +1,38 @@
+{
+  "verified_at": "2026-09-14T13:52:51.378Z",
+  "project_id": "prj_dX8wUqnVqFwTUspQoZBNEzK5PMD8",
+  "project_name": "trading-os",
+  "scope": "maksim61910-7648",
+  "framework": "nextjs",
+  "node": "24.x",
+  "root": ".",
+  "install": "pnpm install --frozen-lockfile",
+  "build": "pnpm build",
+  "environment": [
+    {
+      "name": "AI_ENABLED",
+      "type": "encrypted"
+    },
+    {
+      "name": "SUPABASE_SECRET_KEY",
+      "type": "sensitive"
+    },
+    {
+      "name": "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+      "type": "encrypted"
+    },
+    {
+      "name": "NEXT_PUBLIC_SUPABASE_URL",
+      "type": "encrypted"
+    }
+  ],
+  "openai_key_present": false,
+  "AI_ENABLED": false,
+  "ai_value_verification": "Set via secure local configuration; hosted AI endpoint and UI return DISABLED",
+  "deployment_id": "dpl_ENKQroyAb8xZABZV9RRLFQDqB5Co",
+  "ready_state": "READY",
+  "target": "production",
+  "release": "2f11e2c84abab43453e0e3fa3c9d19bc9bbf4fbc",
+  "production_url": "https://trading-os-six-brown.vercel.app",
+  "deployment_url": "https://trading-kaxani2jh-maksim61910-7648.vercel.app"
+}

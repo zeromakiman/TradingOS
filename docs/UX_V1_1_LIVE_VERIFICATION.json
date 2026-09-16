@@ -1,0 +1,18 @@
+{
+  "verified_at": "2026-09-07T12:47:13.819Z",
+  "completed": true,
+  "openai_requests": 0,
+  "account_id": "5106652c-4c37-498b-b9f2-f09862900ed6",
+  "plan_id": "85b31f56-7cba-40c9-96c6-72edbae4aff6",
+  "checks": [
+    "Real Supabase password authentication succeeds",
+    "Today displays the persisted daily +2R result",
+    "Paginated Journal loads the preserved risk and realized result",
+    "Database-backed status, outcome, instrument/ID search, model, strategy and UTC−5 date filters",
+    "Trade detail keeps the original plan, execution, screenshot and note after a fresh session",
+    "Authenticated screenshot bytes load; anonymous access is denied",
+    "Disabled Analyze returns a normal response and creates no evaluation history",
+    "Authenticated CSV contains the tested trade and stays private",
+    "Test API session signed out"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "verified_at": "2026-09-14T13:56:00Z",
+  "production_url": "https://trading-os-six-brown.vercel.app",
+  "completed": true,
+  "browser_checks": [
+    "Hosted login with an existing confirmed isolated user reaches TODAY",
+    "Isolated account renders READY with the correct equity and risk",
+    "Browser risk preview and saved server check approve 3R, $50, 0.25 lots",
+    "Browser proposal creation and recheck-and-lock persist the plan",
+    "Analyze is disabled and the neutral disabled message is visible",
+    "Hosted screenshot decodes at 24 by 16 pixels",
+    "Browser soft removal shows archived selection and preserves the displayed image",
+    "Browser sign-out and private direct navigation return to login",
+    "Sign-in again restores the closed +1.90R Journal trade, events and screenshot"
+  ],
+  "supabase_site_url": "https://trading-os-six-brown.vercel.app",
+  "supabase_redirect_urls": ["https://trading-os-six-brown.vercel.app/login"],
+  "signup_disabled": true,
+  "migrations": ["0001", "0002", "0003", "0004", "0005", "0006", "0007"],
+  "screenshot_bucket_public": false,
+  "database_verification": "Read-only SQL Editor result: migration ledger and private bucket flag",
+  "openai_provider_calls": 0,
+  "openai_evidence": "AI_ENABLED=false, production key absent, hosted disabled route response, unchanged evaluation history, network-guarded acceptance clients; no independent Vercel packet capture"
+}

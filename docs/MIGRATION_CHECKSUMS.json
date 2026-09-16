@@ -1,0 +1,37 @@
+[
+  {
+    "file": "0001_foundation.sql",
+    "source_md5": "9df6fdf523d071f637697c03e91170ee",
+    "sql_editor_crlf_md5": "30dd4a9fb00c27ab3f167c1d51e6701e"
+  },
+  {
+    "file": "0002_baseline.sql",
+    "source_md5": "09acf1b9c7472f34e56b5af2e2553123",
+    "sql_editor_crlf_md5": "2e211478dc8b7f40b8aff18684d016ed"
+  },
+  {
+    "file": "0003_persistence.sql",
+    "source_md5": "a61d9d8ffcb1a6c45165040b8752fe96",
+    "sql_editor_crlf_md5": "09f14c775c3fd226ba5b61d8877d316f"
+  },
+  {
+    "file": "0004_setup_analysis.sql",
+    "source_md5": "73ae8791aaad480c36c20b9a92154084",
+    "sql_editor_crlf_md5": "2e16b0fa0cf6e991539e849058f490fc"
+  },
+  {
+    "file": "0005_private_screenshot_storage.sql",
+    "source_md5": "9755df207d59ffcabac64ac123b57fe5",
+    "sql_editor_crlf_md5": "1b4799f1d3306e3193d79a246f8e0f6c"
+  },
+  {
+    "file": "0006_edge_outcomes.sql",
+    "source_md5": "fb7561b25228745cb011cc78f5edff2e",
+    "sql_editor_crlf_md5": "e576438e1d70a394dea978e2bb963a55"
+  },
+  {
+    "file": "0007_audit_hardening.sql",
+    "source_md5": "55640de220e93dd83b3464dfc3a20bf5",
+    "sql_editor_crlf_md5": "29c621b8ba86982d11fbc6e9e04f21f2"
+  }
+]

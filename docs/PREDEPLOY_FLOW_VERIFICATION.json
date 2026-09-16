@@ -1,0 +1,56 @@
+{
+  "started_at": "2026-09-13T08:17:19.147Z",
+  "completed": true,
+  "checks": [
+    "Supabase public signup is disabled",
+    "Concurrent account creation retries return one account",
+    "Concurrent proposal creation retries return one immutable proposal",
+    "Concurrent lock attempts respect the real strategy clock",
+    "Distinct concurrent proposals cannot both reserve the final daily slot",
+    "Nine concurrent uploads admit only eight active screenshots",
+    "Soft removal preserves private bytes and permits one replacement",
+    "Invalid close data is safely rejected and duplicate closes preserve history",
+    "Expired cookie metadata refreshes on private image and CSV routes"
+  ],
+  "openai_requests": 0,
+  "account_id": "840b6c65-555a-4198-ba1b-e11df7ddafe7",
+  "proposal_id": "a8da12e0-6c50-41c5-aa2c-b808bcf121a0",
+  "session": "ACTIVE_KILL_ZONE",
+  "plan_id": "541d54a1-fba9-48a5-bf6e-5b9d4ed6f908",
+  "eligible_lock_race": "Same-proposal double lock passed",
+  "last_slot_results": [
+    {
+      "decision": "APPROVED",
+      "issues": [
+        "DAILY_RISK_UNCONFIGURED",
+        "DAILY_LOSS_UNCONFIGURED",
+        "COSTS_UNKNOWN"
+      ]
+    },
+    {
+      "decision": "BLOCKED",
+      "issues": [
+        "MAX_TRADES",
+        "DAILY_RISK_UNCONFIGURED",
+        "DAILY_LOSS_UNCONFIGURED",
+        "COSTS_UNKNOWN"
+      ]
+    }
+  ],
+  "last_slot_race": {
+    "approved": 1,
+    "blocked": 1,
+    "total_reserved_plans": 2
+  },
+  "upload_statuses": [
+    201,
+    201,
+    201,
+    201,
+    201,
+    201,
+    409,
+    201,
+    201
+  ]
+}

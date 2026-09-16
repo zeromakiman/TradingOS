@@ -1,0 +1,24 @@
+{
+  "verified_at": "2026-09-13T08:17:53.203Z",
+  "completed": true,
+  "openai_requests": 0,
+  "checks": [
+    "New test account shows the useful empty EDGE state",
+    "Three real create → lock → taken → Journal entry form → Journal close form flows: +2R, −1R, 0R; OB and OTE",
+    "EDGE renders correct net R, expectancy, win rate, profit factor, drawdown, sample size, equity curve and breakdowns",
+    "OB/OTE filter applies to metrics and chart",
+    "Completed Journal filter and refresh preserve outcomes",
+    "Filtered CSV export contains one OTE record without authentication identifiers",
+    "Existing AI evaluation history is unchanged",
+    "Sign-out blocks EDGE/export; sign-in restores identical persisted results",
+    "Live two-user RLS hides every new table and the view; foreign close is rejected",
+    "Four explicitly synthetic historical fixtures verify Judas/Asia/active/Dead Pool, Tuesday–Friday, two original strategy versions and date-filtered CSV"
+  ],
+  "plans": [
+    "01436043-3f4c-4094-8c58-51ef14c2d044",
+    "19369bd9-4193-43a2-a6d0-6801e3b898ef",
+    "6b48f687-80cc-49df-a3f9-7801d947dd30"
+  ],
+  "account_id": "05cd8a41-3559-4677-8e48-993cb89e7101",
+  "historical_account_id": "d9239f19-4e0f-454d-b22d-29ec12ab45cf"
+}

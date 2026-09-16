@@ -1,0 +1,19 @@
+{
+  "verified_at": "2026-09-06T11:14:10.451Z",
+  "checks": [
+    "Real password sign-in",
+    "Account, proposal and persisted risk evaluation",
+    "Upload and private image retrieval without AI",
+    "Anonymous image access denied",
+    "Direct Analyze request disabled without creating a review",
+    "Fresh deterministic risk check and atomic plan lock",
+    "Trade events, appended audit note and human decision",
+    "All existing non-AI pages render with the disabled notice",
+    "Existing failed evaluation history unchanged and old private screenshots readable",
+    "Sign-out/in and refresh preserve the setup"
+  ],
+  "completed": true,
+  "openai_requests": 0,
+  "proposal_id": "809feddf-9334-4b9e-a879-91384f759ce2",
+  "plan_id": "8910a9f4-cdcf-4dce-9e27-d71afc8fc2d2"
+}

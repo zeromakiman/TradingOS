@@ -1,0 +1,72 @@
+{
+  "verified_at": "2026-09-14T13:49:16.444Z",
+  "base": "https://trading-os-six-brown.vercel.app",
+  "release": "2f11e2c84abab43453e0e3fa3c9d19bc9bbf4fbc",
+  "completed": true,
+  "account_id": "6b04e9fc-b23e-45c7-a4d2-26b3ea8b3894",
+  "checks": [
+    "TODAY, JOURNAL and EDGE load authenticated persisted state",
+    "Public signup remains disabled",
+    "Private screenshot upload, display and cache headers",
+    "AI disabled UI and API preserve existing failed evaluation history",
+    "Hosted Journal note, actual entry and full close persist immutable events",
+    "Hosted EDGE and private CSV reflect the completed +1.90R trade",
+    "Expired session metadata refreshes on hosted screenshot and CSV routes",
+    "Foreign user cannot read plan, setup, screenshot or account CSV",
+    "Signed-out private routes, image and CSV disclose no private data",
+    "Production HTML and browser assets contain no configured server secret or test password",
+    "Hosted soft removal is persisted once and preserves private screenshot bytes and failed AI history"
+  ],
+  "client_openai_requests_attempted": 0,
+  "headers": {
+    "/today": {
+      "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
+      "x-vercel-cache": "MISS",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    },
+    "/journal/2a40d399-df0b-4792-8b0d-cb5f6fa651a0": {
+      "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
+      "x-vercel-cache": "MISS",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    },
+    "/edge": {
+      "cache-control": "private, no-cache, no-store, max-age=0, must-revalidate",
+      "x-vercel-cache": "MISS",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    },
+    "screenshot": {
+      "cache-control": "private, no-store",
+      "x-vercel-cache": "MISS",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    },
+    "CSV": {
+      "cache-control": "private, no-store",
+      "x-vercel-cache": "MISS",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    },
+    "refreshed api": {
+      "cache-control": "private, no-store",
+      "x-vercel-cache": "MISS",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    },
+    "refreshed edge": {
+      "cache-control": "private, no-store",
+      "x-vercel-cache": "MISS",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY"
+    }
+  },
+  "proposal_id": "21633ff6-be1c-41a0-ba4a-9e3fc03c435c",
+  "plan_id": "2a40d399-df0b-4792-8b0d-cb5f6fa651a0",
+  "screenshot_id": "d4eee1c7-fb5f-4ca6-b684-408301c60075",
+  "storage_path": "605d58dd-f93f-4403-b76a-bcb51900124a/21633ff6-be1c-41a0-ba4a-9e3fc03c435c/d4eee1c7-fb5f-4ca6-b684-408301c60075",
+  "harness_correction": "The public /login page was incorrectly subjected to the private-page URL assertion. Asset scanning was resumed with the public page handled separately; no functional write tests repeated.",
+  "browser_assets_scanned": 10,
+  "finished_at": "2026-09-14T13:54:17.167Z"
+}

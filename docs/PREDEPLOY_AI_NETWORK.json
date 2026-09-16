@@ -1,0 +1,21 @@
+{
+  "verified_at": "2026-09-14T08:23:21.440Z",
+  "AI_ENABLED": false,
+  "OPENAI_API_KEY": "empty in audited production processes",
+  "openai_requests_attempted": 0,
+  "windows": [
+    {
+      "started_at": "2026-09-13T08:13:39.951Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    },
+    {
+      "started_at": "2026-09-14T08:18:49.430Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  ],
+  "automated_tests": "global OpenAI-host guard; provider transport mocked",
+  "live_acceptance": "local app and configured Supabase only",
+  "provider_integration_preserved": true
+}

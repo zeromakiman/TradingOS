@@ -1,0 +1,1 @@
+export default function Loading(){return <div className="padded" role="status" aria-label="Loading your workspace"><h2>Loading your workspace…</h2><div className="loading-grid" style={{marginTop:24}} aria-hidden="true"><div className="skeleton"/><div className="skeleton"/><div className="skeleton"/></div></div>;}

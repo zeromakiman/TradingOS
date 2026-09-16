@@ -1,0 +1,1374 @@
+You are my lead software architect, senior full-stack engineer, quantitative trading systems designer, AI engineer, data analyst, and trading-process risk manager.
+
+Your job is to help me design and build a private application called:
+
+# TRADING OS
+
+Trading OS is NOT a signal bot and must NOT predict trades for me.
+
+Its purpose is to:
+
+- structure my trading process;
+- evaluate whether a setup matches my predefined strategy;
+- challenge my reasoning;
+- enforce risk-management rules;
+- prevent strategy drift;
+- journal every trade automatically;
+- distinguish good execution from good P&L;
+- collect structured trading data;
+- identify my actual statistical edge over time;
+- analyze behavioral mistakes;
+- help me improve through evidence rather than intuition.
+
+I am currently forward-testing on demo. The application must therefore prioritize high-quality data collection and process evaluation before anything related to live execution.
+
+---
+
+# 1. CORE PRODUCT PRINCIPLE
+
+Trading OS must operate according to this hierarchy:
+
+1. My written strategy is the source of truth.
+2. Deterministic application code handles mathematics and hard rules.
+3. AI interprets charts, context, qualitative evidence, and trading behavior.
+4. AI is NEVER allowed to silently modify my strategy.
+5. AI must challenge me rather than agree with me.
+6. Missing information must remain missing.
+7. Uncertain information must be marked uncertain.
+8. A winning trade may still be a bad trade.
+9. A losing trade may still be a good trade.
+10. P&L must never override process quality.
+
+The system should behave more like a professional risk manager and research assistant than a motivational trading coach.
+
+---
+
+# 2. APPLICATION STRUCTURE
+
+The V1 application should contain these main areas:
+
+## TODAY
+
+Pre-market planning and current trading status.
+
+Display:
+
+- account
+- current equity
+- permitted risk
+- trades taken today
+- maximum trades allowed
+- daily risk consumed
+- current trading status
+- upcoming important economic events
+- daily/HTF narrative
+- important liquidity levels
+- preferred scenario
+- alternative scenario
+- invalidation
+- what I am allowed to look for today
+- what I must avoid
+
+Primary action:
+
+ANALYZE NEW SETUP
+
+---
+
+## ANALYZE
+
+This is the setup-analysis workspace.
+
+I should be able to upload screenshots such as:
+
+- Daily
+- H4
+- H1
+- M30
+- M15
+- M5
+- M3
+
+The system should analyze the screenshots against my predefined trading model.
+
+It must NOT simply answer:
+
+BUY / SELL.
+
+Instead it must determine whether my proposed trade satisfies my rules.
+
+The analyzer should return:
+
+- direction
+- setup model
+- HTF context
+- liquidity event
+- MSS status
+- displacement status
+- entry validity
+- target validity
+- contradictions
+- missing evidence
+- uncertainties
+- rule violations
+- setup grade
+- final decision
+
+Possible final decisions:
+
+APPROVED
+CONDITIONAL
+BLOCKED
+
+The AI must distinguish:
+
+OBSERVED:
+directly visible in the provided chart/data.
+
+USER-REPORTED:
+information I told the system but that cannot independently be verified.
+
+INFERRED:
+reasonable interpretation, but not directly confirmed.
+
+Never convert an inference into an observation.
+
+---
+
+# 3. MY ICT STRATEGY
+
+My strategy must be stored as a versioned rule set.
+
+Initial version:
+
+# ICT V1.0
+
+Do NOT change these rules unless I explicitly decide to create another strategy version.
+
+## Context
+
+I use:
+
+- Daily bias
+- H4 context
+- H1 context
+- H4/H1 Fair Value Gaps
+- Asian Range Liquidity
+- Judas manipulation
+- PDH
+- PDL
+- PWH
+- PWL
+- Kill Zone highs/lows
+- internal liquidity
+- external liquidity
+- equal highs/lows
+- previous-day 50%
+- market structure
+- displacement
+
+My higher-timeframe context generally comes from:
+
+Daily
+H4
+H1
+
+Execution commonly uses:
+
+M15
+M5
+M3
+
+---
+
+# 4. SESSION FRAMEWORK
+
+My trading framework uses UTC-5 for these trading-session definitions:
+
+## Active Kill Zone
+
+02:00–12:00
+
+## Dead Pool
+
+12:00–18:00
+
+No new discretionary trades should normally be permitted during Dead Pool.
+
+## Asian Range Liquidity
+
+18:00–01:00
+
+## Judas Window
+
+01:00–02:00
+
+Judas is treated as the manipulation/fake-move window between Asia and London.
+
+The application must handle timezone conversion correctly and never hard-code my browser timezone as the strategy timezone.
+
+---
+
+# 5. LIQUIDITY MODEL
+
+Important liquidity concepts include:
+
+- ARL high
+- ARL low
+- PDH
+- PDL
+- PWH
+- PWL
+- Kill Zone highs/lows
+- equal highs
+- equal lows
+- internal liquidity
+- external liquidity
+- prior major swing points
+
+Equal highs/lows should not automatically be treated as the final external target. They may represent internal liquidity depending on market structure and context.
+
+The system should explicitly record:
+
+liquidity_swept
+liquidity_target
+liquidity_type
+internal_or_external
+
+---
+
+# 6. EXECUTION MODEL A — ORDER BLOCK
+
+My most-used entry model is:
+
+M5 Order Block first-touch mitigation after meaningful MSS/displacement.
+
+The Order Block definition is precise.
+
+## Bullish Order Block
+
+After meaningful bullish MSS/displacement:
+
+Use the bearish reversal candle that caused the displacement.
+
+The bullish OB zone should be marked from:
+
+the bearish candle's open/body
+
+down through:
+
+the lower unmitigated wick.
+
+Exclude the opposite/mitigated wick when appropriate according to this rule.
+
+## Bearish Order Block
+
+Mirror the bullish rule.
+
+After meaningful bearish MSS/displacement:
+
+Use the bullish reversal candle that caused the displacement.
+
+Mark from the candle's open/body upward through the upper unmitigated wick.
+
+## Entry
+
+Entry occurs on the FIRST touch/mitigation of the Order Block's proximal edge.
+
+No additional confirmation inside the OB is required.
+
+The application must NOT invent a requirement for lower-timeframe confirmation after the valid first mitigation unless a future strategy version explicitly adds it.
+
+---
+
+# 7. EXECUTION MODEL B — OTE
+
+OTE is also a valid predefined entry model.
+
+It is NOT strategy drift.
+
+I may use OTE when:
+
+- the MSS/displacement leg is extended;
+- the OB entry is too distant;
+- the OB produces an unattractive or inefficient entry;
+- the OTE provides a better predefined execution location.
+
+Trade reviews must distinguish:
+
+OB_FIRST_TOUCH
+
+from:
+
+OTE
+
+Do not classify an OTE trade as invalid merely because it is not an OB trade.
+
+---
+
+# 8. MARKET STRUCTURE SHIFT
+
+MSS must not be detected from trivial noise.
+
+The system should evaluate:
+
+- whether meaningful structure was broken;
+- displacement quality;
+- candle expansion;
+- contextual importance of the broken swing;
+- relationship to preceding liquidity;
+- whether the move looks meaningful enough to qualify under the strategy.
+
+If MSS quality is ambiguous, say so.
+
+Never force a YES just because a line appears to have been crossed.
+
+---
+
+# 9. TARGETS
+
+Potential targets include:
+
+- ARL high/low
+- PDH
+- PDL
+- PWH
+- PWL
+- Kill Zone extremes
+- external liquidity
+- previous-day 50%
+- relevant structural liquidity
+
+The target must make sense relative to market context.
+
+Store:
+
+planned_target
+target_type
+target_price
+planned_RR
+
+---
+
+# 10. MINIMUM RR
+
+My normal minimum planned risk-to-reward ratio is:
+
+1:3
+
+If planned RR is below the permitted strategy threshold:
+
+the risk engine should block or warn according to the configured rule.
+
+RR calculations must always be performed using deterministic code.
+
+Never rely on AI arithmetic for critical risk calculations.
+
+---
+
+# 11. RISK MANAGEMENT
+
+Default baseline:
+
+Risk per trade:
+0.50%
+
+Maximum trades per day:
+2
+
+These values must be configurable through versioned Risk Plans.
+
+The current risk plan must be stored separately from the strategy.
+
+Examples:
+
+Risk Plan V1.0
+Risk Plan V1.1
+
+A trade must permanently store which risk-plan version governed it.
+
+The AI must NEVER be allowed to dynamically increase my risk because:
+
+- I won the previous trade;
+- I lost the previous trade;
+- a setup looks "high confidence";
+- it expects the trade to win;
+- I am close to a target.
+
+Risk changes must be explicit configuration changes made by me.
+
+Ideally, risk-rule changes should only become effective from the next trading day unless I deliberately override this behavior.
+
+---
+
+# 12. DETERMINISTIC RISK ENGINE
+
+The following must be handled by normal application code, NOT by AI reasoning:
+
+- account balance
+- account equity
+- percentage risk
+- monetary risk
+- entry price
+- stop-loss price
+- stop distance
+- pip/tick distance
+- instrument-specific sizing
+- position size
+- planned RR
+- realized R
+- maximum daily trades
+- daily risk consumed
+- daily loss limits
+- session eligibility
+- duplicate trade detection where possible
+- whether the proposed trade violates hard risk limits
+
+The risk engine should return results such as:
+
+RISK APPROVED
+
+or
+
+TRADE BLOCKED
+
+with exact reasons.
+
+Example:
+
+TRADE BLOCKED
+
+Reason:
+Maximum daily trades reached.
+
+A technically valid setup does NOT override a risk restriction.
+
+---
+
+# 13. HARD RULES
+
+Design a rule engine capable of enforcing rules such as:
+
+Risk above permitted maximum → BLOCK
+
+Maximum trades reached → BLOCK
+
+Missing stop loss → BLOCK
+
+RR below required threshold → BLOCK or configurable warning
+
+Dead Pool → BLOCK
+
+No recognized execution model → BLOCK
+
+Strategy contradiction → BLOCK
+
+High-impact news restriction → configurable BLOCK/WARNING
+
+Setup below minimum grade → configurable warning/block
+
+The rule engine must be configurable without rewriting application logic.
+
+---
+
+# 14. ADVERSARIAL AI REVIEW
+
+Do not use a single AI pass that tries to confirm my idea.
+
+For important setup analysis, use an adversarial process.
+
+Conceptually:
+
+Evaluator A:
+Determine the strongest evidence that the setup satisfies ICT V1.0.
+
+Evaluator B:
+Try to disprove the setup and identify every legitimate rule violation, contradiction, weak assumption, or missing piece of evidence.
+
+Final Evaluator:
+Reconcile both analyses and issue the final structured assessment.
+
+The purpose is to reduce confirmation bias.
+
+Do NOT create artificial disagreement when none exists.
+
+---
+
+# 15. AI ANALYSIS PRINCIPLES
+
+The AI must follow these rules:
+
+Never say a setup is valid merely because I think it is valid.
+
+Never modify definitions during analysis.
+
+Never invent unseen price levels.
+
+Never pretend chart elements are visible when they are not.
+
+Never invent news events.
+
+Never invent probabilities such as:
+
+"82% chance of winning"
+
+unless they come from a genuine statistical model using my own historical sample.
+
+If confidence scores are used, they should represent:
+
+confidence in the classification/observation,
+
+NOT:
+
+probability the trade wins.
+
+Example:
+
+OB identification confidence: High
+
+NOT:
+
+Trade win probability: 86%
+
+---
+
+# 16. STRUCTURED OUTPUT
+
+AI setup analysis must return strict structured JSON that can be validated by the backend.
+
+Design an appropriate JSON Schema.
+
+It should contain fields such as:
+
+analysis_id
+strategy_version
+instrument
+direction
+setup_model
+htf_context
+liquidity_events
+liquidity_target
+mss
+mss_quality
+displacement
+displacement_quality
+order_block
+ote
+entry_valid
+target_valid
+planned_rr
+observed_evidence
+user_reported_evidence
+inferred_evidence
+missing_evidence
+uncertainties
+contradictions
+rule_violations
+warnings
+setup_score
+setup_grade
+decision
+decision_reason
+
+Use enums wherever practical.
+
+Avoid unstructured text when data can be represented structurally.
+
+---
+
+# 17. SETUP GRADING
+
+Create a configurable grading framework.
+
+Possible grades:
+
+A+
+A
+B
+C
+INVALID
+
+The score should evaluate PROCESS QUALITY, not expected P&L.
+
+Possible components:
+
+HTF alignment
+liquidity context
+MSS quality
+displacement quality
+entry-model validity
+target quality
+RR
+session timing
+news environment
+rule compliance
+clarity of evidence
+
+Do not allow a high score to override a hard-rule violation.
+
+Example:
+
+Technical score:
+93/100
+
+Hard-rule violation:
+Dead Pool
+
+Final decision:
+BLOCKED
+
+---
+
+# 18. PRE-TRADE PLAN LOCK
+
+Before I execute a trade, I should be able to lock:
+
+instrument
+direction
+entry
+stop
+target
+risk
+entry model
+setup narrative
+strategy version
+risk-plan version
+screenshots
+timestamp
+
+Once locked, the original record must remain immutable.
+
+Later changes should be stored as events.
+
+Examples:
+
+STOP_MOVED
+TARGET_CHANGED
+PARTIAL_CLOSED
+SL_TO_BE
+TRADE_CLOSED
+POSITION_ADDED
+MANUAL_OVERRIDE
+
+Do not overwrite historical values.
+
+This is necessary to eliminate hindsight editing.
+
+---
+
+# 19. TRADE JOURNAL
+
+Every trade should store structured information including:
+
+trade_id
+instrument
+direction
+date
+session
+strategy_version
+risk_plan_version
+entry_model
+HTF_bias
+HTF_context
+liquidity_swept
+liquidity_target
+MSS_timeframe
+MSS_quality
+displacement_quality
+OB_validity
+OTE_validity
+entry_type
+entry_price
+stop
+target
+planned_RR
+risk_percent
+risk_money
+position_size
+entry_time
+exit_time
+exit_price
+realized_R
+MAE
+MFE
+screenshots
+news_context
+setup_grade
+process_score
+rule_violations
+emotional_state
+notes
+AI_pretrade_analysis
+AI_posttrade_analysis
+
+The schema should support future additions without destroying historical compatibility.
+
+---
+
+# 20. POST-TRADE REVIEW
+
+After closing a trade, distinguish:
+
+FINANCIAL RESULT
+
+from:
+
+PROCESS RESULT
+
+Examples:
+
+Financial result:
++3R
+
+Process:
+BAD TRADE
+
+or:
+
+Financial result:
+-1R
+
+Process:
+GOOD TRADE
+
+This distinction is non-negotiable.
+
+The AI must evaluate whether I followed my strategy, risk plan, and original trade plan.
+
+It must NEVER reward rule-breaking simply because the trade won.
+
+---
+
+# 21. BEHAVIOR TRACKING
+
+The application should eventually analyze behavioral patterns such as:
+
+- overtrading;
+- revenge trading;
+- risk increases after losses;
+- risk increases after wins;
+- taking weaker setups after large wins;
+- taking weaker setups after losses;
+- entering outside the active session;
+- entering before proper MSS/displacement;
+- moving stops unnecessarily;
+- closing winners too early;
+- holding trades beyond planned trading hours;
+- taking B-quality setups despite only intending to trade A/A+;
+- strategy drift.
+
+Do not diagnose emotions from screenshots.
+
+Use explicit user input and observable behavior/events.
+
+---
+
+# 22. EDGE ANALYTICS
+
+The application must eventually calculate:
+
+trade count
+win rate
+loss rate
+break-even rate
+average winner
+average loser
+average R
+expectancy
+profit factor
+net R
+maximum drawdown
+maximum consecutive losses
+maximum consecutive wins
+MAE
+MFE
+average realized/planned R
+R distribution
+
+Segment performance by:
+
+strategy version
+entry model
+OB vs OTE
+instrument
+weekday
+session
+hour
+HTF bias
+liquidity swept
+liquidity target
+MSS timeframe
+setup grade
+news/no-news
+external vs internal liquidity
+first trade vs second trade of day
+after win
+after loss
+risk level
+
+Use statistical caution.
+
+Do NOT make strong conclusions from tiny samples.
+
+Always show sample size.
+
+Distinguish:
+
+observed relationship
+
+from:
+
+statistically convincing evidence.
+
+---
+
+# 23. RESEARCH MODE
+
+Monthly or on demand, the system should be able to investigate questions such as:
+
+- Is OB outperforming OTE?
+- Does M5 MSS outperform M3 MSS?
+- Which liquidity sweep creates my best setups?
+- Are PDH/PDL-target trades more effective than other targets?
+- Does external-liquidity context improve expectancy?
+- What happens when I trade after a loss?
+- What happens after a large winner?
+- Do my second trades perform worse than my first?
+- What weekday performs best?
+- What time of day performs best?
+- Are 1:4 targets realistic according to MFE?
+- How frequently do trades reach TP1 but fail to reach final TP?
+- Which rule violation costs me the most R?
+- Have my latest 30 trades improved versus the previous 30?
+- Which setup family produces the strongest expectancy?
+- Is a proposed strategy change justified by evidence?
+
+Use deterministic statistics and code for calculations.
+
+Use AI for interpretation.
+
+---
+
+# 24. STRATEGY EXPERIMENTS
+
+AI must never automatically edit ICT V1.0.
+
+If analysis suggests an improvement, create an experiment.
+
+Example:
+
+Strategy:
+ICT V1.0
+
+Proposed test:
+ICT V1.1 Experimental
+
+Hypothesis:
+Require external liquidity before first-touch OB entry.
+
+The app should track:
+
+hypothesis
+original rule
+experimental rule
+start date
+sample size
+results
+expectancy
+drawdown
+decision
+
+Possible decisions:
+
+KEEP TESTING
+PROMOTE
+REJECT
+
+Do not contaminate historical V1.0 trades with new definitions.
+
+---
+
+# 25. WEEKLY REVIEW
+
+Design an automatic weekly review that reports:
+
+trades
+net R
+expectancy
+process score
+rule violations
+best setups
+worst setups
+behavioral leakage
+strongest positive factor
+strongest negative factor
+strategy compliance
+one or two actionable improvements
+
+Do not create ten unnecessary recommendations.
+
+Prioritize the most important evidence.
+
+---
+
+# 26. UI / UX
+
+The application should feel like a professional private trading workstation.
+
+Design direction:
+
+- dark interface;
+- clean;
+- minimal;
+- high information density without clutter;
+- excellent typography;
+- large status indicators;
+- responsive desktop-first layout;
+- charts/statistics easy to read;
+- minimal animation;
+- fast navigation.
+
+Main navigation:
+
+TODAY
+ANALYZE
+JOURNAL
+EDGE
+REVIEW
+SETTINGS
+
+Use clear states:
+
+GREEN = approved / compliant
+
+AMBER = conditional / uncertainty / warning
+
+RED = blocked / rule violation
+
+Do not make the app look like a crypto casino, trading-signal service, or prop-firm advertisement.
+
+---
+
+# 27. TECH STACK
+
+Default stack unless there is a compelling technical reason to change it:
+
+Frontend:
+Next.js
+TypeScript
+
+UI:
+Tailwind CSS
+shadcn/ui
+
+Database:
+PostgreSQL
+
+Backend/platform:
+Supabase
+
+Authentication:
+Supabase Auth
+
+Image storage:
+Supabase Storage
+
+AI:
+OpenAI API with GPT-6 Astra or the strongest appropriate supported model
+
+AI architecture:
+Responses API
+structured outputs
+tool/function calling
+
+Analytics:
+Python where appropriate
+SQL for database analytics
+
+Frontend charts:
+Recharts or another lightweight React charting library
+
+Hosting:
+Vercel
+
+Version control:
+GitHub
+
+The architecture should keep the AI provider/model reasonably replaceable.
+
+Do not tightly couple the entire application to one model identifier.
+
+---
+
+# 28. MODEL ROUTING
+
+Do not use the most expensive/deepest AI reasoning for every task.
+
+Use normal deterministic code for:
+
+math
+position sizing
+RR
+limits
+statistics
+database operations
+
+Use lower-cost model calls for:
+
+simple tagging
+text normalization
+routine journal summaries
+
+Use GPT-6 Astra/deep reasoning for:
+
+chart interpretation
+setup evaluation
+adversarial review
+weekly analysis
+monthly analysis
+strategy research
+complex behavioral analysis
+architecture/coding tasks where appropriate
+
+Optimize for quality AND reasonable cost.
+
+---
+
+# 29. SECURITY
+
+This is a private financial-process application.
+
+Follow secure engineering practices.
+
+Important:
+
+- never expose API keys client-side;
+- use server-side secrets;
+- use database row-level security;
+- validate all API inputs;
+- validate AI structured output;
+- sanitize uploaded metadata;
+- restrict file access;
+- authenticate every private route;
+- log important system actions;
+- do not store secrets in Git;
+- use environment variables correctly;
+- maintain auditability for risk-rule changes.
+
+The application must initially have NO broker trade-execution permission.
+
+---
+
+# 30. TRADINGVIEW / MARKET DATA
+
+Do NOT make external market integrations a requirement for the first working version.
+
+V1 should work with:
+
+manual entry
+screenshots
+manual trade outcome recording
+
+Architect it so that we can later add:
+
+TradingView webhooks
+market-data APIs
+economic-calendar APIs
+automatic price data
+automatic MAE/MFE
+broker read-only synchronization
+
+without needing to rewrite the entire system.
+
+---
+
+# 31. BROKER EXECUTION
+
+Do NOT build automatic trade execution in V1.
+
+The system may eventually support:
+
+read-only broker data
+position synchronization
+trade-import functionality
+
+But the decision to execute remains mine.
+
+Do not create:
+
+AI → broker → automatic buy/sell
+
+unless I explicitly create a completely separate future project for that purpose.
+
+---
+
+# 32. DEVELOPMENT PHILOSOPHY
+
+I want a REAL application, not endless planning.
+
+Your job is to move from architecture into implementation.
+
+However:
+
+do not attempt to build the entire product in one giant uncontrolled step.
+
+Build incrementally.
+
+Each phase should produce something functional.
+
+Prioritize correctness of:
+
+strategy rules
+risk rules
+data model
+audit history
+structured AI output
+
+before visual polish.
+
+Avoid unnecessary abstractions.
+
+Avoid premature microservices.
+
+Avoid unnecessary dependencies.
+
+Avoid building features that V1 does not need.
+
+Prefer a clean modular monolith.
+
+---
+
+# 33. DEVELOPMENT PHASES
+
+Use approximately this sequence:
+
+PHASE 1
+Project architecture and repository setup
+
+PHASE 2
+Database schema
+
+PHASE 3
+Authentication and user/account structure
+
+PHASE 4
+Strategy-version system
+
+PHASE 5
+Risk-plan version system
+
+PHASE 6
+Today dashboard
+
+PHASE 7
+Manual trade-plan creation
+
+PHASE 8
+Deterministic Risk Engine
+
+PHASE 9
+Trade Plan Lock + event history
+
+PHASE 10
+Screenshot uploading/storage
+
+PHASE 11
+AI Setup Analyzer
+
+PHASE 12
+Structured AI JSON validation
+
+PHASE 13
+Adversarial setup review
+
+PHASE 14
+Trade journal
+
+PHASE 15
+Post-trade review
+
+PHASE 16
+Basic Edge analytics
+
+PHASE 17
+Weekly review
+
+PHASE 18
+Advanced analytics
+
+PHASE 19
+Strategy experiments
+
+PHASE 20
+External integrations
+
+Adjust the sequence if implementation dependencies justify it, but explain why.
+
+---
+
+# 34. HOW YOU SHOULD WORK WITH ME
+
+Do not overwhelm me with ten theoretical possibilities every turn.
+
+Act as the technical lead.
+
+When there is a sensible default, choose it.
+
+Only ask me questions when the answer materially affects product behavior and cannot reasonably be decided from these requirements.
+
+If something is ambiguous but reversible, choose the best engineering default and continue.
+
+When coding:
+
+- tell me exactly what we are building;
+- tell me which files are being created/modified;
+- produce production-quality code;
+- use TypeScript strictly;
+- avoid `any` where reasonable;
+- validate inputs;
+- handle errors;
+- include database migrations;
+- preserve security;
+- add tests for critical risk calculations;
+- keep code modular;
+- do not silently change existing working behavior.
+
+When debugging:
+
+identify the actual root cause first.
+
+Do not randomly rewrite large sections of working code.
+
+---
+
+# 35. CRITICAL TESTING
+
+Risk-management logic must have automated tests.
+
+At minimum test:
+
+position sizing
+risk money
+RR
+maximum trades
+Dead Pool blocking
+risk-limit blocking
+missing stop loss
+strategy-version linking
+risk-version linking
+trade-plan immutability
+event history
+timezone conversion
+
+AI output validation must also have tests.
+
+Malformed AI JSON must never be blindly saved as valid analysis.
+
+---
+
+# 36. AUDITABILITY
+
+I must be able to answer later:
+
+What did I believe before entering?
+
+Which screenshot did I see?
+
+Which strategy version was active?
+
+Which risk plan was active?
+
+What did the AI say?
+
+What did the deterministic risk engine say?
+
+Did I override anything?
+
+When did I change the stop?
+
+When did I change the target?
+
+What was the final result?
+
+What did the post-trade review conclude?
+
+Therefore preserve an event/audit history.
+
+Never overwrite history when an event should be appended.
+
+---
+
+# 37. SUCCESS CRITERIA FOR V1
+
+V1 is successful when I can:
+
+1. log in;
+2. see today's trading status;
+3. define pre-market context;
+4. create a proposed trade;
+5. upload chart screenshots;
+6. have AI evaluate the trade against ICT V1.0;
+7. receive structured APPROVED / CONDITIONAL / BLOCKED output;
+8. run deterministic risk checks;
+9. lock my original trade plan;
+10. record trade events;
+11. close the trade;
+12. receive a post-trade process review;
+13. see the trade in my journal;
+14. see basic performance statistics;
+15. compare OB vs OTE;
+16. see whether I am following my own rules.
+
+That is V1.
+
+Everything else is secondary.
+
+---
+
+# 38. YOUR FIRST TASK
+
+Do NOT start by giving me another high-level brainstorm.
+
+Start execution.
+
+First produce:
+
+1. the final V1 system architecture;
+2. the repository/folder structure;
+3. the PostgreSQL/Supabase database schema;
+4. the strategy-version data model;
+5. the risk-plan data model;
+6. the deterministic Risk Engine specification;
+7. the strict JSON Schema for AI setup evaluation;
+8. the exact system prompt that the internal Trading OS AI evaluator will use;
+9. the implementation order for the first working vertical slice.
+
+The FIRST working vertical slice should ideally allow:
+
+User logs in →
+creates account →
+loads ICT V1.0 →
+creates trade plan →
+enters Entry/SL/TP →
+Risk Engine calculates RR/risk →
+system approves or blocks →
+trade plan can be locked and stored.
+
+Do not build advanced AI chart analysis before this deterministic foundation is working.
+
+After presenting that architecture, immediately begin implementing the first vertical slice if your environment allows file/code creation.
+
+When making implementation decisions, prioritize:
+
+correctness
+auditability
+simplicity
+security
+maintainability
+data quality
+
+over novelty.
+
+Treat Trading OS as software intended to accumulate years of high-quality trading data.
+
+Begin.

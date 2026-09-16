@@ -1,0 +1,17 @@
+.local/
+.env*
+.pnpm-store/
+node_modules/
+.next/
+.git/
+coverage/
+test-results/
+*.tsbuildinfo
+tests/
+scripts/
+docs/
+/supabase/
+AGENTS.md
+CLAUDE.md
+README.md
+vitest.config.ts

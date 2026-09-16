@@ -1,0 +1,42 @@
+{
+  "verifiedAt": "2026-09-05T12:30:38.280Z",
+  "project": "https://txodopkdigulyqkdgheb.supabase.co",
+  "checks": 9,
+  "passed": [
+    "Two real password sign-ins",
+    "Atomic bootstrap replay with immutable initial versions",
+    "Approved and blocked evaluations persist without a reservation",
+    "Lock persists exact original versions and idempotent audit history",
+    "Locked values cannot be changed; notes append in order",
+    "Two-user RLS and anonymous denial across all 17 tenant tables",
+    "Independent simultaneous requests cannot both reserve the final slot",
+    "Sign out, fresh sign-in and journal relationships preserve the plan",
+    "Private server routes reject signed-out and invalid-cookie requests"
+  ],
+  "planId": "893ecfac-4947-433c-8746-cc482e395ad6",
+  "accountId": "303ddfdb-82b6-4959-ac15-ed58d807fce2",
+  "raceAccountId": "87236607-b9c5-4aed-959f-490a89c95cb5",
+  "rlsTables": [
+    "accounts",
+    "account_observations",
+    "strategy_versions",
+    "risk_plan_versions",
+    "instrument_versions",
+    "risk_evaluations",
+    "trade_plans",
+    "trade_events",
+    "configuration_events",
+    "daily_contexts",
+    "chart_assets",
+    "plan_chart_assets",
+    "ai_analysis_attempts",
+    "trade_reviews",
+    "strategy_experiments",
+    "experiment_reviews",
+    "bootstrap_requests"
+  ],
+  "limitations": [
+    "Reserved screenshot/AI tables have no feature data yet; owner policy and deny-write tests passed.",
+    "Uses actual Supabase clock; no broker executions or position closures."
+  ]
+}

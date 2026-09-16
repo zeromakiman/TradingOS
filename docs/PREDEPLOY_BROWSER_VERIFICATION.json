@@ -1,0 +1,51 @@
+{
+  "verified_dates": ["2026-09-13", "2026-09-14"],
+  "completed": true,
+  "runtime": "Local Next.js production build, real Supabase, AI_ENABLED=false, OPENAI_API_KEY empty, OpenAI fetch guard",
+  "method": "Interactive browser acceptance with accessibility state, read-only DOM checks and screenshots; not a full accessibility certification",
+  "checks": [
+    "Existing session restored on Today; current strategy session and stale-equity guidance were visible",
+    "Keyboard navigation opened the unsaved-changes dialog with Keep editing focused",
+    "Escape and Keep editing restored focus to the invoking Journal link; its visible focus outline was solid",
+    "Discard and leave navigated without saving the synthetic draft",
+    "New Trade with a zero-distance LONG stop displayed a saved server-verified blocked result; lock remained unavailable",
+    "Corrected stop produced saved risk approval, 3R, 0.25 lots and 50 USD nominal risk",
+    "Locking preserved one immutable plan and updated daily reservations from 3 to 4",
+    "Actual entry was recorded through the Journal form",
+    "Exit before entry was rejected; values were retained; focused alert was associated with the form fieldset",
+    "Corrected full close displayed WIN +1.90R, 95 USD net, 5 USD fees and original 50 USD risk",
+    "A note appended once; refresh retained PLAN_LOCKED, TRADE_OPENED, TRADE_CLOSED and NOTE_ADDED",
+    "Journal at 390 x 844 had no horizontal overflow (document width 375); mobile navigation and WIN filter worked",
+    "Returning from trade detail retained CLOSED/WIN filters and the two matching trades",
+    "Mobile EDGE showed 4 completed trades, 2.90R net, 0.73R rounded expectancy, 50% wins, 3.90 profit factor and 1R drawdown",
+    "CSV action generated a browser download event; matching contents/privacy were checked separately in live HTTP acceptance",
+    "Final screenshot-history fix rendered all nine private images, including one archived selection; each image had decoded dimensions",
+    "Screenshot workspace displayed AI analysis is currently disabled and a disabled Analyze setup button",
+    "Sign out reached login; direct private trade URL while signed out redirected to login without trade data",
+    "Password sign-in with the isolated test user returned to the authenticated Today workspace",
+    "After re-login the same closed trade retained +1.90R, original 50 USD risk, 5 USD fees and all four audit events"
+  ],
+  "synthetic_browser_trade": {
+    "account_id": "580bc6e0-4fe1-46e5-ad37-7041d6ed3bb9",
+    "plan_id": "a0054166-c5e6-478e-8170-6739147447d8",
+    "entry": "1.13",
+    "stop": "1.128",
+    "target": "1.136",
+    "quantity": "0.25",
+    "exit": "1.134",
+    "fees": "5",
+    "initial_risk": "50",
+    "net_pnl": "95",
+    "realized_r": "1.90"
+  },
+  "screenshot_proposal_id": "a8da12e0-6c50-41c5-aa2c-b808bcf121a0",
+  "regressions_found_and_fixed": [
+    "Unsaved dialog unmounted before focus restoration",
+    "Ambiguous PostgREST history relationship after additive evidence FK"
+  ],
+  "limitations": [
+    "Screenshot upload concurrency, removal/replacement and cross-user denial tested through the real HTTP/RPC interfaces; browser checked decoded delivery and controls",
+    "Loading and safe error states observed; no real Supabase-wide outage induced",
+    "Not a screen-reader certification, every-device matrix, hosted acceptance, or disaster-recovery test"
+  ]
+}

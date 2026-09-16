@@ -1,0 +1,788 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "enum": [
+        "1.0"
+      ]
+    },
+    "analysis_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "strategy_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_plan_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instrument": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evaluator_role": {
+      "type": "string",
+      "enum": [
+        "A",
+        "B",
+        "RECONCILER"
+      ]
+    },
+    "direction": {
+      "type": "string",
+      "enum": [
+        "LONG",
+        "SHORT",
+        "UNKNOWN"
+      ]
+    },
+    "setup_model": {
+      "type": "string",
+      "enum": [
+        "OB_FIRST_TOUCH",
+        "OTE",
+        "UNRECOGNIZED",
+        "UNKNOWN"
+      ]
+    },
+    "htf_context": {
+      "type": "object",
+      "properties": {
+        "daily": {
+          "$ref": "#/$defs/assessment"
+        },
+        "h4": {
+          "$ref": "#/$defs/assessment"
+        },
+        "h1": {
+          "$ref": "#/$defs/assessment"
+        },
+        "alignment": {
+          "type": "string",
+          "enum": [
+            "ALIGNED",
+            "MIXED",
+            "OPPOSED",
+            "UNKNOWN"
+          ]
+        }
+      },
+      "required": [
+        "daily",
+        "h4",
+        "h1",
+        "alignment"
+      ],
+      "additionalProperties": false
+    },
+    "liquidity_events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "event": {
+            "type": "string",
+            "enum": [
+              "SWEPT",
+              "TARGETED",
+              "UNCONFIRMED"
+            ]
+          },
+          "liquidity": {
+            "$ref": "#/$defs/liquidity"
+          },
+          "timeframe": {
+            "type": "string",
+            "enum": [
+              "D1",
+              "H4",
+              "H1",
+              "M30",
+              "M15",
+              "M5",
+              "M3",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "event",
+          "liquidity",
+          "timeframe"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "liquidity_target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/liquidity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mss": {
+      "$ref": "#/$defs/assessment"
+    },
+    "mss_timeframe": {
+      "type": "string",
+      "enum": [
+        "D1",
+        "H4",
+        "H1",
+        "M30",
+        "M15",
+        "M5",
+        "M3",
+        "UNKNOWN"
+      ]
+    },
+    "mss_quality": {
+      "type": "string",
+      "enum": [
+        "STRONG",
+        "ADEQUATE",
+        "WEAK",
+        "AMBIGUOUS",
+        "UNKNOWN"
+      ]
+    },
+    "displacement": {
+      "$ref": "#/$defs/assessment"
+    },
+    "displacement_quality": {
+      "type": "string",
+      "enum": [
+        "STRONG",
+        "ADEQUATE",
+        "WEAK",
+        "AMBIGUOUS",
+        "UNKNOWN"
+      ]
+    },
+    "order_block": {
+      "type": "object",
+      "properties": {
+        "validity": {
+          "$ref": "#/$defs/assessment"
+        },
+        "timeframe": {
+          "type": "string",
+          "enum": [
+            "D1",
+            "H4",
+            "H1",
+            "M30",
+            "M15",
+            "M5",
+            "M3",
+            "UNKNOWN"
+          ]
+        },
+        "originating_candle": {
+          "type": "string",
+          "enum": [
+            "BULLISH",
+            "BEARISH",
+            "UNKNOWN"
+          ]
+        },
+        "zone_construction": {
+          "$ref": "#/$defs/assessment"
+        },
+        "first_touch": {
+          "$ref": "#/$defs/assessment"
+        },
+        "proximal_edge_entry": {
+          "$ref": "#/$defs/assessment"
+        }
+      },
+      "required": [
+        "validity",
+        "timeframe",
+        "originating_candle",
+        "zone_construction",
+        "first_touch",
+        "proximal_edge_entry"
+      ],
+      "additionalProperties": false
+    },
+    "ote": {
+      "type": "object",
+      "properties": {
+        "validity": {
+          "$ref": "#/$defs/assessment"
+        },
+        "rationale": {
+          "type": "string",
+          "enum": [
+            "EXTENDED_DISPLACEMENT",
+            "OB_TOO_DISTANT",
+            "OB_INEFFICIENT",
+            "PREDEFINED_BETTER_LOCATION",
+            "UNKNOWN",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "anchor_definition": {
+          "$ref": "#/$defs/assessment"
+        },
+        "versioned_parameters_available": {
+          "type": "string",
+          "enum": [
+            "YES",
+            "NO",
+            "UNKNOWN"
+          ]
+        }
+      },
+      "required": [
+        "validity",
+        "rationale",
+        "anchor_definition",
+        "versioned_parameters_available"
+      ],
+      "additionalProperties": false
+    },
+    "entry_valid": {
+      "$ref": "#/$defs/assessment"
+    },
+    "target_valid": {
+      "$ref": "#/$defs/assessment"
+    },
+    "observed_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "CHART_IMAGE",
+              "MARKET_DATA"
+            ]
+          },
+          "locator": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "HIGH",
+              "MEDIUM",
+              "LOW",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "source_id",
+          "source_type",
+          "locator",
+          "statement",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "user_reported_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "locator": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "source_id",
+          "locator",
+          "statement"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "inferred_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "premise_evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "HIGH",
+              "MEDIUM",
+              "LOW",
+              "UNKNOWN"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "premise_evidence_ids",
+          "statement",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "missing_evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "rule_violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "rule_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "rule_id",
+          "evidence_ids",
+          "rationale"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "grade_components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "component": {
+            "type": "string",
+            "enum": [
+              "HTF_ALIGNMENT",
+              "LIQUIDITY_CONTEXT",
+              "MSS_QUALITY",
+              "DISPLACEMENT_QUALITY",
+              "ENTRY_MODEL_VALIDITY",
+              "TARGET_QUALITY",
+              "EVIDENCE_CLARITY"
+            ]
+          },
+          "rating": {
+            "type": "string",
+            "enum": [
+              "STRONG",
+              "ADEQUATE",
+              "WEAK",
+              "INVALID",
+              "UNKNOWN",
+              "NOT_APPLICABLE"
+            ]
+          },
+          "assessment": {
+            "$ref": "#/$defs/assessment"
+          }
+        },
+        "required": [
+          "component",
+          "rating",
+          "assessment"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "qualitative_decision": {
+      "type": "string",
+      "enum": [
+        "APPROVED",
+        "CONDITIONAL",
+        "BLOCKED"
+      ]
+    },
+    "decision_reason": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "SUPPORTED_BY_AVAILABLE_EVIDENCE",
+            "MATERIAL_EVIDENCE_MISSING",
+            "MATERIAL_UNCERTAINTY",
+            "UNRESOLVED_CONTRADICTION",
+            "STRATEGY_VIOLATION",
+            "UNRECOGNIZED_MODEL"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "code",
+        "summary",
+        "evidence_ids",
+        "rule_ids"
+      ],
+      "additionalProperties": false
+    },
+    "reconciliation": {
+      "type": "object",
+      "properties": {
+        "reviewed_analysis_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "accepted_finding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rejected_finding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unresolved_finding_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "reviewed_analysis_ids",
+        "accepted_finding_ids",
+        "rejected_finding_ids",
+        "unresolved_finding_ids",
+        "summary"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "analysis_id",
+    "input_hash",
+    "strategy_version",
+    "risk_plan_version",
+    "instrument",
+    "evaluator_role",
+    "direction",
+    "setup_model",
+    "htf_context",
+    "liquidity_events",
+    "liquidity_target",
+    "mss",
+    "mss_timeframe",
+    "mss_quality",
+    "displacement",
+    "displacement_quality",
+    "order_block",
+    "ote",
+    "entry_valid",
+    "target_valid",
+    "observed_evidence",
+    "user_reported_evidence",
+    "inferred_evidence",
+    "missing_evidence",
+    "uncertainties",
+    "contradictions",
+    "rule_violations",
+    "warnings",
+    "grade_components",
+    "qualitative_decision",
+    "decision_reason",
+    "reconciliation"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "assessment": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "SUPPORTED",
+            "REFUTED",
+            "AMBIGUOUS",
+            "NOT_ASSESSED",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "confidence": {
+          "type": "string",
+          "enum": [
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+            "UNKNOWN"
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "status",
+        "confidence",
+        "evidence_ids",
+        "rule_ids",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    "issue": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "MISSING_CHART",
+            "UNREADABLE_CHART",
+            "MISSING_TIMEFRAME",
+            "UNVERIFIED_TIME",
+            "UNVERIFIED_PRICE",
+            "UNVERIFIED_FIRST_TOUCH",
+            "AMBIGUOUS_MSS",
+            "AMBIGUOUS_DISPLACEMENT",
+            "AMBIGUOUS_LIQUIDITY",
+            "AMBIGUOUS_OB_ZONE",
+            "MISSING_OTE_PARAMETERS",
+            "MISSING_TARGET_CONTEXT",
+            "MISSING_NEWS_CONTEXT",
+            "MISSING_STRATEGY_PARAMETER",
+            "SOURCE_CONFLICT",
+            "STRATEGY_CONTRADICTION",
+            "UNRECOGNIZED_MODEL",
+            "OTHER_EVIDENCE_GAP"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "material_to_decision": {
+          "type": "boolean"
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "description",
+        "material_to_decision",
+        "evidence_ids",
+        "rule_ids"
+      ],
+      "additionalProperties": false
+    },
+    "liquidity": {
+      "type": "object",
+      "properties": {
+        "liquidity_type": {
+          "type": "string",
+          "enum": [
+            "ARL_HIGH",
+            "ARL_LOW",
+            "PDH",
+            "PDL",
+            "PWH",
+            "PWL",
+            "KILL_ZONE_HIGH",
+            "KILL_ZONE_LOW",
+            "EQUAL_HIGHS",
+            "EQUAL_LOWS",
+            "PRIOR_SWING_HIGH",
+            "PRIOR_SWING_LOW",
+            "PREVIOUS_DAY_50_PERCENT",
+            "STRUCTURAL_LIQUIDITY",
+            "UNKNOWN"
+          ]
+        },
+        "internal_or_external": {
+          "type": "string",
+          "enum": [
+            "INTERNAL",
+            "EXTERNAL",
+            "UNKNOWN"
+          ]
+        },
+        "reported_price": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9]+(\\.[0-9]+)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "assessment": {
+          "$ref": "#/$defs/assessment"
+        }
+      },
+      "required": [
+        "liquidity_type",
+        "internal_or_external",
+        "reported_price",
+        "evidence_ids",
+        "assessment"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

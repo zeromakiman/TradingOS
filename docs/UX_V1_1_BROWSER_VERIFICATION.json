@@ -1,0 +1,44 @@
+{
+  "verified_date": "2026-09-07",
+  "completed": true,
+  "application": "Real local production build with Supabase",
+  "ai_enabled": false,
+  "openai_api_key_in_server_environment": "empty",
+  "openai_requests": 0,
+  "test_account_id": "5106652c-4c37-498b-b9f2-f09862900ed6",
+  "closed_plan_id": "85b31f56-7cba-40c9-96c6-72edbae4aff6",
+  "screenshot_id": "19ddc522-c9c4-4b38-afe4-33c256496fcf",
+  "viewports": [
+    {"width":1440,"height":1000,"document_client_width":1425,"document_scroll_width":1425},
+    {"width":820,"height":1100,"document_client_width":805,"document_scroll_width":805},
+    {"width":390,"height":844,"document_client_width":375,"document_scroll_width":375}
+  ],
+  "checks": [
+    "Existing authenticated test session restored",
+    "New isolated demo account created through Settings",
+    "Today READY, empty Journal and empty EDGE",
+    "Draft navigation dialog: Keep editing preserved entered prices",
+    "Server-approved deterministic risk: 50 USD, 3R",
+    "Proposal saved and private synthetic PNG uploaded",
+    "Approved proposal locked through UI",
+    "Actual entry recorded and lifecycle changed to TAKEN",
+    "Note appended to audit history",
+    "Full-position close performed at phone width; WIN +2R",
+    "Original plan, actual results, screenshot and events visible together",
+    "Search, no matches, clear filters and trade return navigation",
+    "Refresh retained CLOSED result",
+    "EDGE displayed net +2R and VERY SMALL SAMPLE",
+    "CSV download event received",
+    "Over-risk trade blocked and lock disabled",
+    "Saved blocked proposal did not lock and returned blocking reasons",
+    "Skipped human decision recorded for the blocked proposal",
+    "Today showed one entry, one remaining slot and +2R closed result",
+    "Phone sign-out reached the sign-in screen",
+    "Sign-in completed; same test account and preserved closed trade accessible afterward",
+    "Invalid negative gross-loss submission retained its input and focused the validation error"
+  ],
+  "limits": [
+    "Native refresh/unload draft dialog and browser Back/Forward were not exhaustively tested",
+    "No exhaustive screen-reader certification"
+  ]
+}

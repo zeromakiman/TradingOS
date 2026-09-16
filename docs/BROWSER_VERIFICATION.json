@@ -1,0 +1,33 @@
+{
+  "verifiedAt": "2026-09-05T12:47:12.035Z",
+  "localUrl": "http://127.0.0.1:3000/journal",
+  "browserPlanId": "5c9e535e-6638-45a8-b2a8-84ebe117ba1d",
+  "checks": [
+    "First password login and signing-in state",
+    "Atomic first-account setup",
+    "Saved blocked 0.51% decision",
+    "Editing clears saved approval",
+    "Saved approved 0.50% / USD 50 / 3R decision",
+    "Immutable lock and original version retrieval",
+    "Refresh preserves original record",
+    "Journal includes required historical fields",
+    "Note appended; PLAN_LOCKED and NOTE_ADDED preserved",
+    "Sign out clears local app access",
+    "Private plan URL redirects to login when signed out",
+    "Fresh login retrieves same plan and note",
+    "Already signed-in login route restores Today",
+    "Rebuilt production app reads the same record",
+    "Supabase refreshSession and verified user read passed"
+  ],
+  "publicSignupsEnabled": false,
+  "anonymousSignInEnabled": false,
+  "automatedTests": 122,
+  "lint": "passed; no errors or warnings; 5 style infos",
+  "typecheck": "passed",
+  "productionBuild": "passed",
+  "migrationSourceMD5": {
+    "0001_foundation.sql": "30dd4a9fb00c27ab3f167c1d51e6701e",
+    "0002_baseline.sql": "2e211478dc8b7f40b8aff18684d016ed",
+    "0003_persistence.sql": "09f14c775c3fd226ba5b61d8877d316f"
+  }
+}
