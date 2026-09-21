@@ -1,6 +1,6 @@
 # Independent Opus UI V2 review
 
-Review dates: 2026-09-16 through 2026-09-21. **NO-GO pending completion of browser acceptance and the Vercel preview.** This is not approval to merge or deploy production. AI remains disabled.
+Review dates: 2026-09-16 through 2026-09-21. **GO FOR USER VISUAL REVIEW.** Independent code/security checks, automated verification, interactive browser acceptance and the Vercel preview are complete. This is not approval to merge or deploy production. AI remains disabled.
 
 ## BASELINE
 
@@ -84,11 +84,15 @@ The loader, filter semantics, query ordering and 50-row pagination are unchanged
 
 Browser acceptance verified the four-trade historical synthetic account, LOSS filtering to one record, opening that record and returning to the filtered list. Identification, original planned risk, version, status and realized R remain visible on phone.
 
+The hosted preview also shows the dedicated review account's single closed trade under its original 2026-09-16 lock-day header, with the unchanged planned 3R/$50/0.50% and actual +3R outcome. Its later exit date does not move it into a different Journal group.
+
 ## EDGE
 
 `lowSample` recognizes only the existing `NO DATA`, `VERY SMALL SAMPLE` and `SMALL SAMPLE` labels. All five domain sample bands and an unknown label were tested; no threshold or formula was introduced.
 
 The historical synthetic account showed four completed trades, +4R net, +1R expectancy, 50% wins, profit factor 5 and 1R drawdown. Desktop metrics and phone breakdowns were visually inspected. The equity-curve component and its accessible data remain unchanged.
+
+After closing the dedicated synthetic review trade through the hosted UI, EDGE shows one completed trade, +3R net, +3R expectancy, 100% wins, `No losses` profit factor and 0R drawdown. Expanded accessible curve data shows 0R then 3R in exit order. The phone breakdown retains the explicit N=1/VERY SMALL SAMPLE and N=0/NO DATA states. The curve's data table scrolls inside its container without overflowing the page.
 
 A minor presentation issue remains: desktop `nth-child` border rules can leave inconsistent divider lines when the headline grid changes to two columns. It does not hide metrics or alter calculations. No CSS correction was made during this review.
 
@@ -101,6 +105,8 @@ A minor presentation issue remains: desktop `nth-child` border rules can leave i
 - The independent source scan covered 166 candidate files, 82 actual preview upload files and 18 browser asset files, with zero detected credential matches or excluded-file findings. The upload manifest contains ignored directory entries but no `.local/` contents.
 - `.env.local`, `.local/`, integration-user credentials, build output and local tooling remain excluded. No secret values appear in this report.
 - The disabled AI endpoint returned `DISABLED`, added no evaluation and preserved the existing failed evaluation history. The current guarded local runtime recorded zero attempted OpenAI calls. No OpenAI key is required.
+- The approved existing server secret was supplied only as a runtime variable on the new Preview deployment. It was not committed, given a `NEXT_PUBLIC_` prefix or supplied to the browser build. A successful hosted screenshot upload verifies the server-side configuration. Production variables were not edited.
+- The hosted sign-out/sign-in cycle passed; directly opening a private trade while signed out returned Login. Three private images decoded after signing back in, including the image excluded from future reviews.
 
 ## TESTS
 
@@ -112,7 +118,7 @@ A minor presentation issue remains: desktop `nth-child` border rules can leave i
 
 The final run has 19 test files. All baseline tests are preserved; 29 are supplied by the patch and 11 were added independently. No tests were weakened or deleted.
 
-Lint passes with zero errors or warnings; 30 existing informational `useTemplate` diagnostics remain. Strict TypeScript passes. A clean production build passed on 2026-09-16 with the same application source, yielding 17 routes; subsequent review changes are tests and documentation only. `git diff --check` passes. Test and local-server guards prevent live OpenAI calls.
+Lint passes with zero errors or warnings; 30 existing informational `useTemplate` diagnostics remain. Strict TypeScript passes. A clean local production build passed on 2026-09-16 with the same application source, yielding 17 routes. The hosted Preview build also passed on 2026-09-21, completing in 16 seconds. Subsequent review changes are tests and documentation only. `git diff --check` passes. Test and local-server guards prevent live OpenAI calls.
 
 ## NODE
 
@@ -120,19 +126,17 @@ Actual local runtime: **Node v24.19.0**, within the declared `24.x` requirement.
 
 ## BROWSER
 
-Earlier interactive acceptance used the actual local production build and real isolated Supabase data, with DOM observations and screenshots. It was not certification from HTTP responses alone.
+Interactive acceptance used the actual local production build and then the hosted Preview, with real isolated Supabase data, DOM observations and screenshots. It was not certification from HTTP responses alone. Temporary browser unavailability was resolved, and the remaining acceptance was completed on 2026-09-21.
 
 | Viewport | Evidence and coverage |
 |---|---|
-| Desktop 1440×1000 | Login, Today, trade detail and EDGE visually inspected. |
-| Laptop 1280×900 | Today layout and overflow checked; remaining workflow matrix incomplete. |
-| Tablet 834×1112 | Today layout and overflow checked; remaining workflow matrix incomplete. |
-| Phone approximately 393×852 | Today states, Journal/filter/detail, risk preview, EDGE/breakdown and bottom navigation inspected. |
-| Phone endpoints 375 and 430 | Not yet completed. |
+| Desktop 1440×1000 | PASS: Login, Today, New Trade/risk preview, Settings, Journal, Trade Detail and EDGE. |
+| Laptop 1280×900 | PASS: the same seven core pages; forms, metrics and original/history columns remain usable. |
+| Tablet 834×1112 | PASS: the same seven pages; populated gallery and EDGE were additionally inspected after layout settled. |
+| Phone 393×852 | PASS: interactive forms, gallery focus, decoded private images, bottom navigation and final note-button clearance. |
+| Phone 375×812 and 430×932 | PASS: the same seven core pages, including restricted risk preview, Journal and EDGE. |
 
-No horizontal overflow was observed in the completed Today matrix or inspected phone workflows. Eight saved screenshots remain in ignored `.local/opus-browser/`. This is browser viewport testing, not physical iPhone or Safari certification.
-
-On 2026-09-21 browser inventory returned no enabled browsers, and opening an in-app tab returned `Browser is not available: iab`. Opening the panel through Codex was queued. Remaining visual checks cannot be certified until browser control is restored.
+The saved hosted matrix contains 36 observations with zero horizontal page-overflow cases. Screenshots and compact observations remain in ignored `.local/opus-browser/`, `.local/OPUS_BROWSER_MATRIX.json` and `.local/OPUS_FINAL_BROWSER.json`. This is browser viewport testing, not physical iPhone or Safari certification.
 
 ## WORKFLOWS
 
@@ -148,33 +152,42 @@ On 2026-09-21 browser inventory returned no enabled browsers, and opening an in-
 | Trade Detail original/execution/timeline | PASS for inspected records. |
 | Notes and events | PASS: synthetic note appended and original unchanged. |
 | Screenshot storage/delivery/access control | PASS in live HTTP/database acceptance. |
-| Screenshot upload interaction and rendered populated gallery | PENDING browser completion; upload via API does not substitute for UI acceptance. |
-| Trade close | PENDING interactive completion; the synthetic review trade remains open. |
+| Screenshot upload interaction and rendered populated gallery | PASS: local and hosted browser uploads, success feedback, private decoded gallery and preserved soft-removed image. |
+| Trade close | PASS on hosted Preview: invalid pre-entry exit time displays a useful error; corrected close persists WIN/+3R/$150 with the original $50 denominator. |
 | EDGE and phone breakdowns | PASS for historical synthetic records. |
 | AI-disabled workspace | PASS in earlier browser session and current endpoint checks. |
-| Settings save | PENDING this review's interactive acceptance. |
-| Sign out, sign back in and post-login persistence | PENDING complete interactive cycle on this patch. Signed-out route denial passes separately. |
+| Settings save | PASS on hosted Preview: a new isolated equity/balance observation of $10,150 and gross loss of $0 persists. Risk-plan settings unchanged. |
+| Sign out, sign back in and post-login persistence | PASS on hosted Preview: signed-out private navigation denied; closed trade, three images, note and four events persist after a fresh login. |
 | Password recovery | Architecture unchanged and existing focused tests pass; no new mailed recovery exercise during this UI review. |
+
+During the real Dead Pool session on 2026-09-21 the hosted risk preview showed `SAVED · SERVER-VERIFIED`, `TRADE BLOCKED` and a disabled original-plan lock. Saving the proposal still worked and did not create a plan lock or reserve risk. No clock override or trading-rule change was used.
 
 ## ACCESSIBILITY
 
 Sampled new text pairs meet 4.5:1 normal-text contrast: status labels 6.02–6.77, restriction text 11.75, button text 6.63, low-sample rows 5.79, ribbon legend 5.42 and seal footer 5.00. These are static CSS calculations, not comprehensive rendered WCAG certification.
 
-Visible focus styles and the skip link remain in source. Mobile navigation targets are approximately 58 px high; safe-area padding and content clearance are present in CSS. State is not color-only. Keyboard traversal, populated screenshot focus behavior, physical keyboard/phone interaction and the remaining viewport matrix still require browser completion.
+Keyboard traversal was exercised in the hosted browser: Email to Password to Sign in to Forgot password; input/link outlines are visibly 2 px. The skip link jumps to the main content and the next Tab focuses its first link. Gallery links have visible focus and meaningful image alternatives. Mobile navigation targets are approximately 58 px high; the final Add note control remains above navigation at the end of the page. Safe-area padding is present in CSS. State is not color-only. No severe layout shift or accidental hidden core content was observed.
 
 There is no explicit reduced-motion media rule. The reviewed styles introduce no spatial animation; the existing 100 ms button background-color transition remains. No physical safe-area or on-screen keyboard certification is claimed.
 
 ## LIVE ACCEPTANCE
 
-Only existing isolated test users and synthetic demo accounts were used. The user explicitly approved isolated writes. The dedicated review account is named `Opus UI independent review · SYNTHETIC · 2026-09-16`; earlier browser writes created its plan, actual entry, note and linked screenshot workspace. On 2026-09-21 one clearly labeled synthetic PNG was uploaded to that existing workspace. Repeated verification reused that image rather than adding duplicates.
+Only existing isolated test users and synthetic demo accounts were used. The user explicitly approved isolated writes. The dedicated review account is named `Opus UI independent review · SYNTHETIC · 2026-09-16`; earlier browser writes created its plan, actual entry, note and linked screenshot workspace. On 2026-09-21 a clearly labeled synthetic PNG was attached in three roles: H4 through the initial live upload check, M5 through the local browser, and OTHER through the hosted Preview. M5 was excluded from future reviews through the existing soft-removal action and remains preserved in Journal. The hosted browser also closed the synthetic trade, saved an account observation and saved a separate blocked proposal. These are journal records with no broker execution.
 
-Eight focused live check groups pass: upload persistence; owner byte-for-byte delivery; foreign/signed-out denial and RLS; public-storage denial; removed-image preservation; AI-disabled behavior/history; signed-out private routes; and preserved original/note/private-image markup. The original plan row remains identical. Personal trading records, passwords, policies and migrations were not modified. Synthetic audit history remains preserved.
+Eight focused live security check groups pass: upload persistence; owner byte-for-byte delivery; foreign/signed-out denial and RLS; public-storage denial; removed-image preservation; AI-disabled behavior/history; signed-out private routes; and preserved original/note/private-image markup. The original plan row was unchanged by these checks. Final read-only queries confirmed original prices/risk/news, one WIN/+3R/$150 close, four ordered events, three screenshots and one exclusion, existing failed AI history, zero new evaluations, the new proposal with no lock, and the saved $10,150 observation. Personal trading records, passwords, policies and migrations were not modified. Synthetic audit history remains preserved.
 
 ## PREVIEW
 
-**No preview deployment has been created yet.** The source and deployment manifest are prepared and scanned. Production remains https://trading-os-six-brown.vercel.app at its existing deployment, with protection setting `all_except_custom_domains` unchanged.
+**READY:** https://trading-49cazmkg0-maksim61910-7648.vercel.app
 
-Automatic approval review rejected the prepared preview action because it would transfer the existing `SUPABASE_SECRET_KEY` to the preview as a server environment variable without specific secret-transfer authorization. The script was not executed. Approval has been requested for that existing secret on the existing Trading OS Vercel project, preview only. An alternative preview can omit the key, but private screenshot uploads would then be unavailable. No production environment or deployment was changed.
+- Deployment: `dpl_6mecsccUishshF59n1a34QowCcjZ`.
+- Review branch: `review/opus-ui-v2`; deployed commit: `5065202a027d03555e0eaf8349e8067b53f6f563`.
+- The final report update is documentation only; the deployed application source matches the reviewed source exactly.
+- Vercel reports READY and a non-production target (`null`, its Preview representation); no aliases were assigned.
+- The user explicitly authorized the existing `SUPABASE_SECRET_KEY` for Preview only. The earlier approval block is resolved. The key was supplied to this deployment's server runtime only; there is no new persistent project-level Preview variable. Future independent Preview deployments must receive the same authorized server configuration if screenshot uploads are required.
+- `AI_ENABLED=false`; no OpenAI key supplied and no live AI evaluation performed.
+- Production remains https://trading-os-six-brown.vercel.app on `dpl_8Cxi2zNDGhSp2q6mNAna1R3XQN5U`. Its environment-variable update timestamps predate this review deployment. Production variables, alias and protection setting `all_except_custom_domains` were verified unchanged after browser acceptance.
+- Existing Vercel access protection remains in place. The user may need to sign into Vercel before reaching the Trading OS login. The isolated test account was signed out for handoff.
 
 ## FUTURE REQUESTS
 
@@ -193,12 +206,14 @@ None of these eight requests was implemented.
 
 ## REMAINING LIMITATIONS
 
-1. Restore browser control and finish the explicitly pending workflow, keyboard and responsive checks.
-2. Resolve preview-only secret authorization, create the preview and verify it is READY with production/protection unchanged.
-3. No physical-device or comprehensive accessibility certification; minor EDGE divider styling remains.
+1. No physical iPhone/Safari, on-screen keyboard, hardware safe-area or comprehensive WCAG certification. Browser viewport and keyboard checks passed.
+2. Minor EDGE divider styling remains at the two-column breakpoint; metrics remain readable and correct.
+3. Password recovery was covered by preserved tests and unchanged architecture, without sending a new recovery email during this UI review.
+4. Screenshot thumbnails still download original private images; optimization remains deferred with the other eight future requests.
+5. The preview shares the existing Supabase project; all review writes were confined to the explicitly authorized isolated synthetic account. Review branch has not been merged or deployed to production.
 
 ## FINAL STATUS
 
-Protected code and automated checks pass, but the user's complete GO criteria are not yet met. Missing browser acceptance and preview availability are gates, not proof of an application regression. No merge or production deployment is authorized by this review.
+Protected code, automated verification, Node 24, focused security checks, browser workflows and the responsive matrix pass. The Preview is available for the user's visual review. No application code was changed by the independent reviewer, no future request was implemented, and no main merge or production deployment was performed or authorized by this review.
 
-NO-GO
+GO FOR USER VISUAL REVIEW
