@@ -1,0 +1,42 @@
+import {beforeEach,afterEach,describe,it,expect,vi} from "vitest";
+vi.mock("server-only",()=>({}));
+import {budgetedAiRequest,type AiLedger} from "@/ai/request-gate";
+import {operationFor} from "@/ai/operations";
+import {operationPricing,reservationMicros} from "@/ai/pricing";
+
+import {recentTradesContext,recentSample} from "@/ai/recent-trades-context";
+import {validateRecentTrades,RECENT_TRADES_PROMPT} from "@/ai/recent-trades-contract";
+import {metrics} from "@/domain/analytics";
+import {sources,ids,facts,recentOutput,makeSources,capturedAt} from "./fixtures/recent-trades";
+const op=operationFor("RECENT_TRADES_ANALYSIS"),owner={userId:ids.user,accountId:ids.account,operationId:ids.review,operation:op.id,stage:"A"};
+function harness(){
+ const ledger={reserve:vi.fn<AiLedger["reserve"]>().mockResolvedValue(),dispatch:vi.fn<AiLedger["dispatch"]>().mockResolvedValue(),recheck:vi.fn<AiLedger["recheck"]>().mockResolvedValue(),settle:vi.fn<AiLedger["settle"]>().mockResolvedValue()};
+ const transport=vi.fn<typeof fetch>(async url=>String(url).endsWith("/input_tokens")?Response.json({input_tokens:1000}):Response.json({id:"mock-week",model:op.model,status:"completed",usage:{input_tokens:1000,output_tokens:100},output:[{type:"message",content:[{type:"output_text",text:JSON.stringify(recentOutput)}]}]}));
+ const request={apiKey:"mock-only",config:{model:op.model,reasoningEffort:op.reasoningEffort,timeoutMs:op.timeoutMs,maxOutputTokens:op.maxOutputTokens,imageDetail:op.imageDetail,deepEnabled:false},context:facts,images:[],prior:[]};
+ return {ledger,transport,request};
+}
+beforeEach(()=>{vi.stubEnv("AI_ENABLED","true");vi.stubEnv("OPENAI_API_KEY","mock-only");vi.useFakeTimers();vi.setSystemTime(new Date("2026-09-23T12:00Z"));});
+afterEach(()=>{vi.useRealTimers();vi.unstubAllEnvs();});
+describe("recent-trades advisory contract and budget gate",()=>{
+ it("has a practical EUR0.924 operation with no images or tools",()=>{expect(op).toMatchObject({maxInputTokens:32000,maxOutputTokens:6000,maxImages:0,reasoningEffort:"medium",tools:[]});expect(reservationMicros(operationPricing(op),op)).toBe(924000);});
+ it.each(["decision","permission","realizedR","risk","proposal","lock","edge"])("rejects generated authoritative %s",key=>expect(()=>validateRecentTrades({...recentOutput,[key]:"changed"},facts.sourceRefs)).toThrow());
+ it.each(["Take the trade","Do not take the trade","Enter this trade"])("rejects signal %s",text=>expect(()=>validateRecentTrades({...recentOutput,strengths:[{text,sourceRefs:["sample"]}]},facts.sourceRefs)).toThrow());
+ it("accepts the bounded structured result and rejects invented sources",()=>{expect(validateRecentTrades(recentOutput,facts.sourceRefs)).toEqual(recentOutput);expect(()=>validateRecentTrades({...recentOutput,strengths:[{text:"Foreign account",sourceRefs:["other-sample"]}]},facts.sourceRefs)).toThrow(/Foreign/);});
+ it("prompt requires uncertainty, missing evidence and no unseen prior-week comparison",()=>{for(const text of ["small or fewer-than-requested","Outcome alone","without recalculating","untrusted data","Do not invent"])expect(RECENT_TRADES_PROMPT).toContain(text);});
+ it("reserves then counts identical input, bounds output, reconciles actual usage and releases unused capacity",async()=>{const h=harness();await budgetedAiRequest(h.request,owner,h.ledger,h.transport);expect(h.ledger.reserve.mock.calls[0][0]).toMatchObject({...owner,amount:924000});const count=JSON.parse(String(h.transport.mock.calls[0][1]?.body)),body=JSON.parse(String(h.transport.mock.calls[1][1]?.body));expect(body.text.format.name).toBe("recent_trades_v1");expect(body.max_output_tokens).toBe(6000);expect(body.reasoning.effort).toBe("medium");expect(body.tools).toBeUndefined();expect(count.input).toEqual(body.input);expect(count.instructions).toEqual(body.instructions);expect(h.ledger.settle.mock.calls[0][2]).toMatchObject({disposition:"SETTLED",chargedMicros:21000});});
+ it.each(["Account OFF","Insufficient reservation","Account not found"])("%s prevents all provider traffic",async message=>{const h=harness();h.ledger.reserve.mockRejectedValue(new Error(message));await expect(budgetedAiRequest(h.request,owner,h.ledger,h.transport)).rejects.toThrow();expect(h.transport).not.toHaveBeenCalled();});
+ it("global disabled makes zero provider calls even with account ON",async()=>{vi.stubEnv("AI_ENABLED","false");const h=harness();await expect(budgetedAiRequest(h.request,owner,h.ledger,h.transport)).rejects.toThrow(/disabled/);expect(h.transport).not.toHaveBeenCalled();});
+ it("missing server provider key cannot dispatch",async()=>{vi.stubEnv("OPENAI_API_KEY","");const h=harness();await expect(budgetedAiRequest(h.request,owner,h.ledger,h.transport)).rejects.toThrow();expect(h.transport).not.toHaveBeenCalled();});
+ it("input above 32k prevents generation and retains uncertainty protection",async()=>{const h=harness();h.transport.mockResolvedValueOnce(Response.json({input_tokens:32001}));await expect(budgetedAiRequest(h.request,owner,h.ledger,h.transport)).rejects.toThrow();expect(h.transport).toHaveBeenCalledTimes(1);expect(h.ledger.settle.mock.calls[0][2]).toMatchObject({disposition:"UNCERTAIN",chargedMicros:924000});});
+ it("images are rejected before any provider traffic",async()=>{const h=harness();await expect(budgetedAiRequest({...h.request,images:[{sourceId:"e",role:"H1",dataUrl:"data:image/png;base64,AA=="}]},owner,h.ledger,h.transport)).rejects.toThrow();expect(h.transport).not.toHaveBeenCalled();});
+ it("failed generation retains full uncertain reservation without retry",async()=>{const h=harness();h.transport.mockRejectedValue(new Error("offline"));await expect(budgetedAiRequest(h.request,owner,h.ledger,h.transport)).rejects.toThrow();expect(h.transport).toHaveBeenCalledTimes(1);expect(h.ledger.settle.mock.calls[0][2]).toMatchObject({disposition:"UNCERTAIN",chargedMicros:924000});});
+});
+describe("sample metadata and unchanged deterministic context",()=>{
+ it.each([10,20,30])("accepts requested %s and exact selected IDs",n=>{const rows=makeSources(n).reverse(),c=recentTradesContext(ids.account,recentSample(n),rows,capturedAt);expect(c.sample).toMatchObject({requested:n,actual:n,tradeIds:rows.map(s=>s.trade.id)});});
+ it("preserves original plans/risk/execution and reuses unchanged EDGE metrics",()=>{const rows=makeSources(20).reverse(),before=structuredClone(rows),c=recentTradesContext(ids.account,20,rows,capturedAt);expect(c.edge).toEqual(metrics(rows.map(s=>s.trade)));expect(c.trades[0].deterministic.calculations).toEqual(rows[0].plan.risk_result.calculations);expect(rows).toEqual(before);expect(c.strategyVersions).toHaveLength(1);expect(c.riskVersions).toHaveLength(1);});
+ it("never claims the requested count if fewer exist; always warns about limited inference",()=>{expect(facts.sample).toMatchObject({requested:20,actual:1,fewerThanRequested:true});expect(facts.sample.caveat).toContain("Small sample");expect(recentTradesContext(ids.account,30,makeSources(30),capturedAt).sample.caveat).toContain("limited sample");});
+ it("includes selected manual tags and authoritative session labels, no unrelated input fields",()=>{const rows=structuredClone(sources);rows[0].trade.setup_grade="A";Object.assign(rows[0].events[0].payload,{credential:"not-for-ai"});Object.assign(rows[0].trade,{history:"unrelated"});const c=recentTradesContext(ids.account,20,rows,capturedAt);expect(c.trades[0].tags.setup_grade).toBe("A");expect(c.trades[0].entrySession).toBe("ACTIVE_KILL_ZONE");expect(JSON.stringify(c)).not.toMatch(/not-for-ai|unrelated"|storage_path|account_id|user_id/);});
+ it.each(["foreign","open","duplicate","version","event"])("rejects %s scope contamination",kind=>{const rows=structuredClone(sources);if(kind==="foreign")rows[0].trade.account_id=ids.image;if(kind==="open")rows[0].trade.status="TAKEN";if(kind==="duplicate")rows.push(rows[0]);if(kind==="version")rows[0].strategy.id=ids.image;if(kind==="event")rows[0].events[0].recorded_at="2099-01-01T00:00Z";expect(()=>recentTradesContext(ids.account,20,rows,capturedAt)).toThrow();});
+ it("rejects extra trades and never silently truncates",()=>expect(()=>recentTradesContext(ids.account,10,makeSources(11),capturedAt)).toThrow(/limits/));
+ it("excludes unselected history fields and has no prior AI or screenshots",()=>{expect(facts.scope).toContain("No open trades");expect(facts).not.toHaveProperty("prior");expect(facts).not.toHaveProperty("images");});
+});
