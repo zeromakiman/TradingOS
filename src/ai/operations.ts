@@ -1,6 +1,6 @@
 /** Reviewed operation envelopes, not model context capacities. No client overrides. */
 export interface AiOperation {
- id: string; version: string; provider: string; model: string; reasoningEffort: string; contract:"SETUP_V2"|"REVIEW_TRADE_V1"|"CHALLENGE_BIAS_V1"|"ANALYZE_SETUP_V1";
+ id: string; version: string; provider: string; model: string; reasoningEffort: string; contract:"SETUP_V2"|"REVIEW_TRADE_V1"|"CHALLENGE_BIAS_V1"|"ANALYZE_SETUP_V1"|"WEEKLY_REVIEW_V1";
  maxInputTokens: number; maxOutputTokens: number; maxImages: number; tools: readonly string[];
  imageDetail: "high"; pricingProfile: string; safetyMultiplier: string; timeoutMs: number;
 }
@@ -14,6 +14,7 @@ export const AI_OPERATIONS: Readonly<Record<string,Readonly<AiOperation>>> = Obj
  REVIEW_TRADE:Object.freeze({...base,id:"REVIEW_TRADE",version:"REVIEW_TRADE_V1",contract:"REVIEW_TRADE_V1",reasoningEffort:"medium",maxInputTokens:24000,maxOutputTokens:6000,maxImages:4}),
  CHALLENGE_BIAS:Object.freeze({...base,id:"CHALLENGE_BIAS",version:"CHALLENGE_BIAS_V1",contract:"CHALLENGE_BIAS_V1",reasoningEffort:"medium",maxInputTokens:16000,maxOutputTokens:4000,maxImages:3}),
  ANALYZE_SETUP:Object.freeze({...base,id:"ANALYZE_SETUP",version:"ANALYZE_SETUP_V1",contract:"ANALYZE_SETUP_V1",reasoningEffort:"medium",maxInputTokens:16000,maxOutputTokens:5000,maxImages:3}),
+ WEEKLY_REVIEW:Object.freeze({...base,id:"WEEKLY_REVIEW",version:"WEEKLY_REVIEW_V1",contract:"WEEKLY_REVIEW_V1",reasoningEffort:"medium",maxInputTokens:24000,maxOutputTokens:6000,maxImages:0}),
 });
 export function operationFor(id:string):Readonly<AiOperation> {
  if(!Object.hasOwn(AI_OPERATIONS,id))throw new Error("Unknown AI operation");

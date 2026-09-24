@@ -1,0 +1,180 @@
+{
+  "date": "2026-09-24T13:27:17.066Z",
+  "branch": "feature/account-ai-budget",
+  "base": "b8203cb5cd222ee2dd22fec055ce30c07dbc6868",
+  "status": "WEEKLY REVIEW FEATURE READY",
+  "node": "v24.19.0",
+  "tests": {
+    "total": 275,
+    "passed": 275,
+    "failed": 0,
+    "newWeeklyTests": 104,
+    "fullSuiteRun": false,
+    "files": [
+      {
+        "file": "analyze-setup-contract.test.ts",
+        "tests": 31,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review-actions-data.test.ts",
+        "tests": 14,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review-contract.test.ts",
+        "tests": 46,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review-database.test.ts",
+        "tests": 17,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review-source.test.ts",
+        "tests": 12,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review.test.ts",
+        "tests": 15,
+        "status": "passed"
+      },
+      {
+        "file": "ai-disabled.test.ts",
+        "tests": 15,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget-database.test.ts",
+        "tests": 31,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget.test.ts",
+        "tests": 60,
+        "status": "passed"
+      },
+      {
+        "file": "bias-challenge-contract.test.ts",
+        "tests": 22,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review-contract.test.ts",
+        "tests": 12,
+        "status": "passed"
+      }
+    ]
+  },
+  "lint": {
+    "errors": 0,
+    "warnings": 0,
+    "infos": 56
+  },
+  "typeScript": "PASS",
+  "build": "PASS",
+  "operation": {
+    "id": "WEEKLY_REVIEW",
+    "maxInputTokens": 24000,
+    "maxOutputTokens": 6000,
+    "maxImages": 0,
+    "tools": [],
+    "reservationMicros": 792000
+  },
+  "database": {
+    "engine": "PGlite, isolated disposable PostgreSQL",
+    "newMigration": "0011_weekly_ai_reviews.sql",
+    "hostedApplied": false,
+    "ownerRls": "PASS",
+    "immutableHistory": "PASS",
+    "exactReservationAssociation": "PASS",
+    "queuedSameWeekStarts": {
+      "attempted": 6,
+      "admitted": 1
+    },
+    "queuedReservations": [
+      {
+        "budgetCents": 300,
+        "attempted": 20,
+        "admitted": 3,
+        "heldMicros": 2376000
+      },
+      {
+        "budgetCents": 500,
+        "attempted": 20,
+        "admitted": 6,
+        "heldMicros": 4752000
+      },
+      {
+        "budgetCents": 1000,
+        "attempted": 20,
+        "admitted": 12,
+        "heldMicros": 9504000
+      }
+    ],
+    "multiConnectionHostedLoadTest": false
+  },
+  "browser": {
+    "mode": "Real Shell/panel/form/action; synthetic service; CUA browser viewport tests",
+    "desktop": "1440x1000 PASS",
+    "mobile": "393x852 PASS",
+    "mobileContentWidth": 378,
+    "noHorizontalOverflow": true,
+    "states": [
+      "ON",
+      "OFF",
+      "UNAVAILABLE",
+      "BUDGET REACHED",
+      "EMPTY",
+      "SCOPE LIMIT",
+      "COMPLETED",
+      "FAILED",
+      "IN PROGRESS",
+      "INCOMPLETE",
+      "SUBMIT ERROR"
+    ],
+    "loadingDisabled": true,
+    "rerunVersions": 2,
+    "historyReadableOff": true,
+    "errorFocus": "alert",
+    "keyboardFocus": "visible 2px outline",
+    "expandedDetailsNoOverflow": true,
+    "weekSelection": "2026-09-16 normalized to 2026-09-14 through 2026-09-20",
+    "consoleErrors": 0,
+    "consoleWarnings": 0,
+    "physicalDevice": false,
+    "liveProviderCalls": 0
+  },
+  "security": {
+    "at": "2026-09-24T13:26:30.528Z",
+    "sourceFiles": 255,
+    "clientAssets": 18,
+    "secretFindings": [],
+    "excludedLocalFiles": true,
+    "protectedCoreUnchanged": true,
+    "aiEnabled": false,
+    "stagedFiles": 0,
+    "network": {
+      "started_at": "2026-09-24T13:22:27.946Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  },
+  "deterministicCoreChanged": false,
+  "existingTestFilesChanged": false,
+  "aiEnabled": false,
+  "stagedFiles": 0,
+  "productionChanged": false,
+  "deployed": false,
+  "liveProviderCalls": 0,
+  "personalRecordsTouched": false,
+  "limits": [
+    "Completed weeks only",
+    "40 trades / 200 period events / 96000 context bytes / 24000 input tokens",
+    "No screenshots or prior AI output",
+    "No hosted end-to-end or live model-quality test",
+    "Existing uncertain-accounting hold policy remains unchanged"
+  ]
+}
