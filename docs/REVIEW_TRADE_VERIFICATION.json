@@ -1,0 +1,159 @@
+{
+  "status": "REVIEW TRADE FEATURE READY",
+  "branch": "feature/account-ai-budget",
+  "at": "2026-09-23T17:09:51.216Z",
+  "productionChanged": false,
+  "staged": false,
+  "deployed": false,
+  "productionMigrationsApplied": [],
+  "liveProviderCalls": 0,
+  "node": "v24.19.0",
+  "operation": {
+    "id": "REVIEW_TRADE",
+    "version": "REVIEW_TRADE_V1",
+    "provider": "openai",
+    "model": "gpt-6-astra",
+    "reasoning": "medium",
+    "inputTokens": 24000,
+    "outputTokens": 6000,
+    "maxImages": 4,
+    "tools": [],
+    "reservationMicros": 792000
+  },
+  "tests": {
+    "total": 221,
+    "passed": 221,
+    "failed": 0,
+    "newReviewTests": 53,
+    "fullSuiteRerun": false,
+    "files": [
+      {
+        "file": "ai-budget-database.test.ts",
+        "tests": 31,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget.test.ts",
+        "tests": 60,
+        "status": "passed"
+      },
+      {
+        "file": "ai-disabled.test.ts",
+        "tests": 15,
+        "status": "passed"
+      },
+      {
+        "file": "ai-settings.test.ts",
+        "tests": 18,
+        "status": "passed"
+      },
+      {
+        "file": "ai.test.ts",
+        "tests": 18,
+        "status": "passed"
+      },
+      {
+        "file": "setup-ai.test.ts",
+        "tests": 26,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review-contract.test.ts",
+        "tests": 12,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review-database.test.ts",
+        "tests": 9,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review.test.ts",
+        "tests": 19,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review-actions.test.ts",
+        "tests": 7,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review-data.test.ts",
+        "tests": 6,
+        "status": "passed"
+      }
+    ]
+  },
+  "lint": {
+    "passed": true,
+    "errors": 0,
+    "warnings": 0,
+    "existingInfos": 30
+  },
+  "typescript": "passed",
+  "build": "passed",
+  "browser": {
+    "method": "loopback synthetic service; actual component, form, action and CSS",
+    "desktop": {
+      "width": 1440,
+      "height": 1000,
+      "passed": true
+    },
+    "phone": {
+      "width": 393,
+      "height": 852,
+      "passed": true
+    },
+    "physicalDevice": false,
+    "liveSupabase": false,
+    "noHorizontalOverflow": true,
+    "mobileReservationWrappingFixed": true,
+    "checks": [
+      "ON/OFF/UNAVAILABLE/BUDGET REACHED",
+      "open-trade guard",
+      "exact reservation disclosure",
+      "explicit evidence/text-only submission",
+      "pending disabled controls",
+      "completed interpretation/facts separation",
+      "secondary cost details",
+      "reruns preserve history",
+      "failed and incomplete history",
+      "keyboard focus",
+      "focused error announcement"
+    ]
+  },
+  "database": {
+    "engine": "PGlite/PostgreSQL",
+    "crossUser": "passed",
+    "rls": "passed",
+    "immutableHistory": "passed",
+    "originalTradeUnchanged": true,
+    "concurrency": {
+      "method": "queued PGlite; shared account locking unchanged",
+      "attemptedReservations": 12,
+      "admitted": 6,
+      "heldMicros": 4752000,
+      "capMicros": 5000000,
+      "concurrentSamePlanStarts": 6,
+      "admittedSamePlanStarts": 1
+    }
+  },
+  "security": {
+    "sourceFiles": 204,
+    "clientAssets": 18,
+    "findings": [],
+    "protectedCoreUnchanged": true,
+    "excludedLocalFiles": true,
+    "network": {
+      "started_at": "2026-09-23T12:19:53.838Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  },
+  "limitations": [
+    "No hosted staging or live provider acceptance",
+    "Migrations 0008/0009 local only",
+    "No real provider response-quality or billing validation",
+    "Browser viewport testing, not physical device"
+  ]
+}

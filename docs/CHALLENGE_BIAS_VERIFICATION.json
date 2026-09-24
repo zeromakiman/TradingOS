@@ -1,0 +1,167 @@
+{
+  "status": "CHALLENGE BIAS FEATURE READY",
+  "at": "2026-09-23T22:28:32.739Z",
+  "branch": "feature/account-ai-budget",
+  "head": "79ab1496bf0cb8e1807f3b83ef3c6ca96cf404bb",
+  "node": "v24.19.0",
+  "productionChanges": false,
+  "staged": false,
+  "deployed": false,
+  "productionMigrationsApplied": [],
+  "liveProviderCalls": 0,
+  "operation": {
+    "id": "CHALLENGE_BIAS",
+    "contract": "CHALLENGE_BIAS_V1",
+    "provider": "openai",
+    "model": "gpt-6-astra",
+    "reasoning": "medium",
+    "maxInputTokens": 16000,
+    "maxOutputTokens": 4000,
+    "maxImages": 3,
+    "tools": [],
+    "reservationMicros": 528000
+  },
+  "persistence": {
+    "migration": "0010_bias_challenges.sql",
+    "reused0009": false,
+    "reason": "0009 requires a closed trade; preserving its contract",
+    "tables": [
+      "bias_challenges",
+      "bias_challenge_results"
+    ],
+    "ownerSelectRls": true,
+    "serviceOnlyWriteRpcs": true,
+    "immutable": true
+  },
+  "tests": {
+    "total": 234,
+    "passed": 234,
+    "failed": 0,
+    "newChallengeTests": 62,
+    "fullSuiteRerun": false,
+    "files": [
+      {
+        "file": "ai-budget-database.test.ts",
+        "total": 31,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget.test.ts",
+        "total": 60,
+        "status": "passed"
+      },
+      {
+        "file": "ai-disabled.test.ts",
+        "total": 15,
+        "status": "passed"
+      },
+      {
+        "file": "bias-challenge-actions-data.test.ts",
+        "total": 11,
+        "status": "passed"
+      },
+      {
+        "file": "bias-challenge-contract.test.ts",
+        "total": 22,
+        "status": "passed"
+      },
+      {
+        "file": "bias-challenge-database.test.ts",
+        "total": 11,
+        "status": "passed"
+      },
+      {
+        "file": "bias-challenge.test.ts",
+        "total": 18,
+        "status": "passed"
+      },
+      {
+        "file": "setup-ai.test.ts",
+        "total": 26,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review-contract.test.ts",
+        "total": 12,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review-database.test.ts",
+        "total": 9,
+        "status": "passed"
+      },
+      {
+        "file": "trade-review.test.ts",
+        "total": 19,
+        "status": "passed"
+      }
+    ]
+  },
+  "lint": {
+    "errors": 0,
+    "warnings": 0,
+    "existingInfos": 30
+  },
+  "typescript": "passed",
+  "build": {
+    "status": "passed",
+    "engine": "default Turbopack",
+    "cacheSyncConflictRecovered": true
+  },
+  "browser": {
+    "method": "loopback harness; actual component/form/action; synthetic service",
+    "desktop": {
+      "width": 1440,
+      "height": 1000,
+      "passed": true
+    },
+    "phone": {
+      "width": 393,
+      "height": 852,
+      "passed": true
+    },
+    "physicalDevice": false,
+    "hostedSupabase": false,
+    "horizontalOverflow": false,
+    "clippedText": false,
+    "keyboardFocus": "passed",
+    "errorFocus": "passed",
+    "consoleErrors": 0,
+    "consoleWarnings": 0,
+    "providerCalls": 0,
+    "blockedRiskPreserved": true,
+    "completedAndFailedHistoryPreserved": true
+  },
+  "database": {
+    "engine": "isolated PGlite/PostgreSQL",
+    "rls": "passed",
+    "crossUser": "passed",
+    "blockedTradeLockDeniedAfterChallenge": true,
+    "immutableHistory": "passed",
+    "queuedReservationAttempts": 12,
+    "admittedReservations": 9,
+    "heldMicros": 4752000,
+    "budgetMicros": 5000000,
+    "queuedSameProposalStarts": 6,
+    "admittedStarts": 1
+  },
+  "security": {
+    "sourceFiles": 219,
+    "clientAssets": 18,
+    "findings": [],
+    "excludedLocalFiles": true,
+    "protectedCoreUnchanged": true,
+    "network": {
+      "started_at": "2026-09-23T17:32:54.896Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  },
+  "syncRecovery": {
+    "featureBranchRestored": true,
+    "priorFeatureSourceRestored": true,
+    "backups": ".local/sync-recovery-bias",
+    "mainAndRemoteRefsNotModifiedByAgent": true,
+    "refReconciliationRequiredBeforeRelease": true
+  }
+}

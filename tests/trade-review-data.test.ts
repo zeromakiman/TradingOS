@@ -1,0 +1,21 @@
+import {beforeEach,describe,it,expect,vi} from 'vitest';
+import {ids,plan,trade,output} from './fixtures/trade-review';
+const m=vi.hoisted(()=>({auth:vi.fn(),availability:vi.fn(),queries:[] as {table:string;filters:[string,unknown][]}[],values:{} as Record<string,unknown>,errors:new Set<string>()}));
+vi.mock('server-only',()=>({}));
+vi.mock('@/lib/supabase/server',()=>({requireUser:m.auth}));
+vi.mock('@/lib/ai-budget',()=>({accountAiAvailability:m.availability}));
+import {ownedReviewTrade,loadTradeReviewPanel,reviewEvidence} from '@/lib/trade-review-data';
+beforeEach(()=>{
+ vi.clearAllMocks();m.queries.length=0;m.errors.clear();m.values={trade_plans:plan,journal_analytics:trade,setup_locks:null,trade_ai_reviews:[],trade_ai_review_results:[],ai_request_reservations:[],ai_usage_records:[]};
+ // biome-ignore lint/suspicious/noThenProperty: Mirrors Supabase's thenable query interface.
+ const db={from:(table:string)=>{const q={table,filters:[] as [string,unknown][]};m.queries.push(q);const result=()=>({data:m.values[table],error:m.errors.has(table)?{}:null,count:11});const chain={select:()=>chain,eq:(k:string,v:unknown)=>{q.filters.push([k,v]);return chain;},in:(k:string,v:unknown)=>{q.filters.push([k,v]);return chain;},order:()=>chain,range:()=>chain,single:async()=>result(),maybeSingle:async()=>result(),then:(resolve:(v:unknown)=>void)=>resolve(result())};return chain;}};
+ m.auth.mockResolvedValue({db,user:{id:ids.user}});m.availability.mockResolvedValue({status:'DISABLED',message:'AI analysis is currently disabled',deepEnabled:false});
+});
+describe('owner-scoped review data access',()=>{
+ it('authenticates before querying, and binds trade lookup to the session owner',async()=>{await ownedReviewTrade(ids.plan);expect(m.queries).toEqual([{table:'trade_plans',filters:[['id',ids.plan],['user_id',ids.user]]},{table:'journal_analytics',filters:[['id',ids.plan],['account_id',ids.account]]}]);});
+ it('signed-out requests never reach data',async()=>{m.auth.mockRejectedValue(new Error('login'));await expect(ownedReviewTrade(ids.plan)).rejects.toThrow();expect(m.queries).toHaveLength(0);});
+ it('foreign or absent plans fail closed',async()=>{m.values.trade_plans=null;await expect(loadTradeReviewPanel(ids.plan)).rejects.toThrow(/unavailable/);expect(m.availability).not.toHaveBeenCalled();});
+ it('AI OFF still permits reading existing reviews, cost and facts',async()=>{m.values.trade_ai_reviews=[{id:ids.review,facts:{deterministic:{realizedR:'3'}},operation:{provider:'openai',model:'gpt-6-astra',version:'REVIEW_TRADE_V1'},created_at:'2026-09-01T12:00Z',deadline_at:'2026-09-01T12:10Z'}];m.values.trade_ai_review_results=[{review_id:ids.review,status:'COMPLETED',interpretation:output,error_code:null,reservation_id:ids.image,created_at:'2026-09-01T12:01Z'}];m.values.ai_request_reservations=[{id:ids.image,operation_id:ids.review,reserved_micros:792000}];m.values.ai_usage_records=[{reservation_id:ids.image,charged_micros:21000,disposition:'SETTLED'}];const data=await loadTradeReviewPanel(ids.plan);expect(data).toMatchObject({amount:792000,availability:{status:'DISABLED'},hasOlder:true,error:null});expect(data.history[0]).toMatchObject({result:{interpretation:output},accounting:{reservedMicros:792000,usage:{charged_micros:21000}}});expect(m.availability).toHaveBeenCalledWith(ids.account,'REVIEW_TRADE');});
+ it('missing migration or budget failure only disables the AI panel',async()=>{m.errors.add('trade_ai_reviews');const data=await loadTradeReviewPanel(ids.plan);expect(data.availability.status).toBe('CONFIGURATION_ERROR');expect(data.closed).toBe(true);expect(data.error).toContain('migrations');});
+ it('excludes removed evidence and never signs/downloads images on page load',async()=>{m.values.setup_locks={proposal_id:ids.review};m.values.setup_screenshots=[{id:ids.image,role:'H1',original_filename:'synthetic.png',storage_path:'private',mime_type:'image/png',byte_size:10,sha256:'a'.repeat(64)}];m.values.setup_screenshot_removals=[{screenshot_id:ids.image}];const {db}=await m.auth();expect(await reviewEvidence(db,ids.plan)).toEqual([]);expect(m.queries).toEqual([{table:'setup_locks',filters:[['plan_id',ids.plan]]},{table:'setup_screenshots',filters:[['proposal_id',ids.review]]},{table:'setup_screenshot_removals',filters:[['proposal_id',ids.review]]}]);});
+});

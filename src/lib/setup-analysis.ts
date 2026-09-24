@@ -1,3 +1,5 @@
+import { providerKey } from "@/ai/provider-config";
+import { setupOperation } from "@/ai/operations";
 import "server-only";
 import { createHash } from "node:crypto";
 import { loadSetup } from "./setup-data";
@@ -6,7 +8,9 @@ import { SCREENSHOT_BUCKET } from "./screenshots";
 import { EVALUATOR_VERSION, GRADING_CONFIG, modelConfig, SCHEMA_VERSION } from "@/ai/config";
 import { SYSTEM_PROMPT } from "@/ai/analysis-prompt";
 import { chartEvaluationSchema } from "@/ai/chart-contract";
-import { callResponses, ProviderError } from "@/ai/provider";
+import { ProviderError } from "@/ai/provider";
+import { budgetedAiRequest } from "@/ai/request-gate";
+import { accountAiAvailability, serverAiLedger } from "./ai-budget";
 import { runEvaluation } from "@/ai/run";
 import { aiAvailability } from "@/ai/availability";
 function canonical(value:unknown):string{if(Array.isArray(value))return `[${value.map(canonical).join(",")}]`;if(value&&typeof value==="object")return `{${Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;return JSON.stringify(value);}
@@ -15,7 +19,9 @@ export async function analyzeSetup(proposalId:string,evaluationId:string,mode:"N
  const availability=aiAvailability();
  if(availability.status==="DISABLED")return {status:"DISABLED" as const,message:availability.message};
  if(availability.status==="CONFIGURATION_ERROR")throw new Error(availability.message);
- const s=await loadSetup(proposalId),config=modelConfig(),key=process.env.OPENAI_API_KEY;
+ const s=await loadSetup(proposalId),config=modelConfig(),key=providerKey(setupOperation("A").provider);
+ const accountPermission=await accountAiAvailability(s.proposal.account_id);
+ if(accountPermission.status!=="ENABLED")return {status:accountPermission.status,message:accountPermission.message};
  if(!key)throw new Error("OpenAI is not configured. Add OPENAI_API_KEY to .env.local and restart; never paste the key into chat.");
  if(mode==="DEEP"&&!config.deepEnabled)throw new Error("Deep review is disabled by server configuration.");
  const prior=s.evaluations.find(e=>e.id===evaluationId);if(prior)return {id:prior.id,replayed:true};
@@ -44,7 +50,7 @@ export async function analyzeSetup(proposalId:string,evaluationId:string,mode:"N
   }
   const ruleIds=Object.keys((s.strategy.rules.rules??{}) as object);
   const ctx={inputHash,direction:s.proposal.proposal.direction,setupModel:s.proposal.proposal.model,strategyVersionId:s.strategy.id,riskPlanVersionId:risk.riskPlanVersionId,instrument:s.instrument.symbol,sources:Object.fromEntries([["user-report","USER_REPORT" as const],...screenshots.map(x=>[x.id,"CHART_IMAGE" as const])]),ruleIds,blockingRuleIds:ruleIds,proposalId:s.proposal.id,oteParametersAvailable:s.strategy.rules.ote_parameters!=null};
-  const result=await runEvaluation({mode,model:config.model,context:ctx,call:(role,id,prior)=>callResponses({apiKey:key,config,context:{...ctx,analysisId:id,role,manifest},images,prior}),savePass:async record=>{
+  const result=await runEvaluation({mode,model:config.model,context:ctx,call:(role,id,prior)=>budgetedAiRequest({apiKey:key,config,context:{...ctx,analysisId:id,role,manifest},images,prior},{userId:s.user.id,accountId:s.proposal.account_id,operationId:evaluationId,stage:role,operation:setupOperation(role).id},serverAiLedger()),savePass:async record=>{
    const {error}=await admin.from("setup_evaluation_passes").insert({...record,user_id:s.user.id,account_id:s.proposal.account_id,evaluation_id:evaluationId});
    if(error)throw new Error("PASS_PERSISTENCE_FAILED");
   }});
