@@ -1,3 +1,4 @@
+import {operationAllowedSources} from "@/ai/citation-sources";
 import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -25,7 +26,7 @@ export async function challengeBias(proposalId:string,requestId:string,selectedI
  const evidence=selected.filter((x):x is NonNullable<typeof x>=>!!x);
  const facts=biasChallengeContext(s,evidence);
  if(Buffer.byteLength(JSON.stringify(facts))>64000)throw new Error("Proposal exceeds bounded challenge context limit");
- const admin=trustedServer(),start=await admin.rpc("start_bias_challenge",{p_id:requestId,p_user_id:s.user.id,p_proposal_id:s.proposal.id,p_facts:facts,p_hash:createHash("sha256").update(JSON.stringify(facts)).digest("hex"),p_operation:operation,p_contract:operationContract(operation)});
+ const admin=trustedServer(),start=await admin.rpc("start_bias_challenge",{p_id:requestId,p_user_id:s.user.id,p_proposal_id:s.proposal.id,p_facts:facts,p_hash:createHash("sha256").update(JSON.stringify(facts)).digest("hex"),p_operation:operation,p_contract:operationContract(operation,facts)});
  if(start.error)throw new Error("Could not start challenge. Refresh to check locked state and existing attempts.");
  if(start.data!==true)return {status:"RECORDED",message:"This challenge request was already recorded. No additional provider request was made."};
  let reservationId:string|null=null,raw:unknown=null,interpretation:ReturnType<typeof validateBiasChallenge>|null=null,errorCode:string|null=null;
@@ -41,7 +42,7 @@ export async function challengeBias(proposalId:string,requestId:string,selectedI
   }
   const ledger=serverAiLedger();
   const result=await budgetedAiRequest({apiKey:providerKey(operation.provider),config:{model:operation.model,reasoningEffort:operation.reasoningEffort,timeoutMs:operation.timeoutMs,maxOutputTokens:operation.maxOutputTokens,imageDetail:operation.imageDetail,deepEnabled:false},context:facts,images,prior:[]},{userId:s.user.id,accountId:s.proposal.account_id,operationId:requestId,stage:"A",operation:operation.id},{...ledger,reserve:async record=>{await authorize();await ledger.reserve(record);reservationId=record.id;},dispatch:async(...args)=>{await authorize();await ledger.dispatch(...args);},recheck:async(...args)=>{await authorize();await ledger.recheck(...args);}});
-  raw=result.output;interpretation=validateBiasChallenge(raw,facts.sourceRefs);
+  raw=result.output;interpretation=validateBiasChallenge(raw,operationAllowedSources("CHALLENGE_BIAS",facts));
  }catch(error){errorCode=error instanceof ProviderError?error.code:raw!==null?"INVALID_CHALLENGE_OUTPUT":"CHALLENGE_FAILED";}
  const finish=await admin.rpc("finish_bias_challenge",{p_id:requestId,p_user_id:s.user.id,p_status:interpretation?"COMPLETED":"FAILED",p_interpretation:interpretation,p_error:errorCode,p_raw:raw,p_reservation_id:reservationId});
  if(finish.error)throw new Error("Challenge could not finish saving. Check history before retrying; no automatic retry occurred.");

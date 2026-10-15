@@ -21,7 +21,7 @@ export async function reviewTrade(planId:string,requestId:string,selectedIds:str
  if(trade.status!=="CLOSED")return {status:"NOT_CLOSED",message:"Close the trade before requesting a post-trade review."};
  const availability=await accountAiAvailability(plan.account_id,"REVIEW_TRADE");
  if(availability.status!=="ENABLED")return {status:availability.status,message:availability.message};
- const operation=operationFor("REVIEW_TRADE"),contract=operationContract(operation);
+ const operation=operationFor("REVIEW_TRADE");
  const eligible=await reviewEvidence(db,plan.id),selected=selectedIds.map(id=>eligible.find(x=>x.id===id));
  if(selected.some(x=>!x))throw new Error("Selected evidence is not available for this trade");
  const evidence=selected.filter((x):x is NonNullable<typeof x>=>!!x);
@@ -35,6 +35,7 @@ export async function reviewTrade(planId:string,requestId:string,selectedIds:str
  if(history.length>200)throw new Error("This trade exceeds the bounded review event limit");
  const facts=tradeReviewContext(plan,trade,z.object({id:z.uuid(),version:z.string(),rules:z.record(z.string(),z.unknown()),written_rules:z.string()}).parse(strategy.data),riskRow.parse(risk.data),history,evidence);
  if(Buffer.byteLength(JSON.stringify(facts))>128000)throw new Error("This trade exceeds the bounded review context limit");
+ const contract=operationContract(operation,facts);
  const admin=trustedServer();
  const start=await admin.rpc("start_trade_ai_review",{p_id:requestId,p_user_id:user.id,p_plan_id:plan.id,p_facts:facts,p_hash:createHash("sha256").update(JSON.stringify(facts)).digest("hex"),p_operation:operation,p_contract:contract});
  if(start.error)throw new Error("Unable to start review. Check for an existing running review.");

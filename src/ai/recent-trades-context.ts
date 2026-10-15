@@ -1,3 +1,4 @@
+import {withOperationSources} from "./citation-sources";
 import {z} from "zod";
 import {metrics,enrichTrades,type JournalTrade} from "@/domain/analytics";
 import {tradeReviewContext,type ReviewEvent} from "./trade-review-context";
@@ -22,10 +23,10 @@ export function recentTradesContext(accountId:string,requested:10|20|30,sources:
   return {tradeId:c.tradeId,originalPlan:c.originalPlan,strategyVersionId:s.strategy.id,riskPlanVersionId:s.plan.risk_plan_version_id,deterministic:c.deterministic,execution:c.execution,entrySession:clocks[i].session,entryWeekday:clocks[i].weekday,tags:c.tags,events:c.events};
  });
  const edge=metrics(sources.map(s=>s.trade));
- return {version:"RECENT_TRADES_FACTS_V1",capturedAt,
+ return withOperationSources("RECENT_TRADES_ANALYSIS",{version:"RECENT_TRADES_FACTS_V1",capturedAt,
   sample:{requested,actual:trades.length,tradeIds:trades.map(t=>t.tradeId),label:edge.sample,fewerThanRequested:trades.length<requested,caveat:(trades.length<requested?"Fewer completed trades are available than requested. ":"")+(trades.length<30?"Small sample: patterns are tentative, not established behavioral conclusions.":"Thirty trades are a limited sample; patterns remain tentative and do not prove behavioral causes."),ordering:"Persisted exit timestamp descending (PostgreSQL microseconds), then trade UUID ascending for exact ties."},
   scope:"Only the selected most recent completed trades, their original versions, current manual tags and relevant recorded events. No open trades, other account history, screenshots, prior AI output or account balances. Sample is refreshed on explicit submission; exact included IDs are preserved.",
   strategyVersions:[...strategies.values()],riskVersions:[...risks.values()],edge,trades,
-  sourceRefs:["sample","edge",...trades.map(t=>"trade:"+t.tradeId),...[...strategies.keys()].map(id=>"strategy:"+id),...[...risks.keys()].map(id=>"risk:"+id)]};
+  sourceRefs:["sample","edge",...trades.map(t=>"trade:"+t.tradeId),...[...strategies.keys()].map(id=>"strategy:"+id),...[...risks.keys()].map(id=>"risk:"+id)]});
 }
 export type RecentTradesFacts=ReturnType<typeof recentTradesContext>;

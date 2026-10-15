@@ -1,3 +1,4 @@
+import {withOperationSources} from "./citation-sources";
 import {metrics,enrichTrades,groups,type JournalTrade} from "@/domain/analytics";
 import {tradeReviewContext,type ReviewEvent} from "./trade-review-context";
 import {monthlyPeriod} from "./monthly-period";
@@ -20,11 +21,11 @@ export function monthlyReviewContext(accountId:string,month:string,sources:Month
  const edge=metrics(sources.map(s=>s.trade)),breakdowns={entryModels:groups(enriched,t=>t.entry_model,["OB_FIRST_TOUCH","OTE"]),sessions:groups(enriched,t=>t.session)};
  const sample={count:edge.completed,tradeIds:[...ids],label:edge.sample,caveat:edge.completed<30?"Small sample: observations are tentative and cannot establish reliable recurring patterns or improvement versus unprovided months.":"One selected month cannot establish improvement versus unprovided months or prove behavioral causes."};
  const base={version:"MONTHLY_REVIEW_FACTS_V1",capturedAt,period,sample,edge,breakdowns};
- const full={...base,mode:"DETAILED",scope:"All selected-month completed trades, original plans/versions and executions. Original plan or entry may precede the month. Notes/events/tags must have occurred AND been recorded within the month. No latest out-of-period tags, screenshots, prior AI outputs, balances or other months.",trades:detailed,strategyVersions:[...strategies.values()],riskVersions:[...risks.values()],sourceRefs:["period","sample","edge","models","sessions",...detailed.map(t=>"trade:"+t.tradeId)]};
+ const full=withOperationSources("MONTHLY_REVIEW",{...base,mode:"DETAILED",scope:"All selected-month completed trades, original plans/versions and executions. Original plan or entry may precede the month. Notes/events/tags must have occurred AND been recorded within the month. No latest out-of-period tags, screenshots, prior AI outputs, balances or other months.",trades:detailed,strategyVersions:[...strategies.values()],riskVersions:[...risks.values()],sourceRefs:["period","sample","edge","models","sessions",...detailed.map(t=>"trade:"+t.tradeId)]});
  if(detailed.length<=MONTHLY_LIMITS.detailedTrades&&new TextEncoder().encode(JSON.stringify(full)).length<=MONTHLY_LIMITS.detailedBytes)return full;
  // Explicit deterministic aggregation of the entire sample, never a silent subset or AI-generated summary.
- return {...base,mode:"DETERMINISTIC SUMMARY",scope:"All selected trades contribute to unchanged domain EDGE/model/session metrics; exact IDs and original version identities are retained. Individual plans, executions, rules, narrative, notes and tags are omitted in this bounded mode. Rule/process/behavioral causes and improvement cannot be inferred from outcomes. No screenshots, prior AI outputs, balances or other months.",
+ return withOperationSources("MONTHLY_REVIEW",{...base,mode:"DETERMINISTIC SUMMARY",scope:"All selected trades contribute to unchanged domain EDGE/model/session metrics; exact IDs and original version identities are retained. Individual plans, executions, rules, narrative, notes and tags are omitted in this bounded mode. Rule/process/behavioral causes and improvement cannot be inferred from outcomes. No screenshots, prior AI outputs, balances or other months.",
   trades:detailed.map(t=>({tradeId:t.tradeId})),strategyVersions:[...strategies.values()].map(s=>({id:s.id,version:s.version})),riskVersions:[...risks.values()].map(r=>({id:r.id,version:r.version})),
-  omitted:{individualTradeDetails:detailed.length,eventDetails:sources.reduce((n,s)=>n+s.events.length,0),strategyDefinitions:strategies.size,riskDefinitions:risks.size},sourceRefs:["period","sample","edge","models","sessions"]};
+  omitted:{individualTradeDetails:detailed.length,eventDetails:sources.reduce((n,s)=>n+s.events.length,0),strategyDefinitions:strategies.size,riskDefinitions:risks.size},sourceRefs:["period","sample","edge","models","sessions"]});
 }
 export type MonthlyReviewFacts=ReturnType<typeof monthlyReviewContext>;

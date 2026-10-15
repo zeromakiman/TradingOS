@@ -24,7 +24,7 @@ describe("monthly action and read-only history panel",()=>{
   m.values.monthly_ai_reviews=[{id:ids.review,facts,operation:{provider:"openai",model:"gpt-6-astra",version:"MONTHLY_REVIEW_V1"},created_at:"2026-09-23T12:00Z",deadline_at:"2026-09-23T12:10Z"}];
   m.values.monthly_ai_review_results=[{review_id:ids.review,status:"COMPLETED",interpretation:monthlyOutput,error_code:null,reservation_id:ids.image,created_at:"2026-09-23T12:01Z"}];
   m.values.ai_request_reservations=[{id:ids.image,operation_id:ids.review,reserved_micros:924000}];m.values.ai_usage_records=[{reservation_id:ids.image,charged_micros:21000,disposition:"SETTLED"}];
-  const result=await loadMonthlyReviewPanel(ids.account,month);expect(result).toMatchObject({amount:924000,availability:{status:"DISABLED"},hasOlder:true,error:null});expect(result.history[0].result?.interpretation).toEqual(monthlyOutput);expect(result.history[0].accounting?.usage?.charged_micros).toBe(21000);
+  const result=await loadMonthlyReviewPanel(ids.account,month);expect(result).toMatchObject({amount:67320,availability:{status:"DISABLED"},hasOlder:true,error:null});expect(result.history[0].result?.interpretation).toEqual(monthlyOutput);expect(result.history[0].accounting?.usage?.charged_micros).toBe(21000);
   expect(m.queries[0].filters).toEqual([["account_id",ids.account],["user_id",ids.user],["month_start",month+"-01"]]);expect(m.queries.find(q=>q.table==="ai_request_reservations")?.filters).toContainEqual(["operation","MONTHLY_REVIEW"]);expect(m.review).not.toHaveBeenCalled();
  });
  it("ownership denial is not converted into another account",async()=>{m.owner.mockRejectedValue(new Error("denied"));await expect(loadMonthlyReviewPanel(ids.image,month)).rejects.toThrow();expect(m.queries).toEqual([]);});

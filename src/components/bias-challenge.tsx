@@ -1,4 +1,5 @@
 // biome-ignore-all lint/suspicious/noArrayIndexKey: Saved challenge lists are immutable, never reordered or edited.
+import {aiFailureAccountingMessage} from "@/ai/failure-accounting-message";
 import Link from "next/link";
 import {ActionForm} from "./forms";
 import {requestBiasChallenge} from "@/app/bias-challenge-actions";
@@ -26,7 +27,7 @@ export function BiasChallengePanel({proposalId,data,requestKey}:{proposalId:stri
   {data.history.map(c=>{const result=c.result,output=result?.interpretation,pending=!result&&Date.parse(c.deadline_at)>Date.now();return <article className="event" key={c.id} style={{minWidth:0,overflowWrap:"anywhere"}}>
    <h4>{result?.status??(pending?"IN PROGRESS":"INCOMPLETE")}</h4><time dateTime={c.created_at}>{new Date(c.created_at).toISOString()} · UTC</time>
    {!result&&<p role="status">{pending?"Challenge in progress. Refresh for the saved result; no automatic provider retry occurs.":"This attempt did not finish saving. Any pending reservation remains protected. Check accounting before retrying."}</p>}
-   {result?.status==="FAILED"&&<p role="status" className="notice amber" style={{display:"block"}}>Challenge failed · {result.error_code}. Previous challenges are preserved. Accounting uncertainty retains the protected reservation.</p>}
+   {result?.status==="FAILED"&&<p role="status" className="notice amber" style={{display:"block"}}>Challenge failed · {result.error_code}. Previous challenges are preserved. {aiFailureAccountingMessage(c.accounting)}</p>}
    <h4>FACTS FROM TRADING OS</h4><p>Recorded Risk Engine permission: <strong>{c.facts.deterministic.status==="TRADE_BLOCKED"?"BLOCKED":"APPROVED"}</strong>. This snapshot may differ from a later risk check.</p>
    <details><summary>Recorded proposal, strategy, session and risk facts</summary><pre className="code-data" style={{maxWidth:"100%",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{JSON.stringify(Object.fromEntries(Object.entries(c.facts).filter(([key])=>key!=="currentThesis")),null,2)}</pre></details>
    <h4>YOUR CURRENT THESIS</h4><p className="small">User-reported at the time of this challenge · unverified</p><p className="prose">{c.facts.currentThesis}</p>

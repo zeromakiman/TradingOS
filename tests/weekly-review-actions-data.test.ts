@@ -24,7 +24,7 @@ describe("weekly action and read-only history panel",()=>{
   m.values.weekly_ai_reviews=[{id:ids.review,facts,operation:{provider:"openai",model:"gpt-6-astra",version:"WEEKLY_REVIEW_V1"},created_at:"2026-09-23T12:00Z",deadline_at:"2026-09-23T12:10Z"}];
   m.values.weekly_ai_review_results=[{review_id:ids.review,status:"COMPLETED",interpretation:weeklyOutput,error_code:null,reservation_id:ids.image,created_at:"2026-09-23T12:01Z"}];
   m.values.ai_request_reservations=[{id:ids.image,operation_id:ids.review,reserved_micros:792000}];m.values.ai_usage_records=[{reservation_id:ids.image,charged_micros:21000,disposition:"SETTLED"}];
-  const result=await loadWeeklyReviewPanel(ids.account,week);expect(result).toMatchObject({amount:792000,availability:{status:"DISABLED"},hasOlder:true,error:null});expect(result.history[0].result?.interpretation).toEqual(weeklyOutput);expect(result.history[0].accounting?.usage?.charged_micros).toBe(21000);
+  const result=await loadWeeklyReviewPanel(ids.account,week);expect(result).toMatchObject({amount:59400,availability:{status:"DISABLED"},hasOlder:true,error:null});expect(result.history[0].result?.interpretation).toEqual(weeklyOutput);expect(result.history[0].accounting?.usage?.charged_micros).toBe(21000);
   expect(m.queries[0].filters).toEqual([["account_id",ids.account],["user_id",ids.user],["week_start",week]]);expect(m.queries.find(q=>q.table==="ai_request_reservations")?.filters).toContainEqual(["operation","WEEKLY_REVIEW"]);expect(m.review).not.toHaveBeenCalled();
  });
  it("ownership denial is not converted into another account",async()=>{m.owner.mockRejectedValue(new Error("denied"));await expect(loadWeeklyReviewPanel(ids.image,week)).rejects.toThrow();expect(m.queries).toEqual([]);});

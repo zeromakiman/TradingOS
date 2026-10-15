@@ -1,0 +1,31 @@
+{
+  "at": "2026-10-15T07:07:55.670Z",
+  "branch": "feature/account-ai-budget",
+  "node": "v24.19.0",
+  "fullSuiteRuns": 1,
+  "tests": {
+    "total": 1307,
+    "passed": 1307,
+    "failed": 0,
+    "skipped": 0
+  },
+  "typeScript": "PASS",
+  "lint": "PASS",
+  "productionBuild": "PASS",
+  "migrations": {
+    "fresh": "0001-0014",
+    "nativePostgreSQL": "PASS",
+    "operatorIsolation": "PASS",
+    "concurrency": "PASS",
+    "exactReleaseTransaction": "PASS",
+    "preexistingTablesPreserved": 34,
+    "duplicateApplicationRejected": true
+  },
+  "secretScan": {
+    "candidateFiles": 318,
+    "clientAssets": 18,
+    "findings": []
+  },
+  "providerCalls": 0,
+  "productionMutations": 0
+}

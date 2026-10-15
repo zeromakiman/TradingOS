@@ -5,7 +5,7 @@ import { PLAN_SELECT,planRow } from "./data";
 import { journalRow } from "@/domain/analytics";
 import { accountAiAvailability } from "./ai-budget";
 import { operationFor } from "@/ai/operations";
-import { reservationMicros } from "@/ai/pricing";
+import { operationPricing,reservationMicros } from "@/ai/pricing";
 import { tradeReviewOutput } from "@/ai/trade-review-contract";
 
 type Db=Awaited<ReturnType<typeof requireUser>>["db"];
@@ -36,8 +36,9 @@ const reviewSchema=z.object({id:z.uuid(),facts:z.record(z.string(),z.unknown()),
 const resultSchema=z.object({review_id:z.uuid(),status:z.enum(["COMPLETED","FAILED"]),interpretation:tradeReviewOutput.nullable(),error_code:z.string().nullable(),reservation_id:z.uuid().nullable(),created_at:z.string()});
 export async function loadTradeReviewPanel(planId:string,page=0) {
  const {db,plan,trade}=await ownedReviewTrade(planId),operation=operationFor("REVIEW_TRADE");
- const amount=reservationMicros(undefined,operation);
+ let amount=0;
  try {
+  amount=reservationMicros(operationPricing(operation),operation);
   const availability=await accountAiAvailability(plan.account_id,"REVIEW_TRADE");
   const evidence=(await reviewEvidence(db,plan.id)).map(({id,role,original_filename})=>({id,role,label:original_filename}));
   const q=await db.from("trade_ai_reviews").select("id,facts,operation,created_at,deadline_at",{count:"exact"}).eq("plan_id",plan.id).order("created_at",{ascending:false}).order("id",{ascending:false}).range(page*10,page*10+9);

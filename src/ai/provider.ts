@@ -13,7 +13,7 @@ export async function callResponses(input:AiProviderRequest,transport:typeof fet
  if(process.env.NODE_ENV!=="test"||transport===fetch){consumeAiPermit(permit);if(!operation)throw new Error("A bounded operation is required");}
  const content:Record<string,unknown>[]=[{type:"input_text",text:JSON.stringify({context:input.context,prior_evaluations:input.prior})}];
  for(const img of input.images)content.push({type:"input_text",text:`Chart source ${img.sourceId}; user-assigned timeframe ${img.role}.`},{type:"input_image",image_url:img.dataUrl,detail:input.config.imageDetail});
- const contract=operationContract(operation);
+ const contract=operationContract(operation,input.context);
  const payload={model:input.config.model,instructions:contract.instructions,input:[{role:"user",content}],store:false,service_tier:"default",truncation:"disabled",reasoning:{effort:input.config.reasoningEffort},max_output_tokens:input.config.maxOutputTokens,text:{format:{type:"json_schema",name:contract.name,strict:true,schema:contract.schema}}};
  const wire=JSON.stringify(payload);
  const countWire=JSON.stringify({model:payload.model,instructions:payload.instructions,input:payload.input,reasoning:payload.reasoning,text:payload.text,truncation:payload.truncation});

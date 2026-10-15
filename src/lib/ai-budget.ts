@@ -9,11 +9,11 @@ import type { AiLedger } from "@/ai/request-gate";
 import { ProviderError } from "@/ai/provider";
 import { z } from "zod";
 
-export function aiSystemAvailability(): AiAvailability {
+export function aiSystemAvailability(operationId?:string): AiAvailability {
  const global=aiAvailability();
  if(global.status!=="ENABLED")return global;
  try {
-  operationPricing(operationFor("SETUP_ANALYSIS"));
+  if(operationId)operationPricing(operationFor(operationId));
   if(!process.env.SUPABASE_SECRET_KEY?.startsWith("sb_secret_"))throw new Error("Missing ledger credentials");
   return global;
  } catch {return {status:"CONFIGURATION_ERROR",message:"AI provider or budget-accounting configuration requires review. Other workflows remain available.",deepEnabled:false};}
@@ -32,7 +32,7 @@ export async function loadAiBudget(accountId:string) {
  } catch {return {snapshot:null,presentation:null,system,events:[],reservationMicros:reservationMicros(),error:"AI budget controls are unavailable. No AI request can run; other Trading OS workflows remain available."};}
 }
 export async function accountAiAvailability(accountId:string,operationId="SETUP_ANALYSIS"):Promise<AiAvailability> {
- const system=aiSystemAvailability();
+ const system=aiSystemAvailability(operationId);
  if(system.status!=="ENABLED")return system;
  const data=await loadAiBudget(accountId);
  if(!data.snapshot||!data.presentation)return {status:"CONFIGURATION_ERROR",message:data.error??"AI accounting is unavailable",deepEnabled:false};

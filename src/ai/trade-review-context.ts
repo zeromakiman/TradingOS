@@ -1,3 +1,4 @@
+import { tradeReviewSourceManifest } from "./trade-review-sources";
 import type { PlanRow } from "@/lib/data";
 import type { JournalTrade } from "@/domain/analytics";
 export interface ReviewEvent {id:string;event_type:string;payload:Record<string,unknown>;occurred_at:string;recorded_at:string}
@@ -7,6 +8,7 @@ const pick=(value:Record<string,unknown>,keys:string[])=>Object.fromEntries(keys
 export function tradeReviewContext(plan:PlanRow,trade:JournalTrade,strategy:{id:string;version:string;rules:Record<string,unknown>;written_rules:string},risk:Record<string,unknown>,events:ReviewEvent[],evidence:ReviewEvidence[]) {
  if(plan.id!==trade.id||plan.account_id!==trade.account_id)throw new Error("Trade context ownership mismatch");
  const r=plan.risk_result;
+ const sourceManifest=tradeReviewSourceManifest(plan.id,events,evidence);
  return {version:"REVIEW_TRADE_FACTS_V1",tradeId:plan.id,capturedAt:new Date().toISOString(),
   originalPlan:{lockedAt:plan.locked_at,tradingDay:plan.trading_day,instrument:plan.instrument.symbol,proposal:pick(plan.proposal,["direction","model","entry","stop","target","riskPercent","news","narrative","contractConfirmed"]),initialNominalRisk:plan.nominal_risk},
   strategy:{id:strategy.id,version:strategy.version,rules:strategy.rules,writtenRules:strategy.written_rules},
@@ -16,5 +18,5 @@ export function tradeReviewContext(plan:PlanRow,trade:JournalTrade,strategy:{id:
   tags:pick(trade,["setup_grade","liquidity_context","mss_timeframe","tag_source"]),
   events:events.map(e=>({...e,payload:pick(e.payload,["note","reason","entry","entry_price","quantity","exit","exit_price","fees","stop","target","price","status","realized_r","outcome","setup_grade","liquidity_context","mss_timeframe","source"])})),
   selectedEvidence:evidence.map(e=>({id:e.id,role:e.role,sha256:e.sha256,mimeType:e.mime_type,bytes:e.byte_size})),
-  sourceRefs:["originalPlan","strategy","riskVersion","deterministic","execution","tags",...events.map(e=>`event:${e.id}`),...evidence.map(e=>`evidence:${e.id}`)]};
+  sourceManifest,sourceRefs:sourceManifest.sources.map(source=>source.id)};
 }

@@ -1,0 +1,977 @@
+{
+  "verifiedAt": "2026-09-25T07:55:50.172Z",
+  "status": "AI V1 READY FOR STAGING",
+  "reason": "Automated, migration, native concurrency, security and complete local synthetic browser acceptance passed. Reconcile stale local main refs before staging.",
+  "checkpoint": "0b13aa566808ca709606f5c15f047719c2be29fa",
+  "checkpointMessage": "Checkpoint verified Monthly Review feature",
+  "checkpointFiles": [
+    "docs/MONTHLY_REVIEW_FEATURE.md",
+    "docs/MONTHLY_REVIEW_VERIFICATION.json",
+    "scripts/monthly-review-browser-harness.mjs",
+    "src/ai/monthly-period.ts",
+    "src/ai/monthly-review-context.ts",
+    "src/ai/monthly-review-contract.ts",
+    "src/ai/operation-contract.ts",
+    "src/ai/operations.ts",
+    "src/app/edge/monthly/page.tsx",
+    "src/app/edge/page.tsx",
+    "src/app/monthly-review-actions.ts",
+    "src/components/monthly-review.tsx",
+    "src/lib/monthly-review-data.ts",
+    "src/lib/monthly-review-source.ts",
+    "src/lib/monthly-review.ts",
+    "supabase/migrations/0013_monthly_ai_reviews.sql",
+    "tests/browser/monthly-review-entry.tsx",
+    "tests/fixtures/monthly-review.ts",
+    "tests/monthly-review-actions-data.test.ts",
+    "tests/monthly-review-contract.test.ts",
+    "tests/monthly-review-database.test.ts",
+    "tests/monthly-review-source.test.ts",
+    "tests/monthly-review.test.ts"
+  ],
+  "branch": "feature/account-ai-budget",
+  "node": "v24.19.0",
+  "applicationChangesAfterCheckpoint": 0,
+  "fullSuiteRuns": 1,
+  "tests": {
+    "total": 1031,
+    "passed": 1031,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "testFiles": 50,
+    "groups": {
+      "accountBudget": 124,
+      "reviewTrade": 53,
+      "challengeBias": 62,
+      "analyzeSetup": 77,
+      "weeklyReview": 104,
+      "recentTrades": 103,
+      "monthlyReview": 113,
+      "database": 188,
+      "coreSelectedRegressions": 167
+    },
+    "files": [
+      {
+        "file": "analyze-setup-actions-data.test.ts",
+        "total": 11,
+        "passed": 11,
+        "failed": 0
+      },
+      {
+        "file": "analyze-setup-contract.test.ts",
+        "total": 31,
+        "passed": 31,
+        "failed": 0
+      },
+      {
+        "file": "analyze-setup-database.test.ts",
+        "total": 17,
+        "passed": 17,
+        "failed": 0
+      },
+      {
+        "file": "analyze-setup.test.ts",
+        "total": 18,
+        "passed": 18,
+        "failed": 0
+      },
+      {
+        "file": "bias-challenge-actions-data.test.ts",
+        "total": 11,
+        "passed": 11,
+        "failed": 0
+      },
+      {
+        "file": "monthly-review-actions-data.test.ts",
+        "total": 14,
+        "passed": 14,
+        "failed": 0
+      },
+      {
+        "file": "monthly-review-contract.test.ts",
+        "total": 54,
+        "passed": 54,
+        "failed": 0
+      },
+      {
+        "file": "monthly-review-database.test.ts",
+        "total": 18,
+        "passed": 18,
+        "failed": 0
+      },
+      {
+        "file": "monthly-review-source.test.ts",
+        "total": 12,
+        "passed": 12,
+        "failed": 0
+      },
+      {
+        "file": "monthly-review.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "file": "recent-trades-actions-data.test.ts",
+        "total": 14,
+        "passed": 14,
+        "failed": 0
+      },
+      {
+        "file": "recent-trades-contract.test.ts",
+        "total": 35,
+        "passed": 35,
+        "failed": 0
+      },
+      {
+        "file": "recent-trades-database.test.ts",
+        "total": 21,
+        "passed": 21,
+        "failed": 0
+      },
+      {
+        "file": "recent-trades-source.test.ts",
+        "total": 18,
+        "passed": 18,
+        "failed": 0
+      },
+      {
+        "file": "recent-trades.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "file": "trade-review-database.test.ts",
+        "total": 9,
+        "passed": 9,
+        "failed": 0
+      },
+      {
+        "file": "trade-review.test.ts",
+        "total": 19,
+        "passed": 19,
+        "failed": 0
+      },
+      {
+        "file": "weekly-review-actions-data.test.ts",
+        "total": 14,
+        "passed": 14,
+        "failed": 0
+      },
+      {
+        "file": "weekly-review-contract.test.ts",
+        "total": 46,
+        "passed": 46,
+        "failed": 0
+      },
+      {
+        "file": "weekly-review-database.test.ts",
+        "total": 17,
+        "passed": 17,
+        "failed": 0
+      },
+      {
+        "file": "weekly-review-source.test.ts",
+        "total": 12,
+        "passed": 12,
+        "failed": 0
+      },
+      {
+        "file": "weekly-review.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "file": "ai-budget.test.ts",
+        "total": 60,
+        "passed": 60,
+        "failed": 0
+      },
+      {
+        "file": "ai-budget-database.test.ts",
+        "total": 31,
+        "passed": 31,
+        "failed": 0
+      },
+      {
+        "file": "audit-math.test.ts",
+        "total": 7,
+        "passed": 7,
+        "failed": 0
+      },
+      {
+        "file": "ai-disabled.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "file": "audit-routes.test.ts",
+        "total": 19,
+        "passed": 19,
+        "failed": 0
+      },
+      {
+        "file": "audit-database.test.ts",
+        "total": 7,
+        "passed": 7,
+        "failed": 0
+      },
+      {
+        "file": "bias-challenge.test.ts",
+        "total": 18,
+        "passed": 18,
+        "failed": 0
+      },
+      {
+        "file": "ai-settings.test.ts",
+        "total": 18,
+        "passed": 18,
+        "failed": 0
+      },
+      {
+        "file": "bias-challenge-contract.test.ts",
+        "total": 22,
+        "passed": 22,
+        "failed": 0
+      },
+      {
+        "file": "database.test.ts",
+        "total": 21,
+        "passed": 21,
+        "failed": 0
+      },
+      {
+        "file": "bias-challenge-database.test.ts",
+        "total": 11,
+        "passed": 11,
+        "failed": 0
+      },
+      {
+        "file": "edge-database.test.ts",
+        "total": 20,
+        "passed": 20,
+        "failed": 0
+      },
+      {
+        "file": "edge-routes.test.ts",
+        "total": 5,
+        "passed": 5,
+        "failed": 0
+      },
+      {
+        "file": "ai.test.ts",
+        "total": 18,
+        "passed": 18,
+        "failed": 0
+      },
+      {
+        "file": "risk.test.ts",
+        "total": 53,
+        "passed": 53,
+        "failed": 0
+      },
+      {
+        "file": "analytics.test.ts",
+        "total": 51,
+        "passed": 51,
+        "failed": 0
+      },
+      {
+        "file": "setup-routes.test.ts",
+        "total": 10,
+        "passed": 10,
+        "failed": 0
+      },
+      {
+        "file": "setup-ai.test.ts",
+        "total": 26,
+        "passed": 26,
+        "failed": 0
+      },
+      {
+        "file": "report-config.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "file": "password-recovery.test.ts",
+        "total": 39,
+        "passed": 39,
+        "failed": 0
+      },
+      {
+        "file": "session-boundaries.test.ts",
+        "total": 15,
+        "passed": 15,
+        "failed": 0
+      },
+      {
+        "file": "ui-presentation.test.ts",
+        "total": 29,
+        "passed": 29,
+        "failed": 0
+      },
+      {
+        "file": "trade-review-actions.test.ts",
+        "total": 7,
+        "passed": 7,
+        "failed": 0
+      },
+      {
+        "file": "setup-database.test.ts",
+        "total": 16,
+        "passed": 16,
+        "failed": 0
+      },
+      {
+        "file": "trade-review-data.test.ts",
+        "total": 6,
+        "passed": 6,
+        "failed": 0
+      },
+      {
+        "file": "trade-review-contract.test.ts",
+        "total": 12,
+        "passed": 12,
+        "failed": 0
+      },
+      {
+        "file": "ui-review.test.ts",
+        "total": 11,
+        "passed": 11,
+        "failed": 0
+      },
+      {
+        "file": "ux.test.ts",
+        "total": 33,
+        "passed": 33,
+        "failed": 0
+      }
+    ]
+  },
+  "lint": {
+    "changed": 0,
+    "unchanged": 213,
+    "matches": 0,
+    "duration": 135473200,
+    "errors": 0,
+    "warnings": 0,
+    "infos": 113,
+    "skipped": 0,
+    "suggestedFixesSkipped": 0,
+    "diagnosticsNotPrinted": 0,
+    "scannerDuration": 2566900
+  },
+  "typeScript": "PASS",
+  "productionBuild": "PASS",
+  "nativePostgres": {
+    "checkedAt": "2026-09-25T07:37:16.635Z",
+    "nativePostgres": true,
+    "connections": 20,
+    "migrations": [
+      "0001_foundation.sql",
+      "0002_baseline.sql",
+      "0003_persistence.sql",
+      "0004_setup_analysis.sql",
+      "0005_private_screenshot_storage.sql",
+      "0006_edge_outcomes.sql",
+      "0007_audit_hardening.sql",
+      "0008_account_ai_budget.sql",
+      "0009_trade_ai_reviews.sql",
+      "0010_bias_challenges.sql",
+      "0011_weekly_ai_reviews.sql",
+      "0012_recent_trades_analyses.sql",
+      "0013_monthly_ai_reviews.sql"
+    ],
+    "cases": [
+      {
+        "operation": "REVIEW_TRADE",
+        "capMicros": 3000000,
+        "reservationMicros": 792000,
+        "accepted": 3,
+        "rejected": 17,
+        "heldMicros": 2376000
+      },
+      {
+        "operation": "REVIEW_TRADE",
+        "capMicros": 5000000,
+        "reservationMicros": 792000,
+        "accepted": 6,
+        "rejected": 14,
+        "heldMicros": 4752000
+      },
+      {
+        "operation": "REVIEW_TRADE",
+        "capMicros": 10000000,
+        "reservationMicros": 792000,
+        "accepted": 12,
+        "rejected": 8,
+        "heldMicros": 9504000
+      },
+      {
+        "operation": "CHALLENGE_BIAS",
+        "capMicros": 3000000,
+        "reservationMicros": 528000,
+        "accepted": 5,
+        "rejected": 15,
+        "heldMicros": 2640000
+      },
+      {
+        "operation": "CHALLENGE_BIAS",
+        "capMicros": 5000000,
+        "reservationMicros": 528000,
+        "accepted": 9,
+        "rejected": 11,
+        "heldMicros": 4752000
+      },
+      {
+        "operation": "CHALLENGE_BIAS",
+        "capMicros": 10000000,
+        "reservationMicros": 528000,
+        "accepted": 18,
+        "rejected": 2,
+        "heldMicros": 9504000
+      },
+      {
+        "operation": "ANALYZE_SETUP",
+        "capMicros": 3000000,
+        "reservationMicros": 594000,
+        "accepted": 5,
+        "rejected": 15,
+        "heldMicros": 2970000
+      },
+      {
+        "operation": "ANALYZE_SETUP",
+        "capMicros": 5000000,
+        "reservationMicros": 594000,
+        "accepted": 8,
+        "rejected": 12,
+        "heldMicros": 4752000
+      },
+      {
+        "operation": "ANALYZE_SETUP",
+        "capMicros": 10000000,
+        "reservationMicros": 594000,
+        "accepted": 16,
+        "rejected": 4,
+        "heldMicros": 9504000
+      },
+      {
+        "operation": "WEEKLY_REVIEW",
+        "capMicros": 3000000,
+        "reservationMicros": 792000,
+        "accepted": 3,
+        "rejected": 17,
+        "heldMicros": 2376000
+      },
+      {
+        "operation": "WEEKLY_REVIEW",
+        "capMicros": 5000000,
+        "reservationMicros": 792000,
+        "accepted": 6,
+        "rejected": 14,
+        "heldMicros": 4752000
+      },
+      {
+        "operation": "WEEKLY_REVIEW",
+        "capMicros": 10000000,
+        "reservationMicros": 792000,
+        "accepted": 12,
+        "rejected": 8,
+        "heldMicros": 9504000
+      },
+      {
+        "operation": "RECENT_TRADES_ANALYSIS",
+        "capMicros": 3000000,
+        "reservationMicros": 924000,
+        "accepted": 3,
+        "rejected": 17,
+        "heldMicros": 2772000
+      },
+      {
+        "operation": "RECENT_TRADES_ANALYSIS",
+        "capMicros": 5000000,
+        "reservationMicros": 924000,
+        "accepted": 5,
+        "rejected": 15,
+        "heldMicros": 4620000
+      },
+      {
+        "operation": "RECENT_TRADES_ANALYSIS",
+        "capMicros": 10000000,
+        "reservationMicros": 924000,
+        "accepted": 10,
+        "rejected": 10,
+        "heldMicros": 9240000
+      },
+      {
+        "operation": "MONTHLY_REVIEW",
+        "capMicros": 3000000,
+        "reservationMicros": 924000,
+        "accepted": 3,
+        "rejected": 17,
+        "heldMicros": 2772000
+      },
+      {
+        "operation": "MONTHLY_REVIEW",
+        "capMicros": 5000000,
+        "reservationMicros": 924000,
+        "accepted": 5,
+        "rejected": 15,
+        "heldMicros": 4620000
+      },
+      {
+        "operation": "MONTHLY_REVIEW",
+        "capMicros": 10000000,
+        "reservationMicros": 924000,
+        "accepted": 10,
+        "rejected": 10,
+        "heldMicros": 9240000
+      }
+    ],
+    "providerCalls": 0,
+    "productionTouched": false,
+    "postgresVersion": "18.4",
+    "mixed": {
+      "accepted": 4,
+      "heldMicros": 2508000
+    },
+    "reconciliation": {
+      "singleSettlement": true,
+      "chargedMicros": 18000,
+      "releasedMicros": 906000
+    },
+    "concurrentOptOutObserved": true,
+    "dispatchRechecksOptOut": true,
+    "uncertaintyFailClosed": true,
+    "tableSecurity": [
+      {
+        "table": "ai_preference_events",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "ai_request_reservations",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "ai_request_dispatches",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "ai_usage_records",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "trade_ai_reviews",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "trade_ai_review_results",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "bias_challenges",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "bias_challenge_results",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "weekly_ai_reviews",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "weekly_ai_review_results",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "recent_ai_analyses",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "recent_ai_analysis_results",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "monthly_ai_reviews",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      },
+      {
+        "table": "monthly_ai_review_results",
+        "rls": true,
+        "clientWritesDenied": true,
+        "anonymousReadDenied": true,
+        "foreignRows": 0
+      }
+    ],
+    "accountingImmutable": true,
+    "reservationRequests": 380,
+    "crossUserIsolation": true,
+    "freshDatabaseOrderedMigrations": true
+  },
+  "security": {
+    "at": "2026-09-25T07:47:51.103Z",
+    "sourceFiles": 296,
+    "clientAssets": 18,
+    "secretFindings": [],
+    "excludedLocalFiles": true,
+    "protectedCoreUnchanged": true,
+    "aiEnabled": false,
+    "stagedFiles": 0,
+    "network": {
+      "started_at": "2026-09-25T07:32:18.180Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    },
+    "protectedCoreUnchangedSinceProduction": true,
+    "baseline": "79ab1496bf0cb8e1807f3b83ef3c6ca96cf404bb",
+    "protectedPaths": [
+      "src/domain",
+      "src/app/actions.ts",
+      "src/proxy.ts",
+      "src/lib/analytics-data.ts",
+      "src/lib/journal-data.ts",
+      "src/lib/screenshots.ts",
+      "src/lib/supabase",
+      "src/app/api/screenshots",
+      "src/app/api/setups/[id]/screenshots",
+      "src/app/edge/export",
+      "src/components/forms.tsx",
+      "supabase/migrations/000[1-7]*",
+      "package.json",
+      "pnpm-lock.yaml",
+      "next.config.ts"
+    ],
+    "workingTreeApplicationChanges": 0,
+    "trackedSecretLocalFiles": 0
+  },
+  "browser": {
+    "mode": "Actual React panels, forms and server actions with synthetic service boundaries. Settings uses isolated PGlite. Not hosted or physical-device testing.",
+    "desktop": {
+      "width": 1440,
+      "height": 1000
+    },
+    "mobile": {
+      "width": 393,
+      "height": 852
+    },
+    "physicalDevice": false,
+    "settings": {
+      "result": "PASS",
+      "consentRequired": true,
+      "deactivation": true,
+      "editedBudgets": [
+        1,
+        3,
+        5,
+        10,
+        100
+      ],
+      "rejectedBudgets": [
+        0.99,
+        100.01
+      ],
+      "presets": "Examples/input, no separate preset buttons",
+      "warnings": [
+        50,
+        80,
+        95,
+        100
+      ],
+      "usedReservedRemaining": true,
+      "reset": "2026-10-01 00:00 fixed UTC-5",
+      "auditEvents": 8,
+      "horizontalOverflow": false,
+      "focusOutlinePx": 2,
+      "finalPreference": false
+    },
+    "operations": {
+      "REVIEW_TRADE": {
+        "desktop": "PASS",
+        "mobile": "PASS",
+        "keyboardMetadata": true,
+        "submission": true
+      },
+      "CHALLENGE_BIAS": {
+        "desktop": "PASS",
+        "mobile": "PASS",
+        "historyAppend": true,
+        "blockedRiskPreserved": true
+      },
+      "ANALYZE_SETUP": {
+        "desktop": "PASS",
+        "mobile": "PASS",
+        "historyAppend": true,
+        "blockedRiskPreserved": true
+      },
+      "WEEKLY_REVIEW": {
+        "desktop": "PASS",
+        "mobile": "PASS",
+        "historyAppend": true,
+        "errorRoleAlert": true,
+        "keyboardMetadata": true,
+        "errorFocus": "PASS: settled role=alert focus, visible outline"
+      },
+      "RECENT_TRADES_ANALYSIS": {
+        "desktop": "PASS",
+        "mobile": "PASS",
+        "historyAppend": true,
+        "sampleSelector": [
+          10,
+          20,
+          30
+        ]
+      },
+      "MONTHLY_REVIEW": {
+        "desktop": "PASS",
+        "mobile": "PASS",
+        "freshIntegrated": "PASS",
+        "priorFeatureAcceptance": "PASS",
+        "freshSubmissions": 2,
+        "freshCompleted": 1,
+        "freshFailed": 1,
+        "priorHistoryPreserved": 4,
+        "finalHistoryCount": 6,
+        "monthSelector": true,
+        "emptyMonthDisabled": true,
+        "summary60TradeDisplay": true,
+        "historyAppend": true
+      }
+    },
+    "commonCheckedStates": [
+      "OFF",
+      "UNAVAILABLE",
+      "BUDGET REACHED/insufficient reservation",
+      "FAILED",
+      "IN PROGRESS",
+      "INCOMPLETE",
+      "COMPLETED"
+    ],
+    "horizontalOverflowDetected": false,
+    "syntheticHarnessEvidence": {
+      "trade-review-browser": {
+        "submissions": [
+          {
+            "planId": "30000000-0000-4000-8000-000000000001",
+            "key": "40000000-0000-4000-8000-000000000001",
+            "evidence": [
+              "50000000-0000-4000-8000-000000000001"
+            ]
+          }
+        ],
+        "historyCount": 1,
+        "providerCalls": 0,
+        "productionTouched": false
+      },
+      "bias-browser": {
+        "submissions": [
+          {
+            "proposalId": "30000000-0000-4000-8000-000000000001",
+            "key": "b34e12e0-f477-4bce-8c1b-a6849fea8226",
+            "evidence": [
+              "50000000-0000-4000-8000-000000000001"
+            ]
+          },
+          {
+            "proposalId": "30000000-0000-4000-8000-000000000001",
+            "key": "ce1673a9-fbd2-4cd4-9fa8-3d37df43b8e0",
+            "evidence": []
+          }
+        ],
+        "historyCount": 2,
+        "providerCalls": 0,
+        "productionTouched": false,
+        "riskStatus": "TRADE_BLOCKED"
+      },
+      "analyze-browser": {
+        "submissions": [
+          {
+            "proposalId": "30000000-0000-4000-8000-000000000001",
+            "key": "433f3823-01fb-4edc-8416-7a53cec2f03f",
+            "evidence": [
+              "50000000-0000-4000-8000-000000000001"
+            ]
+          },
+          {
+            "proposalId": "30000000-0000-4000-8000-000000000001",
+            "key": "6ad7b643-6cbf-4ee9-bc6d-3dd7f3c3eb53",
+            "evidence": []
+          }
+        ],
+        "historyCount": 2,
+        "providerCalls": 0,
+        "productionTouched": false,
+        "riskStatus": "TRADE_BLOCKED"
+      },
+      "weekly-browser": {
+        "submissions": [
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08-31",
+            "key": "42080b24-7084-4e82-a1d1-e0e4d370d53f"
+          },
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08-31",
+            "key": "ae639669-a74c-486c-acd0-aaa5b1de5acb"
+          }
+        ],
+        "historyCount": 2,
+        "providerCalls": 0,
+        "productionTouched": false
+      },
+      "recent-browser": {
+        "submissions": [
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "requested": 20,
+            "actual": 20,
+            "key": "d9bf92ee-7700-4720-8a7d-49b7213554c8"
+          },
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "requested": 20,
+            "actual": 20,
+            "key": "0163e4ff-8f33-4cff-b683-e0a172fd590e"
+          }
+        ],
+        "historyCount": 2,
+        "providerCalls": 0,
+        "productionTouched": false
+      },
+      "monthly-browser": {
+        "submissions": [
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08",
+            "key": "8f59df45-8fab-482e-b7bd-27238c55a12c"
+          },
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08",
+            "key": "4efde9ba-4a78-4359-987e-c2110cf9edcf"
+          },
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08",
+            "key": "f50ce83e-38c9-4e11-83c8-3308ab1d4748"
+          },
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08",
+            "key": "fa435136-f81c-463b-8bd5-7c0b155f8bab"
+          },
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08",
+            "key": "d09deea5-3f56-4c37-9a26-2bdc5c37092f"
+          },
+          {
+            "account": "20000000-0000-4000-8000-000000000001",
+            "day": "2026-08",
+            "key": "361c74b7-2d99-411e-87d1-de27f8fbf412"
+          }
+        ],
+        "historyCount": 6,
+        "providerCalls": 0,
+        "productionTouched": false
+      }
+    },
+    "providerCalls": 0,
+    "viewportRestored": true,
+    "block": null,
+    "remaining": [],
+    "commonStateMatrixCases": 84,
+    "visibleKeyboardFocus": true,
+    "consoleErrors": 0,
+    "consoleWarnings": 0,
+    "approvalInterruption": "Resolved after explicit user approval of local synthetic navigation/submissions; normal browser tool then accepted the actions. No workaround used."
+  },
+  "git": {
+    "localMain": "9d1ef83a80a8a6abb11efaf4220e2458ec2afd9f",
+    "localOriginMain": "9d1ef83a80a8a6abb11efaf4220e2458ec2afd9f",
+    "actualRemoteMain": "79ab1496bf0cb8e1807f3b83ef3c6ca96cf404bb",
+    "remoteVerification": "Read-only git ls-remote origin refs/heads/main refs/heads/feature/account-ai-budget refs/heads/review/opus-ui-v2; only main returned",
+    "remote": "https://github.com/zeromakiman/TradingOS",
+    "localMainBehindActualRemote": 6,
+    "featureAheadActualRemote": 4,
+    "featureBehindActualRemote": 0,
+    "featureUpstream": null,
+    "refsModified": false,
+    "mergeOrRebase": false,
+    "requiredBeforeStaging": [
+      "Preserve feature checkpoint and review reports",
+      "Fetch origin and verify remote main still matches audited production baseline",
+      "Fast-forward stale local main to refreshed origin/main after verifying no divergence; preserve feature tree",
+      "Review sync-conflict -Max refs before any removal; none removed here",
+      "If remote advanced, explicitly review changes and agree reconciliation; no automatic merge/rebase",
+      "Authorize staging separately; no current deployment authorization"
+    ]
+  },
+  "production": {
+    "changed": false,
+    "migrationsApplied": false,
+    "deployed": false,
+    "aiActivated": false,
+    "providerKeyAdded": false,
+    "aiEnabled": false,
+    "liveProviderCalls": 0,
+    "note": "No production operations performed. Existing disabled production configuration was preserved, not re-audited remotely."
+  },
+  "evidenceHashes": {
+    ".local/AI_V1_FULL_SUITE.json": "c04856a5842a7c0595d25dbc0025cfbba37774b5d43633a0a8ae539a6b9415a5",
+    ".local/AI_V1_NATIVE.json": "d3a89fe210650eb9c388368ac318e9825ae4c767428273002b5c05382bb82d30",
+    ".local/verify-ai-v1-native.mjs": "b0400282413c71271418acf3611b933c594b5e7c2289248df243b64474da7705",
+    ".local/AI_V1_BUILD.log": "85805da7ef3a5984f275dcba20e5a54d5bb6b9200b8831e740b52dad623b7753"
+  },
+  "stagedFiles": 0,
+  "finalExpectedUntrackedFiles": [
+    "docs/AI_V1_INTEGRATED_REVIEW.md",
+    "docs/AI_V1_INTEGRATED_VERIFICATION.json"
+  ]
+}

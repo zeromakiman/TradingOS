@@ -1,3 +1,4 @@
+import {withOperationSources} from "./citation-sources";
 import {metrics,type JournalTrade} from "@/domain/analytics";
 import {tradeReviewContext,type ReviewEvent} from "./trade-review-context";
 import {weeklyPeriod} from "./weekly-period";
@@ -18,9 +19,9 @@ export function weeklyReviewContext(accountId:string,day:string,sources:WeeklyTr
   return {tradeId:context.tradeId,originalPlan:context.originalPlan,strategy:context.strategy,riskVersion:context.riskVersion,deterministic:context.deterministic,execution:context.execution,events:context.events};
  });
  const edge=metrics(sources.map(s=>s.trade));
- return {version:"WEEKLY_REVIEW_FACTS_V1",capturedAt,period,
+ return withOperationSources("WEEKLY_REVIEW",{version:"WEEKLY_REVIEW_FACTS_V1",capturedAt,period,
   scope:"Only this account's completed trades by exit time. Original plan/execution may precede the week. Notes/events/tags must have occurred AND been recorded within the week. No screenshots, prior AI output, open trades, unrelated periods or account balances are supplied.",
   sample:{count:edge.completed,label:edge.sample,caveat:edge.completed<30?"Small sample: observations are tentative and cannot establish a reliable recurring pattern or improvement versus other weeks.":"One selected week cannot establish improvement versus unprovided weeks or prove a behavioral cause."},
-  edge,trades,sourceRefs:["period","sample","edge",...trades.map(t=>"trade:"+t.tradeId)]};
+  edge,trades,sourceRefs:["period","sample","edge",...trades.map(t=>"trade:"+t.tradeId)]});
 }
 export type WeeklyReviewFacts=ReturnType<typeof weeklyReviewContext>;

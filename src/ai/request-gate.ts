@@ -6,7 +6,7 @@ import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { ProviderError } from "./provider";
 import { issueAiPermit } from "./permit";
-import { operationPricing, reservationMicros } from "./pricing";
+import { acceptsResponseModel, operationPricing, reservationMicros } from "./pricing";
 
 export interface AiLedger {
  reserve(record: {id:string;userId:string;accountId:string;operationId:string;stage:string;hash:string;model:string;operation:string;provider:string;pricing:unknown;amount:number}):Promise<void>;
@@ -43,7 +43,7 @@ export async function budgetedAiRequest(input: AiProviderRequest, owner:{userId:
  const responseModel=result?.model??(failure instanceof ProviderError?failure.model:null);
  const record:Record<string,unknown>={disposition:"UNCERTAIN",chargedMicros:amount,usage,responseModel,responseId:result?.responseId??(failure instanceof ProviderError?failure.responseId:null),errorCode:failure instanceof ProviderError?failure.code:failure?"PROVIDER_FAILURE":null};
  try {
-  if(responseModel!==pricing.model)throw new Error("Unreviewed response model");
+  if(!acceptsResponseModel(pricing,responseModel))throw new Error("Unreviewed response model");
   const priced=adapter.accountUsage(usage,pricing);
   if(priced.inputTokens>operation.maxInputTokens||priced.outputTokens>operation.maxOutputTokens||priced.chargedMicros>amount)throw new Error("Provider exceeded operation bounds");
   Object.assign(record,priced,{disposition:"SETTLED"});

@@ -13,12 +13,27 @@ export const AI_PRICING = {
  // Conservative application conversion policy, NOT a live exchange-rate quote or provider invoice.
  usdCostToEurBudgetMultiplier: "1.20", serviceTier: "default",
 } as const;
+// Standard global Responses pricing reviewed 2026-10-13; no tools/regional surcharge.
+// https://developers.openai.com/api/docs/models/gpt-5.4-mini
+// Pre-5.6 caching has no separate cache-write premium. No discount assumed for holds.
+export const MINI_PRICING = Object.freeze({
+ version:"GPT_5_4_MINI_EUR_2026_10_13",provider:"openai",model:"gpt-5.4-mini",
+ responseModels:Object.freeze(["gpt-5.4-mini","gpt-5.4-mini-2026-03-17"]),
+ source:"https://developers.openai.com/api/docs/models/gpt-5.4-mini",
+ validUntil:"2026-11-12T00:00:00Z",contextTokens:400000,maxOutputTokens:128000,
+ longContextThreshold:400000,longInputMultiplier:"1",longOutputMultiplier:"1",
+ inputUsdPerMillion:"0.75",cachedUsdPerMillion:"0.075",cacheWriteUsdPerMillion:"0.75",outputUsdPerMillion:"4.50",
+ usdCostToEurBudgetMultiplier:"1.20",serviceTier:"default",
+});
 export interface Pricing {
- version:string;provider:string;model:string;source:string;validUntil:string;contextTokens:number;maxOutputTokens:number;
+ version:string;provider:string;model:string;responseModels?:readonly string[];source:string;validUntil:string;contextTokens:number;maxOutputTokens:number;
  longContextThreshold:number;longInputMultiplier:string;longOutputMultiplier:string;inputUsdPerMillion:string;cachedUsdPerMillion:string;cacheWriteUsdPerMillion:string;outputUsdPerMillion:string;
  usdCostToEurBudgetMultiplier:string;serviceTier:string;
 }
-export const PRICING_PROFILES:Readonly<Record<string,Pricing>>=Object.freeze({[AI_PRICING.version]:Object.freeze(AI_PRICING)});
+export const PRICING_PROFILES:Readonly<Record<string,Pricing>>=Object.freeze({[AI_PRICING.version]:Object.freeze(AI_PRICING),[MINI_PRICING.version]:MINI_PRICING});
+export function acceptsResponseModel(pricing:Pricing,model:string|null):boolean {
+ return model!==null&&(pricing.responseModels??[pricing.model]).includes(model);
+}
 export function operationPricing(operation:AiOperation,now=new Date()):Pricing {
  const p=PRICING_PROFILES[operation.pricingProfile];
  if(!p||p.provider!==operation.provider||p.model!==operation.model||now.getTime()>=Date.parse(p.validUntil))throw new Error("AI pricing requires review before requests can run.");
@@ -30,7 +45,9 @@ export function pricingFor(model: string, now = new Date()): Pricing {
  if (!pricing || now.getTime() >= Date.parse(pricing.validUntil)) throw new Error("AI pricing requires review before requests can run.");
  return pricing;
 }
-export function reservationMicros(pricing:Pricing=AI_PRICING,operation:AiOperation=operationFor("SETUP_ANALYSIS")) {
+export function reservationMicros(pricing:Pricing|undefined=undefined,operation:AiOperation=operationFor("SETUP_ANALYSIS")) {
+ pricing??=PRICING_PROFILES[operation.pricingProfile];
+ if(!pricing)throw new Error("Unknown operation pricing profile");
  const long=operation.maxInputTokens>pricing.longContextThreshold;
  return new Decimal(operation.maxInputTokens).mul(Decimal.max(pricing.inputUsdPerMillion,pricing.cachedUsdPerMillion,pricing.cacheWriteUsdPerMillion)).mul(long?pricing.longInputMultiplier:1)
  .add(new Decimal(operation.maxOutputTokens).mul(pricing.outputUsdPerMillion).mul(long?pricing.longOutputMultiplier:1))
