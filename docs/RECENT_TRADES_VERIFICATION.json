@@ -1,0 +1,159 @@
+{
+  "verifiedAt": "2026-09-24T20:58:11.343Z",
+  "branch": "feature/account-ai-budget",
+  "checkpoint": "b6731c1b0ed63c9c0a99d75dbe7f4b58b4d7a1cb",
+  "node": "v24.19.0",
+  "tests": {
+    "total": 272,
+    "passed": 272,
+    "failed": 0,
+    "fullSuiteRun": false,
+    "files": [
+      {
+        "file": "recent-trades-actions-data.test.ts",
+        "total": 14,
+        "status": "passed"
+      },
+      {
+        "file": "recent-trades-contract.test.ts",
+        "total": 35,
+        "status": "passed"
+      },
+      {
+        "file": "recent-trades-database.test.ts",
+        "total": 21,
+        "status": "passed"
+      },
+      {
+        "file": "recent-trades-source.test.ts",
+        "total": 18,
+        "status": "passed"
+      },
+      {
+        "file": "recent-trades.test.ts",
+        "total": 15,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review-contract.test.ts",
+        "total": 46,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review-database.test.ts",
+        "total": 17,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget-database.test.ts",
+        "total": 31,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget.test.ts",
+        "total": 60,
+        "status": "passed"
+      },
+      {
+        "file": "ai-disabled.test.ts",
+        "total": 15,
+        "status": "passed"
+      }
+    ]
+  },
+  "typeScript": "PASS",
+  "lint": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "build": "PASS",
+  "browser": {
+    "mode": "Local React component/server-action harness, synthetic services; not full hosted integration",
+    "desktop": [
+      1440,
+      1000
+    ],
+    "mobile": [
+      393,
+      852
+    ],
+    "physicalDevice": false,
+    "passed": true,
+    "horizontalOverflow": false,
+    "focusVisible": true,
+    "errorFocus": true,
+    "automaticSubmissions": 0,
+    "acceptedMockSubmissions": 3,
+    "successfulAppendVersions": 2,
+    "consoleErrors": 0,
+    "consoleWarnings": 0
+  },
+  "concurrency": {
+    "mode": "PGlite serialized queued requests; not native multi-connection contention",
+    "requests": 20,
+    "budgetCents": [
+      300,
+      500,
+      1000
+    ],
+    "accepted": [
+      3,
+      5,
+      10
+    ]
+  },
+  "operation": {
+    "id": "RECENT_TRADES_ANALYSIS",
+    "version": "RECENT_TRADES_V1",
+    "maxInputTokens": 32000,
+    "maxOutputTokens": 6000,
+    "maxImages": 0,
+    "tools": [],
+    "reservationMicroEur": 924000
+  },
+  "productionChanged": false,
+  "providerCalls": 0,
+  "aiEnabled": false,
+  "hostedMigrationApplied": false,
+  "stagedFiles": 0,
+  "deterministicCoreChanged": false,
+  "security": {
+    "at": "2026-09-24T20:58:11.918Z",
+    "sourceFiles": 274,
+    "clientAssets": 18,
+    "secretFindings": [],
+    "excludedLocalFiles": true,
+    "protectedCoreUnchanged": true,
+    "aiEnabled": false,
+    "stagedFiles": 0,
+    "network": {
+      "started_at": "2026-09-24T20:52:37.313Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  },
+  "files": [
+    "docs/RECENT_TRADES_FEATURE.md",
+    "docs/RECENT_TRADES_VERIFICATION.json",
+    "scripts/recent-trades-browser-harness.mjs",
+    "src/ai/operation-contract.ts",
+    "src/ai/operations.ts",
+    "src/ai/recent-trades-context.ts",
+    "src/ai/recent-trades-contract.ts",
+    "src/app/edge/page.tsx",
+    "src/app/edge/recent/page.tsx",
+    "src/app/recent-trades-actions.ts",
+    "src/components/recent-trades.tsx",
+    "src/lib/recent-trades-data.ts",
+    "src/lib/recent-trades-source.ts",
+    "src/lib/recent-trades.ts",
+    "supabase/migrations/0012_recent_trades_analyses.sql",
+    "tests/browser/recent-trades-entry.tsx",
+    "tests/fixtures/recent-trades.ts",
+    "tests/recent-trades-actions-data.test.ts",
+    "tests/recent-trades-contract.test.ts",
+    "tests/recent-trades-database.test.ts",
+    "tests/recent-trades-source.test.ts",
+    "tests/recent-trades.test.ts"
+  ]
+}

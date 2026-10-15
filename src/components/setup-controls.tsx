@@ -19,7 +19,7 @@ export function SetupControls({id,activeCount,running,locked,ai}:{id:string;acti
  async function analyze(){
   if(ai.status!=="ENABLED")return;
   setAnalyzing(true);setMessage("Analysis started. You may refresh; the saved run will remain visible.");
-  try{const response=await fetch(`/api/setups/${id}/analyze`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({evaluationId:crypto.randomUUID(),mode})});const result=await response.json();setMessage(result.error??"Review finished. See the result and history below.");}catch{setMessage("Connection interrupted. Check the saved run before starting another review.");}finally{setAnalyzing(false);router.refresh();}
+  try{const response=await fetch(`/api/setups/${id}/analyze`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({evaluationId:crypto.randomUUID(),mode})});const result=await response.json();setMessage(result.error??result.message??"Review finished. See the result and history below.");}catch{setMessage("Connection interrupted. Check the saved run before starting another review.");}finally{setAnalyzing(false);router.refresh();}
  }
  return <div className="stack">
   <section className="panel padded"><h2>Add chart evidence</h2><p>PNG, JPEG or WEBP · up to 4 MB each · 8 active charts · still images only. Roles describe the supplied image; they do not create missing evidence.</p>

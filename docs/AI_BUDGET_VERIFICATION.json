@@ -1,0 +1,240 @@
+{
+  "verifiedAt": "2026-09-23T11:22:56.168Z",
+  "branch": "feature/account-ai-budget",
+  "productionCommit": "79ab1496bf0cb8e1807f3b83ef3c6ca96cf404bb",
+  "tests": {
+    "total": 519,
+    "passed": 519,
+    "failed": 0,
+    "skipped": 0,
+    "files": 22,
+    "fullSuiteRunsThisRevision": 1,
+    "baselineTestsUnmodified": 410
+  },
+  "lint": {
+    "changed": 0,
+    "unchanged": 122,
+    "matches": 0,
+    "duration": 64621100,
+    "errors": 0,
+    "warnings": 0,
+    "infos": 30,
+    "skipped": 0,
+    "suggestedFixesSkipped": 0,
+    "diagnosticsNotPrinted": 0,
+    "scannerDuration": 2163900
+  },
+  "typeScript": "PASS",
+  "build": "PASS",
+  "node": "v24.19.0",
+  "pricingVersion": "ASTRA_EUR_2026_09_23",
+  "operationVersion": "BOUNDED_SETUP_V1",
+  "operations": [
+    {
+      "id": "SETUP_ANALYSIS",
+      "maxInput": 32000,
+      "maxOutput": 8000,
+      "reservationMicros": 1056000
+    },
+    {
+      "id": "SETUP_CHALLENGE",
+      "maxInput": 32000,
+      "maxOutput": 8000,
+      "reservationMicros": 1056000
+    },
+    {
+      "id": "SETUP_RECONCILE",
+      "maxInput": 48000,
+      "maxOutput": 8000,
+      "reservationMicros": 1320000
+    }
+  ],
+  "safetyMultiplier": "1.10",
+  "usdCostToEurBudgetMultiplier": "1.20",
+  "concurrency": {
+    "checkedAt": "2026-09-23T11:14:52.534Z",
+    "nativePostgres": true,
+    "connections": 20,
+    "reservationRequests": 60,
+    "cases": [
+      {
+        "capMicros": 3000000,
+        "reservationMicros": 1056000,
+        "accepted": 2,
+        "rejected": 18,
+        "heldMicros": 2112000
+      },
+      {
+        "capMicros": 5000000,
+        "reservationMicros": 1056000,
+        "accepted": 4,
+        "rejected": 16,
+        "heldMicros": 4224000
+      },
+      {
+        "capMicros": 10000000,
+        "reservationMicros": 1056000,
+        "accepted": 9,
+        "rejected": 11,
+        "heldMicros": 9504000
+      }
+    ],
+    "concurrentOptOutObserved": true,
+    "crossUserIsolation": true,
+    "productionTouched": false,
+    "providerCalls": 0
+  },
+  "browser": {
+    "checkedAt": "2026-09-23T11:37:38.651Z",
+    "status": "PASS",
+    "environment": "Local Settings component and server actions; synthetic session and PGlite; deployment availability and usage fixtures",
+    "currentRevisionBrowserAcceptance": true,
+    "states": [
+      "OFF",
+      "ON",
+      "UNAVAILABLE",
+      "BUDGET REACHED"
+    ],
+    "activation": {
+      "uncheckedConsentBlocked": true,
+      "validationFocusedCheckbox": true,
+      "keyboardConsentAndSubmit": true,
+      "persisted": true
+    },
+    "deactivation": {
+      "passed": true,
+      "allowedWhileUnavailable": true,
+      "preservedHistory": true,
+      "refreshPersistedOff": true
+    },
+    "budget": {
+      "acceptedEur": [
+        1,
+        100,
+        3,
+        5,
+        10
+      ],
+      "presetsPresent": [
+        3,
+        5,
+        10
+      ],
+      "rejected": [
+        "0.99",
+        "100.01",
+        "1.001",
+        "empty"
+      ],
+      "invalidInputFocused": true,
+      "unchangedAfterInvalid": true
+    },
+    "display": {
+      "used": "€1.34",
+      "reserved": "€1.056",
+      "remaining": "€2.604",
+      "cap": "€5.00",
+      "committedPercent": 47,
+      "reset": "2026-10-01 00:00 UTC−5",
+      "resetPolicy": "day 1 at 05:00 UTC, fixed UTC−5 without DST",
+      "warningThresholds": [
+        50,
+        80,
+        95,
+        100
+      ],
+      "insufficientBudget": "€1 available versus €1.056 reservation; blocking explanation visible"
+    },
+    "audit": {
+      "previousAndNewValues": true,
+      "timestampAndOwner": true,
+      "preservedOnDisable": true
+    },
+    "responsive": {
+      "viewports": [
+        {
+          "width": 1440,
+          "height": 1000
+        },
+        {
+          "width": 393,
+          "height": 852
+        }
+      ],
+      "scenarioViewportChecks": 16,
+      "extraOffAndExpandedHistoryChecks": true,
+      "horizontalOverflow": false,
+      "clippedMobileElements": 0,
+      "physicalDeviceTest": false
+    },
+    "accessibility": {
+      "labelledControls": true,
+      "namedRegionAndProgress": true,
+      "keyboardDisclosure": true,
+      "keyboardConsent": true,
+      "logicalTabSequence": true,
+      "visibleFocusOutline": "2px solid",
+      "nativeValidationFocus": true,
+      "screenReaderDeviceTest": false
+    },
+    "browserConsoleErrors": 0,
+    "browserConsoleWarnings": 0,
+    "defectsFixed": [
+      {
+        "description": "Audit timestamps ran into monetary values on narrow screens",
+        "file": "src/components/ai-settings.tsx",
+        "fix": "Render each audit timestamp as a block with 4px top spacing",
+        "desktopAndMobileRechecked": true
+      }
+    ],
+    "unresolvedDefects": [],
+    "automatedFollowup": {
+      "tests": 18,
+      "passed": 18,
+      "failed": 0,
+      "typeScript": "PASS",
+      "targetedLint": "PASS",
+      "fullSuiteRerun": false
+    },
+    "liveProviderCalls": 0,
+    "productionTouched": false
+  },
+  "security": {
+    "at": "2026-09-23T11:21:23.348Z",
+    "sourceFiles": 186,
+    "clientAssets": 18,
+    "secretFindings": [],
+    "excludedLocalFiles": true,
+    "protectedCoreUnchanged": true,
+    "existingTestsUnmodified": true,
+    "tests": {
+      "total": 519,
+      "passed": 519,
+      "failed": 0
+    },
+    "network": {
+      "started_at": "2026-09-23T11:20:32.709Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  },
+  "production": {
+    "deployment": "dpl_HfA2SWCiyNaZ8CXSFzwqH3KMoiPz",
+    "environmentUnchanged": true,
+    "aiEnabled": false,
+    "providerKeyPresent": false,
+    "migration0008Applied": false,
+    "deployed": false
+  },
+  "gitStaged": false,
+  "providerCalls": 0,
+  "testCostEur": 0,
+  "protectedDeterministicCoreChanged": false,
+  "status": "READY FOR AI STAGING REVIEW",
+  "remaining": "Separately authorized non-production staging integration and provider/billing validation before any production activation.",
+  "browserFollowupAt": "2026-09-23T11:37:38.651Z",
+  "verificationReuse": {
+    "fullSuite": "Existing 519/519 result retained; no full rerun for the isolated timestamp presentation fix",
+    "build": "Previous passing build retained; focused Settings tests, strict TypeScript and targeted lint rerun after the presentation fix"
+  }
+}

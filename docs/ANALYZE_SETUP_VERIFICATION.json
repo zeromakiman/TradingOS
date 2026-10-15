@@ -1,0 +1,173 @@
+{
+  "date": "2026-09-24",
+  "status": "ANALYZE SETUP FEATURE READY",
+  "workspace": "C:/ChatGPT/Trading",
+  "branch": "feature/account-ai-budget",
+  "head": "79ab1496bf0cb8e1807f3b83ef3c6ca96cf404bb",
+  "operation": {
+    "id": "ANALYZE_SETUP",
+    "version": "ANALYZE_SETUP_V1",
+    "provider": "openai",
+    "model": "gpt-6-astra",
+    "reasoning": "medium",
+    "maxInputTokens": 16000,
+    "maxOutputTokens": 5000,
+    "maxImages": 3,
+    "tools": [],
+    "reservationMicros": 594000
+  },
+  "tests": {
+    "total": 271,
+    "passed": 271,
+    "failed": 0,
+    "fullSuiteRun": false,
+    "files": [
+      {
+        "file": "tests/analyze-setup-actions-data.test.ts",
+        "total": 11,
+        "passed": 11
+      },
+      {
+        "file": "tests/analyze-setup-contract.test.ts",
+        "total": 31,
+        "passed": 31
+      },
+      {
+        "file": "tests/analyze-setup-database.test.ts",
+        "total": 17,
+        "passed": 17
+      },
+      {
+        "file": "tests/analyze-setup.test.ts",
+        "total": 18,
+        "passed": 18
+      },
+      {
+        "file": "tests/bias-challenge-actions-data.test.ts",
+        "total": 11,
+        "passed": 11
+      },
+      {
+        "file": "tests/ai-budget-database.test.ts",
+        "total": 31,
+        "passed": 31
+      },
+      {
+        "file": "tests/ai-budget.test.ts",
+        "total": 60,
+        "passed": 60
+      },
+      {
+        "file": "tests/ai-disabled.test.ts",
+        "total": 15,
+        "passed": 15
+      },
+      {
+        "file": "tests/bias-challenge-contract.test.ts",
+        "total": 22,
+        "passed": 22
+      },
+      {
+        "file": "tests/bias-challenge.test.ts",
+        "total": 18,
+        "passed": 18
+      },
+      {
+        "file": "tests/bias-challenge-database.test.ts",
+        "total": 11,
+        "passed": 11
+      },
+      {
+        "file": "tests/setup-ai.test.ts",
+        "total": 26,
+        "passed": 26
+      }
+    ]
+  },
+  "typeScript": "PASS",
+  "lint": "PASS (informational diagnostics only)",
+  "build": "PASS; Node 24.19.0; network guard enabled",
+  "database": "Isolated PGlite only; fresh local 0010 reused; no hosted migration",
+  "concurrency": {
+    "submitted": 12,
+    "accepted": 8,
+    "heldMicros": 4752000,
+    "capMicros": 5000000,
+    "engine": "queued PGlite connections, not a new native multi-connection stress test"
+  },
+  "browser": {
+    "submissions": [
+      {
+        "proposalId": "30000000-0000-4000-8000-000000000001",
+        "key": "0e9b7c51-cfce-4b1e-8ffa-717eb8b60b37",
+        "evidence": [
+          "50000000-0000-4000-8000-000000000001"
+        ]
+      },
+      {
+        "proposalId": "30000000-0000-4000-8000-000000000001",
+        "key": "40948e13-bbe8-4e35-9e7a-c0be7d8d0cab",
+        "evidence": []
+      },
+      {
+        "proposalId": "30000000-0000-4000-8000-000000000001",
+        "key": "8a7d9407-a73d-4e02-9ac8-4c607e2fe6fe",
+        "evidence": []
+      }
+    ],
+    "historyCount": 3,
+    "providerCalls": 0,
+    "productionTouched": false,
+    "riskStatus": "TRADE_BLOCKED",
+    "kind": "Local actual component/form/action harness; synthetic service and evidence; no hosted Supabase or live provider",
+    "viewports": [
+      {
+        "width": 1440,
+        "height": 1000
+      },
+      {
+        "width": 393,
+        "height": 852
+      }
+    ],
+    "checks": [
+      "ON / OFF / UNAVAILABLE / BUDGET REACHED / LOCKED",
+      "Explicit evidence selection and pending disabled controls",
+      "Required result sections and deterministic BLOCK remains",
+      "Append completed and failed history",
+      "Unselected evidence / missing evidence notice",
+      "Provider/model/time/cost disclosure",
+      "Keyboard checkbox and button focus visible",
+      "Error alert receives focus",
+      "Expanded facts and history have no horizontal overflow",
+      "No console errors or warnings"
+    ],
+    "physicalDevice": false
+  },
+  "security": {
+    "at": "2026-09-23T22:54:14.633Z",
+    "sourceFiles": 235,
+    "clientAssets": 18,
+    "secretFindings": [],
+    "excludedLocalFiles": true,
+    "protectedCoreUnchanged": true,
+    "aiEnabled": false,
+    "stagedFiles": 0,
+    "network": {
+      "started_at": "2026-09-23T22:50:17.180Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  },
+  "deterministicCoreChanged": false,
+  "productionChanged": false,
+  "liveProviderCalls": 0,
+  "staged": false,
+  "deployed": false,
+  "gitSyncIssue": {
+    "main": "9d1ef83a80a8a6abb11efaf4220e2458ec2afd9f",
+    "originMain": "9d1ef83a80a8a6abb11efaf4220e2458ec2afd9f",
+    "feature": "79ab1496bf0cb8e1807f3b83ef3c6ca96cf404bb",
+    "reconciled": false
+  }
+}

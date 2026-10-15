@@ -1,0 +1,174 @@
+{
+  "verifiedAt": "2026-09-25T07:25:15.906Z",
+  "status": "MONTHLY REVIEW FEATURE READY",
+  "branch": "feature/account-ai-budget",
+  "checkpoint": "cd172f4847a5516f57a969d9f8db3cfe7e854f6b",
+  "node": "v24.19.0",
+  "tests": {
+    "total": 286,
+    "passed": 286,
+    "failed": 0,
+    "newTests": 113,
+    "regressionTests": 173,
+    "fullSuiteRun": false,
+    "files": [
+      {
+        "file": "monthly-review-actions-data.test.ts",
+        "tests": 14,
+        "status": "passed"
+      },
+      {
+        "file": "monthly-review-contract.test.ts",
+        "tests": 54,
+        "status": "passed"
+      },
+      {
+        "file": "monthly-review-database.test.ts",
+        "tests": 18,
+        "status": "passed"
+      },
+      {
+        "file": "monthly-review-source.test.ts",
+        "tests": 12,
+        "status": "passed"
+      },
+      {
+        "file": "monthly-review.test.ts",
+        "tests": 15,
+        "status": "passed"
+      },
+      {
+        "file": "recent-trades-database.test.ts",
+        "tests": 21,
+        "status": "passed"
+      },
+      {
+        "file": "weekly-review-contract.test.ts",
+        "tests": 46,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget-database.test.ts",
+        "tests": 31,
+        "status": "passed"
+      },
+      {
+        "file": "ai-budget.test.ts",
+        "tests": 60,
+        "status": "passed"
+      },
+      {
+        "file": "ai-disabled.test.ts",
+        "tests": 15,
+        "status": "passed"
+      }
+    ]
+  },
+  "typeScript": "PASS",
+  "lint": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "build": "PASS",
+  "operation": {
+    "id": "MONTHLY_REVIEW",
+    "version": "MONTHLY_REVIEW_V1",
+    "inputTokens": 32000,
+    "outputTokens": 6000,
+    "maxImages": 0,
+    "tools": [],
+    "reservationMicroEur": 924000
+  },
+  "limits": {
+    "trades": 120,
+    "events": 500,
+    "bytes": 128000,
+    "detailedTrades": 30,
+    "detailedBytes": 96000,
+    "overflowStrategy": "Explicit deterministic summary of entire selected month; hard limit fails closed"
+  },
+  "browser": {
+    "mode": "Real React panel/Shell/ActionForm/server action with synthetic service boundaries; not hosted integration",
+    "desktop": [
+      1440,
+      1000
+    ],
+    "mobile": [
+      393,
+      852
+    ],
+    "physicalDevice": false,
+    "passed": true,
+    "horizontalOverflow": false,
+    "visibleFocusPx": 2,
+    "errorFocusPx": 3,
+    "consoleErrors": 0,
+    "consoleWarnings": 0,
+    "automaticSubmissions": 0,
+    "acceptedMockSubmissions": 4,
+    "completedAppendedReviews": 3,
+    "completedSummarySampleSize": 60,
+    "failedAppendedReviews": 1
+  },
+  "database": {
+    "migration": "0013_monthly_ai_reviews.sql",
+    "isolatedPGlite": true,
+    "hostedApplied": false,
+    "concurrency": "Serialized queued PGlite requests; not native multi-connection contention",
+    "budgetCents": [
+      300,
+      500,
+      1000
+    ],
+    "acceptedMaximumReservations": [
+      3,
+      5,
+      10
+    ]
+  },
+  "productionChanged": false,
+  "aiEnabled": false,
+  "providerCalls": 0,
+  "deterministicCoreChanged": false,
+  "stagedFiles": 0,
+  "files": [
+    "docs/MONTHLY_REVIEW_FEATURE.md",
+    "docs/MONTHLY_REVIEW_VERIFICATION.json",
+    "scripts/monthly-review-browser-harness.mjs",
+    "src/ai/monthly-period.ts",
+    "src/ai/monthly-review-context.ts",
+    "src/ai/monthly-review-contract.ts",
+    "src/ai/operation-contract.ts",
+    "src/ai/operations.ts",
+    "src/app/edge/monthly/page.tsx",
+    "src/app/edge/page.tsx",
+    "src/app/monthly-review-actions.ts",
+    "src/components/monthly-review.tsx",
+    "src/lib/monthly-review-data.ts",
+    "src/lib/monthly-review-source.ts",
+    "src/lib/monthly-review.ts",
+    "supabase/migrations/0013_monthly_ai_reviews.sql",
+    "tests/browser/monthly-review-entry.tsx",
+    "tests/fixtures/monthly-review.ts",
+    "tests/monthly-review-actions-data.test.ts",
+    "tests/monthly-review-contract.test.ts",
+    "tests/monthly-review-database.test.ts",
+    "tests/monthly-review-source.test.ts",
+    "tests/monthly-review.test.ts"
+  ],
+  "security": {
+    "at": "2026-09-25T07:25:24.936Z",
+    "sourceFiles": 294,
+    "clientAssets": 18,
+    "secretFindings": [],
+    "excludedLocalFiles": true,
+    "protectedCoreUnchanged": true,
+    "aiEnabled": false,
+    "stagedFiles": 0,
+    "network": {
+      "started_at": "2026-09-25T06:38:12.611Z",
+      "openai_requests_attempted": 0,
+      "blocked": true
+    }
+  }
+}

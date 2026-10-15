@@ -1,0 +1,10 @@
+import {previewContext,previewProposal} from '@/domain/fixtures';
+import {evaluateRisk} from '@/domain/risk';
+import {storedRiskSchema} from '@/domain/risk-report';
+import type {BiasContextSource} from '@/ai/bias-challenge-context';
+import type {BiasChallengeOutput} from '@/ai/bias-challenge-contract';
+export {ids} from './trade-review';
+import {ids,strategy} from './trade-review';
+const proposal={...previewProposal,contractConfirmed:true,riskPercent:'2',narrative:'I expect a long OB first touch after a liquidity sweep. Pre-market direction is my assumption, not verified evidence.'};
+export const source:BiasContextSource={proposal:{id:ids.plan,user_id:ids.user,account_id:ids.account,strategy_version_id:strategy.id,instrument_version_id:previewContext.instrument.id,risk_evaluation_id:ids.event,proposal,created_at:'2026-09-23T07:00:00Z'},strategy,instrument:{id:previewContext.instrument.id,symbol:'EURUSD'},risk:{id:ids.event,result:storedRiskSchema.parse(evaluateRisk(proposal,previewContext)),recorded_at:'2026-09-23T07:00:00Z'},riskVersion:'Risk V1'};
+export const challengeOutput:BiasChallengeOutput={counterArgument:{text:'Your directional thesis assumes the reported sweep confirms demand; the supplied narrative alone does not establish that. The recorded risk block remains unresolved.',sourceRefs:['currentThesis','deterministic']},invalidation:[{text:'Evidence of a prior touch would contradict the stated first-touch model.',sourceRefs:['strategy','proposal']}],missingEvidence:[{text:'No selected chart verifies the reported liquidity sweep or pre-market context.',sourceRefs:['currentThesis']}],questions:[{text:'What recorded evidence distinguishes this setup from a contradictory interpretation?',sourceRefs:['currentThesis','strategy']}]};
