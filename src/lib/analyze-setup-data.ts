@@ -5,6 +5,7 @@ import {accountAiAvailability} from "./ai-budget";
 import {operationFor} from "@/ai/operations";
 import {reservationMicros} from "@/ai/pricing";
 import {analyzeSetupOutput} from "@/ai/analyze-setup-contract";
+import {loadDraftPanel,type PreTradePanel} from "@/ai/pre-trade-draft";
 const requestSchema=z.object({id:z.uuid(),facts:z.object({currentThesis:z.string(),deterministic:z.object({status:z.enum(["RISK_APPROVED","TRADE_BLOCKED"])}).passthrough()}).passthrough(),operation:z.object({provider:z.string(),model:z.string(),version:z.string()}),created_at:z.string(),deadline_at:z.string()});
 const resultSchema=z.object({challenge_id:z.uuid(),status:z.enum(["COMPLETED","FAILED"]),interpretation:analyzeSetupOutput.nullable(),error_code:z.string().nullable(),reservation_id:z.uuid().nullable(),created_at:z.string()});
 /** Internal server loader: s is the authenticated, owner-scoped result of loadSetup; its db retains RLS. */
@@ -27,3 +28,5 @@ export async function loadAnalyzeSetupPanel(s:Awaited<ReturnType<typeof loadSetu
  }catch{return {...base,availability:{status:"CONFIGURATION_ERROR" as const,message:"Setup analyses are unavailable. Deterministic workflows remain available.",deepEnabled:false},evidence:[],history:[],hasOlder:false,error:"Unable to load analysis history/configuration. No analysis request can run."};}
 }
 export type AnalyzeSetupPanelData=Awaited<ReturnType<typeof loadAnalyzeSetupPanel>>;
+/** V2 trade page (spec §11.3): Analyze Setup on the latest revision of a draft, with history across revisions. */
+export function loadTradeAnalyzeSetupPanel(tradeId:string,page=0):Promise<PreTradePanel>{return loadDraftPanel("ANALYZE_SETUP",tradeId,page);}

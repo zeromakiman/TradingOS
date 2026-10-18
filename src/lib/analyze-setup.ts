@@ -13,6 +13,7 @@ import { budgetedAiRequest } from "@/ai/request-gate";
 import { ProviderError } from "@/ai/provider";
 import { analyzeSetupContext } from "@/ai/analyze-setup-context";
 import { validateAnalyzeSetup } from "@/ai/analyze-setup-contract";
+import { type PreTradeOperationConfig,type PreTradeOutcome,runDraftRequest } from "@/ai/pre-trade-draft";
 export async function analyzeSetup(proposalId:string,requestId:string,selectedIds:string[]) {
  const operation=operationFor("ANALYZE_SETUP");
  z.uuid().parse(requestId);z.array(z.uuid()).max(operation.maxImages).parse(selectedIds);
@@ -47,4 +48,13 @@ export async function analyzeSetup(proposalId:string,requestId:string,selectedId
  const finish=await admin.rpc("finish_bias_challenge",{p_id:requestId,p_user_id:s.user.id,p_status:interpretation?"COMPLETED":"FAILED",p_interpretation:interpretation,p_error:errorCode,p_raw:raw,p_reservation_id:reservationId});
  if(finish.error)throw new Error("Analysis could not finish saving. Check history before retrying; no automatic retry occurred.");
  return {status:interpretation?"COMPLETED":"FAILED",message:interpretation?"Analysis saved. Proposal and Risk Engine permission are unchanged.":"Analysis failed. The attempt and protected accounting remain in history."};
+}
+
+/** V2 (spec §11.3): Analyze Setup on the latest revision of a planned draft, resolved on the server. */
+const TRADE_SETUP_ANALYSIS:PreTradeOperationConfig<ReturnType<typeof validateAnalyzeSetup>>={
+ operation:"ANALYZE_SETUP",context:analyzeSetupContext,validate:validateAnalyzeSetup,invalidOutputCode:"INVALID_ANALYSIS_OUTPUT",failureCode:"ANALYSIS_FAILED",
+ copy:{completed:"Analysis saved. Your draft and the Risk Engine result are unchanged.",failed:"The analysis failed. The attempt and its accounting are kept in the history.",startFailed:"Unable to start the analysis. Refresh to check the draft and existing attempts.",finishFailed:"The analysis could not finish saving. Check the history before retrying; no automatic retry was made."},
+};
+export function analyzeTradeSetup(tradeId:string,requestId:string,evidenceIds:readonly string[],expectedRevision?:number):Promise<PreTradeOutcome>{
+ return runDraftRequest(TRADE_SETUP_ANALYSIS,tradeId,requestId,evidenceIds,expectedRevision);
 }

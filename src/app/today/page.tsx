@@ -1,5 +1,7 @@
+import Decimal from "decimal.js";
 import { loadTodayActivity } from "@/lib/today-data";
 import { dailyStatus, formatR } from "@/domain/ux";
+import { formatMoney } from "@/domain/format";
 import Link from "next/link";
 import { ArrowRight, CircleAlert } from "lucide-react";
 import { Shell } from "@/components/shell";
@@ -13,6 +15,7 @@ import { saveContext } from "@/app/actions";
 import { loadWorkspace } from "@/lib/data";
 import { strategyClock } from "@/domain/session";
 export const dynamic = "force-dynamic";
+const Exact = Decimal.clone({ precision: 100 });
 export default async function TodayPage({searchParams}:{searchParams:Promise<{account?:string}>}) {
   const {account:accountId} = await searchParams;
   const state = await loadWorkspace(accountId), c = state.current;
@@ -35,8 +38,9 @@ export default async function TodayPage({searchParams}:{searchParams:Promise<{ac
   <SessionRibbon now={c.context.now}/>
   <div className="context-strip">
     <span>Recorded equity <b>${Number(c.observation.equity).toLocaleString("en-US",{minimumFractionDigits:2})}</b></span>
-    <span>Nominal risk reserved <b>${Number(c.context.riskConsumed).toFixed(2)}</b></span>
-    <span>Locked plans today <b>{c.context.slotsUsed}</b></span>
+    <span>Nominal risk reserved <b>{formatMoney(new Exact(c.usage.plannedRisk).plus(c.usage.unplannedRisk), c.account.currency)}</b></span>
+    <span>Locked plans today <b>{c.usage.plannedSlots}</b></span>
+    <span>Live-first trades today <b>{c.usage.unplannedTrades}</b></span>
     <span>Actual entries today <b>{activity.taken}</b></span>
     <span>Completed today <b>{activity.closed}</b></span>
     <span>Strategy <b>{c.strategy.version}</b></span>

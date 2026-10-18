@@ -7,7 +7,7 @@ import {sampleLabel} from "@/domain/analytics";
 import {strategyClock} from "@/domain/session";
 import {dailyStatus,formatR} from "@/domain/ux";
 import {evaluateRisk} from "@/domain/risk";
-import {previewContext,previewProposal} from "@/domain/fixtures";
+import {previewContext,previewProposal,usageFixture} from "@/domain/fixtures";
 
 const DAY="2026-09-07",NEXT_DAY="2026-09-08",MIDNIGHT=Date.parse(`${DAY}T05:00:00Z`);
 const at=(hhmm:string)=>{const [h,m]=hhmm.split(":").map(Number);return new Date(MIDNIGHT+(h*60+m)*60_000).toISOString();};
@@ -57,14 +57,18 @@ describe("session ribbon never contradicts the strategy clock",()=>{
 
 describe("permission tier interprets the authoritative status, never replaces it",()=>{
  const lockable={...previewProposal,narrative:"Presentation contract test.",contractConfirmed:true};
- const clear={...previewContext,now:"2026-09-07T14:00:00Z",observationDay:DAY};
+ const clear={...previewContext,now:"2026-09-07T14:00:00Z",observationDay:DAY,usage:usageFixture({day:DAY})};
+ const usage=(changes:Parameters<typeof usageFixture>[0])=>usageFixture(changes,clear.usage);
+ // Engine 1.2 knows today's losses (computed), so the V1 "unreported gross loss" restriction no longer exists; the
+ // loss-cap cases now cover realized losses, open risk and the legacy reported total instead.
  const restricted={
   "Dead Pool":{...clear,now:"2026-09-07T18:00:00Z"},
   "stale observation":{...clear,observationDay:"2026-09-06"},
-  "reserved slots":{...clear,slotsUsed:2},
-  "daily risk cap":{...clear,riskConsumed:"100",plan:{...clear.plan,dailyRiskCap:"100"}},
-  "unreported gross loss":{...clear,plan:{...clear.plan,dailyLossCap:"100"}},
-  "daily loss cap":{...clear,riskConsumed:"1",grossLoss:"99",plan:{...clear.plan,dailyLossCap:"100"}}
+  "reserved slots":{...clear,usage:usage({plannedSlots:2})},
+  "slots used by live-first trades":{...clear,usage:usage({plannedSlots:1,unplannedTrades:1})},
+  "daily risk cap":{...clear,usage:usage({plannedRisk:"100"}),plan:{...clear.plan,dailyRiskCap:"100"}},
+  "legacy reported loss":{...clear,usage:usage({legacyReportedLoss:"100"}),plan:{...clear.plan,dailyLossCap:"100"}},
+  "daily loss cap":{...clear,usage:usage({openExposure:"1",realizedLoss:"99"}),plan:{...clear.plan,dailyLossCap:"100"}}
  };
 
  it("keeps an unrestricted day clear in both the engine and the banner",()=>{

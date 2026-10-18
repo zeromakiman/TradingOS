@@ -13,6 +13,7 @@ import { budgetedAiRequest } from "@/ai/request-gate";
 import { ProviderError } from "@/ai/provider";
 import { biasChallengeContext } from "@/ai/bias-challenge-context";
 import { validateBiasChallenge } from "@/ai/bias-challenge-contract";
+import { type PreTradeOperationConfig,type PreTradeOutcome,runDraftRequest } from "@/ai/pre-trade-draft";
 export async function challengeBias(proposalId:string,requestId:string,selectedIds:string[]) {
  const operation=operationFor("CHALLENGE_BIAS");
  z.uuid().parse(requestId);z.array(z.uuid()).max(operation.maxImages).parse(selectedIds);
@@ -47,4 +48,13 @@ export async function challengeBias(proposalId:string,requestId:string,selectedI
  const finish=await admin.rpc("finish_bias_challenge",{p_id:requestId,p_user_id:s.user.id,p_status:interpretation?"COMPLETED":"FAILED",p_interpretation:interpretation,p_error:errorCode,p_raw:raw,p_reservation_id:reservationId});
  if(finish.error)throw new Error("Challenge could not finish saving. Check history before retrying; no automatic retry occurred.");
  return {status:interpretation?"COMPLETED":"FAILED",message:interpretation?"Challenge saved. Proposal and Risk Engine permission are unchanged.":"Challenge failed. The attempt and protected accounting remain in history."};
+}
+
+/** V2 (spec §11.3): Challenge My Bias on the latest revision of a planned draft, resolved on the server. */
+const TRADE_BIAS_CHALLENGE:PreTradeOperationConfig<ReturnType<typeof validateBiasChallenge>>={
+ operation:"CHALLENGE_BIAS",context:biasChallengeContext,validate:validateBiasChallenge,invalidOutputCode:"INVALID_CHALLENGE_OUTPUT",failureCode:"CHALLENGE_FAILED",
+ copy:{completed:"Challenge saved. Your draft and the Risk Engine result are unchanged.",failed:"The challenge failed. The attempt and its accounting are kept in the history.",startFailed:"Unable to start the challenge. Refresh to check the draft and existing attempts.",finishFailed:"The challenge could not finish saving. Check the history before retrying; no automatic retry was made."},
+};
+export function challengeTradeBias(tradeId:string,requestId:string,evidenceIds:readonly string[],expectedRevision?:number):Promise<PreTradeOutcome>{
+ return runDraftRequest(TRADE_BIAS_CHALLENGE,tradeId,requestId,evidenceIds,expectedRevision);
 }

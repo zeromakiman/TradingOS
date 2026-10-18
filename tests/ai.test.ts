@@ -53,7 +53,7 @@ describe("strict AI output and provenance",()=>{
   });
   it("a deterministic hard block dominates a supported AI result",()=>{
     const ai=validateEvaluation(approved(),context);
-    const risk=evaluateRisk({...previewProposal,narrative:"Test",contractConfirmed:true},{...previewContext,slotsUsed:2});
+    const risk=evaluateRisk({...previewProposal,narrative:"Test",contractConfirmed:true},{...previewContext,usage:{...previewContext.usage,plannedSlots:2}});
     expect(composeFinalEvaluation(ai,{inputHash,result:risk}).decision).toBe("BLOCKED");
   });
   it("requires the same evidence package for final composition",()=>{

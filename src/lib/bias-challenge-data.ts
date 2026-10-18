@@ -5,6 +5,7 @@ import {accountAiAvailability} from "./ai-budget";
 import {operationFor} from "@/ai/operations";
 import {reservationMicros} from "@/ai/pricing";
 import {biasChallengeOutput} from "@/ai/bias-challenge-contract";
+import {loadDraftPanel,type PreTradePanel} from "@/ai/pre-trade-draft";
 const requestSchema=z.object({id:z.uuid(),facts:z.object({currentThesis:z.string(),deterministic:z.object({status:z.enum(["RISK_APPROVED","TRADE_BLOCKED"])}).passthrough()}).passthrough(),operation:z.object({provider:z.string(),model:z.string(),version:z.string()}),created_at:z.string(),deadline_at:z.string()});
 const resultSchema=z.object({challenge_id:z.uuid(),status:z.enum(["COMPLETED","FAILED"]),interpretation:biasChallengeOutput.nullable(),error_code:z.string().nullable(),reservation_id:z.uuid().nullable(),created_at:z.string()});
 /** Internal server loader: s is the authenticated, owner-scoped result of loadSetup; its db retains RLS. */
@@ -27,3 +28,5 @@ export async function loadBiasChallengePanel(s:Awaited<ReturnType<typeof loadSet
  }catch{return {...base,availability:{status:"CONFIGURATION_ERROR" as const,message:"Bias challenges are unavailable. Deterministic workflows remain available.",deepEnabled:false},evidence:[],history:[],hasOlder:false,error:"Unable to load challenge history/configuration. No challenge request can run."};}
 }
 export type BiasChallengePanelData=Awaited<ReturnType<typeof loadBiasChallengePanel>>;
+/** V2 trade page (spec §11.3): Challenge My Bias on the latest revision of a draft, with history across revisions. */
+export function loadTradeBiasChallengePanel(tradeId:string,page=0):Promise<PreTradePanel>{return loadDraftPanel("CHALLENGE_BIAS",tradeId,page);}

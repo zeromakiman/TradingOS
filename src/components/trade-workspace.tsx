@@ -15,7 +15,7 @@ import { Field } from "./forms";
 
 export function TradeWorkspace({ context, instruments, accountId, observationId, preview = false }: { context: RiskContext; instruments: Instrument[]; accountId?: string; observationId?: string; preview?: boolean }) {
   const router=useRouter();
-  const [proposal, setProposal] = useState<Proposal>({ instrumentId: instruments[0].id, direction: "LONG", model: "OB_FIRST_TOUCH", entry: preview ? "1.10000" : "", stop: preview ? "1.09800" : null, target: preview ? "1.10600" : "", riskPercent: context.plan.maxRiskPercent, narrative: preview ? "Example only: proposed first-touch OB after a liquidity sweep and meaningful M5 displacement. Chart evidence has not been supplied." : "", contractConfirmed: false, news: "UNKNOWN", contradiction: false });
+  const [proposal, setProposal] = useState<Proposal>({ instrumentId: instruments[0].id, direction: "LONG", model: "OB_FIRST_TOUCH", entry: preview ? "1.10000" : "", stop: preview ? "1.09800" : null, target: preview ? "1.10600" : "", riskPercent: context.plan.defaultRiskPercent ?? context.plan.maxRiskPercent, narrative: preview ? "Example only: proposed first-touch OB after a liquidity sweep and meaningful M5 displacement. Chart evidence has not been supplied." : "", contractConfirmed: false, news: "UNKNOWN", contradiction: false });
   const [dirty,setDirty]=useState(false);
   const [now, setNow] = useState(context.now);
   const [simulation, setSimulation] = useState("ACTIVE");
@@ -28,13 +28,16 @@ export function TradeWorkspace({ context, instruments, accountId, observationId,
   const [error, setError] = useState("");
   const [pending, startTransition] = useTransition();
   const unsavedDialog=useUnsavedChanges(dirty&&!planId&&!pending);
-  useEffect(() => { if (preview) return; const timer = setInterval(() => setNow(new Date().toISOString()), 1000); return () => clearInterval(timer); }, [preview]);
+  // Server-anchored clock (V1 finding C8): monotonic elapsed time is added to the server time the page was rendered
+  // with, so a skewed browser clock never decides the session or whether a saved report is still current.
+  useEffect(() => { if (preview) return; const serverNow = Date.parse(context.now), startedAt = performance.now(); const timer = setInterval(() => setNow(new Date(serverNow + performance.now() - startedAt).toISOString()), 1000); return () => clearInterval(timer); }, [preview, context.now]);
   const instrument = instruments.find(i=>i.id === proposal.instrumentId) ?? instruments[0];
-  const runtimeContext = { ...context, instrument, now: preview ? simulation === "DEAD_POOL" ? "2026-09-04T18:00:00Z" : "2026-09-04T14:00:00Z" : now, slotsUsed: preview && simulation === "LIMIT" ? 2 : context.slotsUsed };
+  const runtimeContext: RiskContext = { ...context, instrument, now: preview ? simulation === "DEAD_POOL" ? "2026-09-04T18:00:00Z" : "2026-09-04T14:00:00Z" : now, usage: preview && simulation === "LIMIT" ? { ...context.usage, plannedSlots: 2 } : context.usage };
+  const slotsUsed = runtimeContext.usage.plannedSlots + runtimeContext.usage.unplannedTrades;
   const result = evaluateRisk(proposal, runtimeContext);
   const clock = strategyClock(runtimeContext.now);
   const shown = serverResult ?? result;
-  const stale = Boolean(serverResult && !planId && !isRiskReportCurrent(serverResult,runtimeContext,observationId));
+  const stale = Boolean(serverResult && !planId && !isRiskReportCurrent(serverResult,runtimeContext,observationId,runtimeContext.now));
   const calc = shown.calculations;
   const feedback=proposalFeedback(proposal);
   function update<K extends keyof Proposal>(key: K, value: Proposal[K]) {
@@ -76,7 +79,7 @@ export function TradeWorkspace({ context, instruments, accountId, observationId,
   return <>{unsavedDialog}
     <div className="page-heading"><div><div className="eyebrow">PRE-TRADE WORKSPACE</div><h1>Build a deliberate trade.</h1><p>Define the plan. Check the risk. Preserve the original.</p></div><span className="pill"><span className="dot"/>{preview ? "RISK ENGINE PREVIEW" : "MANUAL PLAN"}</span></div>
     {preview && <div className="notice preview-notice"><CircleAlert size={18}/><div><strong>Isolated example · no account data is saved</strong><p>Explore the risk rules using a fictional $10,000 USD account. Sign in to lock a real demo plan.</p></div><label className="scenario-label">Test scenario<select value={simulation} onChange={e=>{setSimulation(e.target.value);setSubmitted(true);}}><option value="ACTIVE">Active kill zone</option><option value="DEAD_POOL">Dead Pool</option><option value="LIMIT">Two slots reserved</option></select></label></div>}
-    <div className="metrics-strip"><Metric label="RECORDED EQUITY" value={`$${Number(context.equity).toLocaleString("en-US",{minimumFractionDigits:2})}`} detail="USD · user-reported"/><Metric label="MAXIMUM RISK" value={`${Number(context.plan.maxRiskPercent).toFixed(2)}%`} detail={context.plan.version}/><Metric label="DAILY SLOTS RESERVED" value={`${runtimeContext.slotsUsed} / ${context.plan.maxDailyTrades}`} detail="Locked plans · not executions"/><Metric label="STRATEGY CLOCK" value={clock.time} detail={`${clock.session.replaceAll("_"," ")} · UTC−5`} danger={clock.session === "DEAD_POOL"}/></div>
+    <div className="metrics-strip"><Metric label="RECORDED EQUITY" value={`$${Number(context.equity).toLocaleString("en-US",{minimumFractionDigits:2})}`} detail="USD · user-reported"/><Metric label="MAXIMUM RISK" value={`${Number(context.plan.maxRiskPercent).toFixed(2)}%`} detail={context.plan.version}/><Metric label="DAILY SLOTS USED" value={`${slotsUsed} / ${context.plan.maxDailyTrades}`} detail="Locked plans + live-first trades"/><Metric label="STRATEGY CLOCK" value={clock.time} detail={`${clock.session.replaceAll("_"," ")} · UTC−5`} danger={clock.session === "DEAD_POOL"}/></div>
     <div className="analysis-grid"><section className="panel"><div className="panel-heading"><h2><span className="step-number">01</span>Trade parameters</h2><span className="small muted">ICT V1.0</span></div>
       <form noValidate onSubmit={e=>{e.preventDefault();check();}} className="trade-form">
         <fieldset disabled={Boolean(planId) || pending}>
@@ -90,7 +93,7 @@ export function TradeWorkspace({ context, instruments, accountId, observationId,
           <Button type="submit" variant="outline"><ShieldCheck size={17}/>{pending && operation === "check" ? "Checking and saving…" : "Run risk check"}<ArrowRight size={16}/></Button>
         </fieldset>
       </form>
-    </section><div className="assessment-column"><section className="panel result-panel"><div className="panel-heading"><h2><span className="step-number">02</span>Risk assessment</h2><span className="small muted">ENGINE 1.0</span></div>
+    </section><div className="assessment-column"><section className="panel result-panel"><div className="panel-heading"><h2><span className="step-number">02</span>Risk assessment</h2><span className="small muted">ENGINE 1.1</span></div>
       <div className={`decision ${stale ? "decision-pending" : submitted || serverResult ? blocked ? "decision-blocked" : "decision-approved" : "decision-pending"}`}><ShieldCheck size={26}/><div><small>{stale ? "SAVED REPORT · CONTEXT CHANGED" : serverResult ? "SAVED · SERVER-VERIFIED" : "DETERMINISTIC PREVIEW"}</small><h3>{stale ? "RECHECK REQUIRED" : submitted || serverResult ? blocked ? "TRADE BLOCKED" : "RISK APPROVED" : "READY TO CHECK"}</h3><p>{stale ? "The session or account context changed. Run a fresh risk check." : submitted || serverResult ? blocked ? "Resolve the blocking conditions below." : "Risk rules pass. Review the summary before locking." : "Complete the plan and confirm the contract."}</p></div></div>
       <div className="calculation-hero"><span>PLANNED REWARD / RISK</span><strong>{calc ? `${Number(calc.plannedRR).toFixed(2)}` : "—"}<small>R</small></strong><span>Minimum {Number(context.plan.minRR).toFixed(2)}R · {context.plan.rrPolicy.toLowerCase()} below threshold</span></div>
       <dl className="calculation-list"><div><dt>Risk budget</dt><dd>{calc ? `$${calc.budget}` : "—"}</dd></div><div><dt>Nominal stop risk</dt><dd>{calc ? `$${Number(calc.nominalRisk).toFixed(2)}` : "—"}</dd></div><div><dt>Position size</dt><dd>{calc ? `${calc.quantity} lots` : "—"}</dd></div><div><dt>Stop distance</dt><dd>{calc ? `${Number(calc.stopPips ?? calc.stopTicks).toFixed(1)} ${calc.stopPips ? "pips" : "ticks"}` : "—"}</dd></div></dl>

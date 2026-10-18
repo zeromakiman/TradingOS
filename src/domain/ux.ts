@@ -10,18 +10,22 @@ export function formatR(value: string | number | null) {
 export function utcTime(value: string) {
   return new Date(value).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 }
+/**
+ * V1 Today banner over the engine 1.2 context: slots count planned and live-first trades, reserved
+ * risk is planned + live-first risk, and the loss limit uses today's known losses plus open risk
+ * (losses are always known in 1.2, so there is no "record your losses" reason any more).
+ */
 export function dailyStatus(c: RiskContext, active: "LOCKED" | "TAKEN" | null) {
   const clock = strategyClock(c.now);
+  const exact = Decimal.clone({ precision: 100 });
+  const slotsUsed = c.usage.plannedSlots + c.usage.unplannedTrades;
   const reasons: string[] = [];
   if (clock.session === "DEAD_POOL") reasons.push("Dead Pool is active. New locks resume at 18:00 UTC−5.");
   if (c.observationDay !== clock.day) reasons.push("Update today’s account values in Settings before locking a plan.");
-  if (c.slotsUsed >= c.plan.maxDailyTrades) reasons.push(`${c.slotsUsed} / ${c.plan.maxDailyTrades} daily slots are reserved. Closed and skipped plans do not release a slot.`);
-  if (c.plan.dailyRiskCap !== null && new Decimal(c.riskConsumed).gte(c.plan.dailyRiskCap)) reasons.push("The daily risk cap has been reached.");
-  if (c.plan.dailyLossCap !== null) {
-    if (c.grossLoss === null) reasons.push("Record today’s gross losses in Settings to check the daily loss cap.");
-    else if (new Decimal(c.grossLoss).plus(c.riskConsumed).gte(c.plan.dailyLossCap)) reasons.push("The daily loss and reserved-risk limit has been reached.");
-  }
-  return { label: active === "TAKEN" ? "TRADE ACTIVE" : active === "LOCKED" ? "PLAN ACTIVE" : reasons.length ? clock.session === "DEAD_POOL" ? "DEAD POOL" : c.slotsUsed >= c.plan.maxDailyTrades ? "DAILY LIMIT REACHED" : "ACTION REQUIRED" : "READY", reasons, slots: Math.max(0, c.plan.maxDailyTrades - c.slotsUsed) };
+  if (slotsUsed >= c.plan.maxDailyTrades) reasons.push(`${slotsUsed} / ${c.plan.maxDailyTrades} daily slots are used (planned and live-first trades). Closed and skipped plans do not release a slot.`);
+  if (c.plan.dailyRiskCap !== null && new exact(c.usage.plannedRisk).plus(c.usage.unplannedRisk).gte(c.plan.dailyRiskCap)) reasons.push("The daily risk cap has been reached.");
+  if (c.plan.dailyLossCap !== null && new exact(c.usage.lossTotal).plus(c.usage.openExposure).gte(c.plan.dailyLossCap)) reasons.push("The daily loss and open-risk limit has been reached.");
+  return { label: active === "TAKEN" ? "TRADE ACTIVE" : active === "LOCKED" ? "PLAN ACTIVE" : reasons.length ? clock.session === "DEAD_POOL" ? "DEAD POOL" : slotsUsed >= c.plan.maxDailyTrades ? "DAILY LIMIT REACHED" : "ACTION REQUIRED" : "READY", reasons, slots: Math.max(0, c.plan.maxDailyTrades - slotsUsed) };
 }
 
 export type JournalFilters = ReturnType<typeof journalFilters>;
