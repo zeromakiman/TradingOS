@@ -1,22 +1,380 @@
 import "server-only";
 import Decimal from "decimal.js";
 import { z } from "zod";
-import { requireUser } from "./supabase/server";
-export async function loadTodayActivity(accountId:string,day:string){
- const {db}=await requireUser(),from=`${day}T05:00:00Z`,to=new Date(Date.parse(from)+86400000).toISOString();
- const [entries,active]=await Promise.all([
-  db.from("journal_analytics").select("id",{count:"exact",head:true}).eq("account_id",accountId).gte("entered_at",from).lt("entered_at",to),
-  db.from("journal_analytics").select("id,instrument,direction,status,execution_id,locked_at").eq("account_id",accountId).in("status",["LOCKED","TAKEN"]).order("execution_id",{ascending:false,nullsFirst:false}).order("locked_at",{ascending:false}).order("id",{ascending:false}).limit(6)
- ]);
- if(entries.error||active.error)throw new Error("Unable to load today’s activity. Please try again.");
- let sum=new Decimal(0),after:string|undefined,closed=0;
- for(;;){
-  let query=db.from("journal_analytics").select("id,realized_r").eq("account_id",accountId).eq("status","CLOSED").gte("exited_at",from).lt("exited_at",to).order("id").limit(500);
-  if(after)query=query.gt("id",after);
-  const result=await query;if(result.error)throw new Error("Unable to load today’s results.");
-  const rows=z.array(z.object({id:z.uuid(),realized_r:z.string()})).parse(result.data);
-  for(const row of rows)sum=sum.plus(row.realized_r);closed+=rows.length;
-  if(rows.length<500)break;after=rows[rows.length-1].id;
- }
- return {taken:entries.count??0,closed,result:sum.toFixed(),active:z.array(z.object({id:z.uuid(),instrument:z.string(),direction:z.string(),status:z.enum(["LOCKED","TAKEN"]),execution_id:z.uuid().nullable(),locked_at:z.string()})).parse(active.data)};
+import type { LedgerTrade, Lifecycle } from "@/domain/ledger";
+import { type DayResult, dayResult } from "@/domain/performance";
+import { nextBoundary, type Session, type SessionBoundary, strategyClock } from "@/domain/session";
+import { addDays, compareInstants, strategyDayLabel } from "@/domain/time-display";
+import type { JournalKind } from "@/domain/timeline";
+import { type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext } from "./account-context";
+import { loadLedgerRows } from "./performance-data";
+import { decorateTrades, inBatches, ledgerSelect, parseLedger, type TradeListRow, type TradeScope } from "./trades-data";
+import { type AccountWorkspace, getWorkspace, loadAccountWorkspace } from "./workspace";
+
+/**
+ * Today (docs/V2_ARCHITECTURE.md §14.1): session and next boundary, the trading status of every account in the context
+ * (All Accounts: one row per ACTIVE account), live trades with their last journal item, plans waiting (drafts by check
+ * state, locked plans waiting for entry), today's closed trades, today's realized result in R and money per currency,
+ * and today's losses as the daily loss limit counts them. Everything is computed for the strategy day (fixed UTC−5) of
+ * the server time; money is never summed across currencies.
+ *
+ * Live trades, locked plans and drafts are read by separate queries with their own bounds, so piles of drafts (V1
+ * proposals were carried over as drafts and drafts never expire) can never push a live position or a locked plan off
+ * the page. A list that reaches its bound says so in `truncated`; the Journal lists every trade.
+ */
+
+/** Exact sums for any stored scale (the global Decimal rounds at 20 digits). */
+const M = Decimal.clone({ precision: 100 });
+/** Live trades listed at most, newest first by creation. */
+export const TODAY_LIVE_LIMIT = 500;
+/** Locked plans and drafts listed at most, each, newest first by creation. */
+export const TODAY_WAITING_LIMIT = 200;
+/** Journal rows read per request while finding each live trade's newest item. */
+const JOURNAL_PAGE = 500;
+
+/** Today's losses in one currency (an account's currency, or a currency of the context). */
+export interface TodayLosses {
+  currency: string;
+  /** Losses of trades closed today, planned and live-first: Σ max(0, −net P&L). */
+  realized: string;
+  /** External losses entered for today (removed entries excluded). */
+  external: string;
+  /**
+   * The loss total a V1 account-values entry reported for today (only on the day of the switch to V2), else null.
+   * Per currency: the sum over the accounts that have one.
+   */
+  legacyReported: string | null;
+  /**
+   * Today's losses as the daily loss limit counts them (`usage.lossTotal`): realized + external, or the V1 reported
+   * total when that is greater. Show this figure next to the limit, so the display never contradicts a block.
+   */
+  total: string;
+}
+
+export interface TodayAccountStatus {
+  account: ContextAccount;
+  workspace: AccountWorkspace;
+  losses: TodayLosses;
+}
+
+export interface LastJournalItem {
+  kind: JournalKind;
+  body: string | null;
+  details: Record<string, unknown>;
+  recordedAt: string;
+  /** V2 journal entry or a V1 plan note. */
+  source: "JOURNAL" | "V1_NOTE";
+}
+
+export interface LiveTradeCard {
+  row: TradeListRow;
+  /** Entry time when known, else when the position was recorded. */
+  liveSince: string;
+  lastJournal: LastJournalItem | null;
+}
+
+export interface WaitingPlans {
+  ready: TradeListRow[];
+  blocked: TradeListRow[];
+  /** Approved earlier or with changed account state: needs a new check before locking. */
+  recheck: TradeListRow[];
+  /** Saved but never checked. */
+  unchecked: TradeListRow[];
+  /** Locked plans waiting for entry. */
+  locked: TradeListRow[];
+}
+
+/** Lists that reached their bound: more trades exist than Today shows (the Journal lists every one). */
+export interface TodayTruncation {
+  /** More than TODAY_LIVE_LIMIT live trades. */
+  live: boolean;
+  /** More than TODAY_WAITING_LIMIT locked plans. */
+  locked: boolean;
+  /** More than TODAY_WAITING_LIMIT drafts. */
+  drafts: boolean;
+  /** More trades closed today than the ledger loader reads (MAX_LEDGER_ROWS); `result` then covers the rows read. */
+  closed: boolean;
+}
+
+export interface TodayData {
+  now: string;
+  /** Strategy day of `now`. */
+  day: string;
+  /** `Tue, Oct 14 (UTC−5)`. */
+  dayLabel: string;
+  session: Session;
+  boundary: SessionBoundary;
+  context: AccountContext;
+  accounts: TodayAccountStatus[];
+  /** Every live trade of the context (up to TODAY_LIVE_LIMIT), most recently opened first. */
+  live: LiveTradeCard[];
+  plans: WaitingPlans;
+  /** Every trade closed today, latest exit first. */
+  closedToday: TradeListRow[];
+  /** Net R of today's exits (R is per-trade risk units) and net P&L per currency. */
+  result: DayResult;
+  /** Today's losses per currency across the context's accounts. */
+  losses: TodayLosses[];
+  /** Today's plan · notes (V1 daily context) of the selected account; null in All Accounts or when none. */
+  dailyContext: { narrative: string; recordedAt: string } | null;
+  truncated: TodayTruncation;
+  /** Nothing live, waiting or closed today: the page shows the two large actions. */
+  empty: boolean;
+}
+
+const journalItemRow = z.object({
+  id: z.uuid(), trade_id: z.uuid(), kind: z.enum(["NOTE", "DECISION", "STOP_CHANGE", "TARGET_CHANGE", "PARTIAL_CLOSE", "LESSON"]), body: z.string().nullable(),
+  details: z.record(z.string(), z.unknown()), recorded_at: z.string(),
+});
+const noteRow = z.object({ id: z.uuid(), plan_id: z.uuid(), payload: z.record(z.string(), z.unknown()), recorded_at: z.string() });
+
+/** The text of a V1 plan note; null for tag changes, which V1 journaled as MANUAL notes and which are not journal text. */
+function v1NoteText(payload: Record<string, unknown>): string | null {
+  return typeof payload.note === "string" && payload.source !== "MANUAL" ? payload.note : null;
+}
+
+/** `items` cut into consecutive parts of the given sizes. */
+function splitBySizes<T>(items: readonly T[], sizes: readonly number[]): T[][] {
+  const parts: T[][] = [];
+  let start = 0;
+  for (const size of sizes) {
+    parts.push(items.slice(start, start + size));
+    start += size;
+  }
+  return parts;
+}
+
+const newestFirst = (a: { at: string; id: string }, b: { at: string; id: string }) => compareInstants(b.at, a.at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+
+interface KeyedRow<T> {
+  key: string;
+  recordedAt: string;
+  id: string;
+  row: T;
+}
+
+/** Keyset position: rows strictly older than (`recordedAt`, `id`) in newest-first order. */
+function olderThan(after: { recordedAt: string; id: string }): string {
+  // Values are double-quoted so PostgREST never reads the timestamp's punctuation as filter syntax.
+  return `recorded_at.lt."${after.recordedAt}",and(recorded_at.eq."${after.recordedAt}",id.lt."${after.id}")`;
+}
+
+/**
+ * The newest accepted row of every key, exactly. Rows are read newest first in pages of JOURNAL_PAGE for at most
+ * IN_FILTER_BATCH keys per request. While a page is full, the next one continues after its last row (keyset) for the
+ * keys that still have no accepted row: every row newer than that position was on the page already, so nothing is
+ * skipped, and no row is read twice.
+ */
+async function newestPerKey<T>(
+  keys: readonly string[],
+  page: (keys: string[], after: { recordedAt: string; id: string } | null) => Promise<KeyedRow<T>[]>,
+  accept: (row: T) => boolean,
+): Promise<Map<string, KeyedRow<T>>> {
+  const found = new Map<string, KeyedRow<T>>();
+  await Promise.all(inBatches([...new Set(keys)]).map(async batch => {
+    let pending = batch;
+    let after: { recordedAt: string; id: string } | null = null;
+    while (pending.length) {
+      const rows = await page(pending, after);
+      for (const item of rows) if (!found.has(item.key) && accept(item.row)) found.set(item.key, item);
+      if (rows.length < JOURNAL_PAGE) return;
+      const last = rows[rows.length - 1];
+      after = { recordedAt: last.recordedAt, id: last.id };
+      pending = pending.filter(key => !found.has(key));
+    }
+  }));
+  return found;
+}
+
+/** The newest V2 journal entry or V1 plan note of each live trade. */
+async function lastJournalItems(db: Db, userId: string, live: readonly LedgerTrade[]): Promise<Map<string, LastJournalItem>> {
+  const items = new Map<string, LastJournalItem>();
+  if (!live.length) return items;
+  const planOf = new Map(live.flatMap(trade => (trade.plan_id === null ? [] : [[trade.plan_id, trade.id] as const])));
+  const [entries, notes] = await Promise.all([
+    newestPerKey(live.map(trade => trade.id), async (tradeIds, after) => {
+      let query = db.from("trade_journal_entries").select("id,trade_id,kind,body,details,recorded_at").eq("user_id", userId).in("trade_id", tradeIds);
+      if (after) query = query.or(olderThan(after));
+      const { data, error } = await query.order("recorded_at", { ascending: false }).order("id", { ascending: false }).limit(JOURNAL_PAGE);
+      if (error) throw new Error("Journal entries are unavailable.");
+      return z.array(journalItemRow).parse(data ?? []).map(row => ({ key: row.trade_id, recordedAt: row.recorded_at, id: row.id, row }));
+    }, () => true),
+    newestPerKey([...planOf.keys()], async (planIds, after) => {
+      let query = db.from("trade_events").select("id,plan_id,payload,recorded_at").eq("user_id", userId).eq("event_type", "NOTE_ADDED").in("plan_id", planIds);
+      if (after) query = query.or(olderThan(after));
+      const { data, error } = await query.order("recorded_at", { ascending: false }).order("id", { ascending: false }).limit(JOURNAL_PAGE);
+      if (error) throw new Error("Journal entries are unavailable.");
+      return z.array(noteRow).parse(data ?? []).map(row => ({
+        key: row.plan_id, recordedAt: row.recorded_at, id: row.id, row: { note: v1NoteText(row.payload), recordedAt: row.recorded_at },
+      }));
+    }, row => row.note !== null),
+  ]);
+  for (const [tradeId, { row }] of entries) {
+    items.set(tradeId, { kind: row.kind, body: row.body, details: row.details, recordedAt: row.recorded_at, source: "JOURNAL" });
+  }
+  for (const [planId, { row }] of notes) {
+    const tradeId = planOf.get(planId);
+    if (!tradeId) continue;
+    const current = items.get(tradeId);
+    // A V1 note replaces a V2 entry only when it is strictly newer.
+    if (!current || compareInstants(current.recordedAt, row.recordedAt) < 0) {
+      items.set(tradeId, { kind: "NOTE", body: row.note, details: {}, recordedAt: row.recordedAt, source: "V1_NOTE" });
+    }
+  }
+  return items;
+}
+
+/** One account's losses today, exactly as the engine counts them (spec §6.2). */
+function lossesOf(workspace: AccountWorkspace): TodayLosses {
+  const usage = workspace.usage;
+  return {
+    currency: workspace.account.currency, realized: usage.realizedLoss, external: usage.externalLoss, legacyReported: usage.legacyReportedLoss,
+    total: usage.lossTotal,
+  };
+}
+
+/** Per-currency sums of account losses (never across currencies), ordered by currency. */
+function lossesByCurrency(accounts: readonly TodayLosses[]): TodayLosses[] {
+  const sums = new Map<string, { realized: Decimal; external: Decimal; legacy: Decimal | null; total: Decimal }>();
+  for (const losses of accounts) {
+    const sum = sums.get(losses.currency) ?? { realized: new M(0), external: new M(0), legacy: null, total: new M(0) };
+    sum.realized = sum.realized.plus(losses.realized);
+    sum.external = sum.external.plus(losses.external);
+    if (losses.legacyReported !== null) sum.legacy = (sum.legacy ?? new M(0)).plus(losses.legacyReported);
+    sum.total = sum.total.plus(losses.total);
+    sums.set(losses.currency, sum);
+  }
+  return [...sums.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([currency, sum]) => ({
+    currency, realized: sum.realized.toFixed(), external: sum.external.toFixed(), legacyReported: sum.legacy?.toFixed() ?? null, total: sum.total.toFixed(),
+  }));
+}
+
+export interface TodayDeps {
+  db: Db;
+  userId: string;
+  context: AccountContext;
+  /** Workspaces of the accounts shown (selected account, or every ACTIVE account), at `now`. */
+  workspaces: readonly AccountWorkspace[];
+  now: string;
+}
+
+/** Trades of one lifecycle, newest first by creation, at most `limit`; `truncated` when more exist. */
+async function tradesIn(db: Db, scope: TradeScope, lifecycle: Lifecycle, limit: number): Promise<{ trades: LedgerTrade[]; truncated: boolean }> {
+  let query = ledgerSelect(db).eq("lifecycle", lifecycle);
+  if (scope.mode === "account") query = query.eq("account_id", scope.accountId);
+  const { data, error } = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit + 1);
+  if (error) throw new Error("Today's trades are unavailable.");
+  const trades = parseLedger(data);
+  return { trades: trades.slice(0, limit), truncated: trades.length > limit };
+}
+
+export async function loadToday(deps: TodayDeps): Promise<TodayData> {
+  const { db, userId, context, now } = deps;
+  const clock = strategyClock(now);
+  const day = clock.day;
+  const scope: TradeScope = context.selected.mode === "account" ? { mode: "account", accountId: context.selected.account.id } : { mode: "all" };
+  const [live, locked, drafts, closed, dailyContext] = await Promise.all([
+    tradesIn(db, scope, "LIVE", TODAY_LIVE_LIMIT),
+    tradesIn(db, scope, "LOCKED", TODAY_WAITING_LIMIT),
+    tradesIn(db, scope, "DRAFT", TODAY_WAITING_LIMIT),
+    // Every exit of the strategy day: today's result must never be computed from part of the day.
+    loadLedgerRows(db, userId, scope, { closedFrom: day, closedTo: day }, { closedOnly: true }),
+    scope.mode === "account"
+      ? db.from("daily_contexts").select("narrative,recorded_at").eq("account_id", scope.accountId).eq("user_id", userId).eq("trading_day", day)
+        .order("recorded_at", { ascending: false }).order("id", { ascending: false }).limit(1)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (dailyContext.error) throw new Error("Today's trades are unavailable.");
+  // closedOnly rows always carry an exit time.
+  const closedTrades = [...closed.rows].sort((a, b) => newestFirst({ at: a.exited_at ?? a.created_at, id: a.id }, { at: b.exited_at ?? b.created_at, id: b.id }));
+  const workspaces = new Map(deps.workspaces.map(workspace => [workspace.account.id, workspace] as const));
+  const groups = [live.trades, locked.trades, drafts.trades, closedTrades];
+  const [rows, journal] = await Promise.all([
+    decorateTrades({ db, userId, accounts: context.accounts, now, workspaces }, groups.flat()),
+    lastJournalItems(db, userId, live.trades),
+  ]);
+  const [liveRows, lockedRows, draftRows, closedToday] = splitBySizes(rows, groups.map(group => group.length));
+
+  const liveCards = liveRows.map(row => ({
+    row, liveSince: row.trade.entered_at ?? row.trade.entry_recorded_at ?? row.trade.created_at, lastJournal: journal.get(row.id) ?? null,
+  })).sort((a, b) => newestFirst({ at: a.liveSince, id: a.row.id }, { at: b.liveSince, id: b.row.id }));
+  const plans: WaitingPlans = {
+    ready: draftRows.filter(row => row.state.draftCheck === "APPROVED" && row.state.checkCurrent),
+    blocked: draftRows.filter(row => row.state.draftCheck === "BLOCKED"),
+    recheck: draftRows.filter(row => row.state.draftCheck === "APPROVED" && !row.state.checkCurrent),
+    unchecked: draftRows.filter(row => row.state.draftCheck === "UNCHECKED"),
+    locked: lockedRows,
+  };
+
+  const accounts = deps.workspaces.map(workspace => ({ account: workspace.account, workspace, losses: lossesOf(workspace) }));
+  const contextRow = z.array(z.object({ narrative: z.string(), recorded_at: z.string() })).parse(dailyContext.data ?? [])[0];
+  return {
+    now,
+    day,
+    dayLabel: strategyDayLabel(day),
+    session: clock.session,
+    boundary: nextBoundary(now),
+    context,
+    accounts,
+    live: liveCards,
+    plans,
+    closedToday,
+    result: dayResult(closedTrades, day),
+    losses: lossesByCurrency(accounts.map(status => status.losses)),
+    dailyContext: contextRow ? { narrative: contextRow.narrative, recordedAt: contextRow.recorded_at } : null,
+    truncated: { live: live.truncated, locked: locked.truncated, drafts: drafts.truncated, closed: closed.truncated },
+    empty: liveCards.length === 0 && lockedRows.length === 0 && draftRows.length === 0 && closedToday.length === 0,
+  };
+}
+
+/** Today of the request's account context. */
+export async function getToday(): Promise<TodayData> {
+  const [{ db, user }, context, view] = await Promise.all([currentSession(), getAccountContext(), getWorkspace()]);
+  const workspaces = view.mode === "account" ? [view.workspace] : view.workspaces;
+  return loadToday({ db, userId: user.id, context, workspaces, now: view.now });
+}
+
+/** Today's status for one explicit account (its own workspace at the current server time). */
+export async function loadAccountToday(db: Db, userId: string, account: ContextAccount, now: string): Promise<TodayAccountStatus> {
+  const workspace = await loadAccountWorkspace(db, userId, account, now);
+  return { account, workspace, losses: lossesOf(workspace) };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// V1 Today (src/app/today/page.tsx) until the V2 screen replaces it: entries, active plans and today's result of one
+// account from journal_analytics. Unchanged contract; sums are exact.
+// ---------------------------------------------------------------------------------------------------------
+/** @deprecated V1 page only; V2 screens use `getToday()`. */
+export async function loadTodayActivity(accountId: string, day: string) {
+  const { db } = await currentSession();
+  const from = `${day}T05:00:00Z`;
+  const to = `${addDays(day, 1)}T05:00:00Z`;
+  const [entries, active] = await Promise.all([
+    db.from("journal_analytics").select("id", { count: "exact", head: true }).eq("account_id", accountId).gte("entered_at", from).lt("entered_at", to),
+    db.from("journal_analytics").select("id,instrument,direction,status,execution_id,locked_at").eq("account_id", accountId).in("status", ["LOCKED", "TAKEN"])
+      .order("execution_id", { ascending: false, nullsFirst: false }).order("locked_at", { ascending: false }).order("id", { ascending: false }).limit(6),
+  ]);
+  if (entries.error || active.error) throw new Error("Unable to load today’s activity. Please try again.");
+  let sum = new M(0);
+  let after: string | undefined;
+  let closed = 0;
+  for (;;) {
+    let query = db.from("journal_analytics").select("id,realized_r").eq("account_id", accountId).eq("status", "CLOSED").gte("exited_at", from).lt("exited_at", to).order("id").limit(500);
+    if (after) query = query.gt("id", after);
+    const result = await query;
+    if (result.error) throw new Error("Unable to load today’s results.");
+    const rows = z.array(z.object({ id: z.uuid(), realized_r: z.string() })).parse(result.data);
+    for (const row of rows) sum = sum.plus(row.realized_r);
+    closed += rows.length;
+    if (rows.length < 500) break;
+    after = rows[rows.length - 1].id;
+  }
+  return {
+    taken: entries.count ?? 0,
+    closed,
+    result: sum.toFixed(),
+    active: z.array(z.object({
+      id: z.uuid(), instrument: z.string(), direction: z.string(), status: z.enum(["LOCKED", "TAKEN"]), execution_id: z.uuid().nullable(), locked_at: z.string(),
+    })).parse(active.data),
+  };
 }
