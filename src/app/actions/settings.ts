@@ -4,14 +4,16 @@ import { unstable_rethrow } from "next/navigation";
 import { operationalFailure } from "@/lib/operational-log";
 import { SCHEMA_OUTDATED_MESSAGE, writableSession } from "@/lib/schema-gate";
 import { publicConfig } from "@/lib/supabase/config";
+import { supabaseServer } from "@/lib/supabase/server";
 import { type ActionState, actionError, actionSuccess, FAILED_COPY, formText } from "./state";
 
 /**
  * Settings → Security (docs/V2_ARCHITECTURE.md §14.11): change the password only after the current password is
  * re-entered and verified for the signed-in user with a separate, non-persisting client (never the cookie session).
- * The new password is set on that freshly signed-in session; afterwards every other session of the user is signed out
- * and this browser stays signed in. Fields: `currentPassword`, `newPassword`, `confirmation`. AI preferences keep
- * their existing actions (src/app/ai-settings-actions.ts).
+ * The new password is set on that freshly signed-in session (a recent sign-in satisfies the auth server's
+ * re-authentication rule). The auth server then ends every other session of the user — including this browser's — so
+ * the browser adopts the fresh session and signs out any session that is still left. Fields: `currentPassword`,
+ * `newPassword`, `confirmation`. AI preferences keep their existing actions (src/app/ai-settings-actions.ts).
  */
 
 const UNAVAILABLE = "The sign-in service is temporarily unavailable. Nothing was changed. Please try again.";
@@ -47,6 +49,7 @@ export async function changePassword(_prev: ActionState, form: FormData): Promis
       }
       return actionError("Your current password is incorrect.", { currentPassword: "Your current password is incorrect." });
     }
+    let fresh: { access_token: string; refresh_token: string } | null = null;
     try {
       // The password must be the signed-in user's own.
       if (signIn.data.user?.id !== session.user.id) return actionError("Your current password is incorrect.", { currentPassword: "Your current password is incorrect." });
@@ -61,11 +64,21 @@ export async function changePassword(_prev: ActionState, form: FormData): Promis
         operationalFailure("request_failed");
         return actionError("The password could not be changed. Nothing was changed. Please try again.");
       }
+      const verified = signIn.data.session;
+      if (verified) fresh = { access_token: verified.access_token, refresh_token: verified.refresh_token };
     } finally {
-      await verifier.auth.signOut({ scope: "local" }).catch(() => undefined);
+      // The verification session is ended unless this browser adopts it below.
+      if (!fresh) await verifier.auth.signOut({ scope: "local" }).catch(() => undefined);
     }
-    // Other devices must sign in with the new password; this browser keeps its session.
-    const others = await session.db.auth.signOut({ scope: "others" }).catch(() => ({ error: new Error("sign-out failed") }));
+    // Changing the password ended this browser's previous session with every other one: continue on the fresh session,
+    // then make sure no other session survives (older auth servers keep them).
+    const browser = await supabaseServer(true);
+    const adopted = fresh ? await browser.auth.setSession(fresh).catch(() => ({ error: new Error("session adoption failed") })) : { error: new Error("no session") };
+    if (adopted.error) {
+      if (fresh) await verifier.auth.signOut({ scope: "local" }).catch(() => undefined);
+      return actionSuccess("Password changed. Sign in again with your new password.");
+    }
+    const others = await browser.auth.signOut({ scope: "others" }).catch(() => ({ error: new Error("sign-out failed") }));
     return actionSuccess(others.error ? "Password changed. Sign out on your other devices to apply it there." : "Password changed. Other devices were signed out.");
   } catch (error) {
     unstable_rethrow(error);

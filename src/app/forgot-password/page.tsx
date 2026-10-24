@@ -1,7 +1,20 @@
-import Link from "next/link";
-import { ActionForm, Field } from "@/components/forms";
-import { requestPasswordRecovery } from "@/app/password-actions";
+import type { Metadata } from "next";
+import { AuthFrame, AuthHeading } from "@/components/settings/auth-frame";
+import { BackToSignIn, RecoveryRequestForm } from "@/components/settings/auth-forms";
+import { storedTheme } from "@/components/settings/auth-page-data";
+
+export const metadata: Metadata = { title: "Reset password · Trading OS" };
 export const dynamic = "force-dynamic";
-export default function ForgotPasswordPage() {
-  return <main className="login-page"><section className="panel login-panel"><h1>Forgot password?</h1><p>Enter your account email to request a recovery link. Open the newest link in this browser.</p><ActionForm action={requestPasswordRecovery} label="Send recovery email" pendingLabel="Requesting email…"><Field label="Email"><input name="email" type="email" required maxLength={254} autoComplete="email"/></Field></ActionForm><Link href="/login">Back to sign in</Link></section></main>;
+
+export default async function ForgotPasswordPage() {
+  return (
+    <AuthFrame theme={await storedTheme()}>
+      <AuthHeading
+        title="Reset your password"
+        description="Enter the email of your Trading OS login. If it can receive email, a recovery link arrives shortly. Open the newest link in this browser."
+      />
+      <RecoveryRequestForm />
+      <BackToSignIn />
+    </AuthFrame>
+  );
 }

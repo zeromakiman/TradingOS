@@ -54,7 +54,8 @@ const SIGNED_MONEY = /^-?\d{1,12}(\.\d{1,2})?$/;
 const SYMBOL = /^[A-Z0-9][A-Z0-9._/-]{0,19}$/;
 const TAG = /^[a-z0-9][a-z0-9 _-]{0,31}$/;
 
-const positiveDecimal = z.string().trim().regex(POSITIVE).refine(value => new D(value).gt(0));
+// `abort` stops at a failed format check so the refinement only parses well-formed numbers.
+const positiveDecimal = z.string().trim().regex(POSITIVE, { abort: true }).refine(value => new D(value).gt(0));
 const optionalPositive = positiveDecimal.optional();
 const reason = z.string().trim().min(1).max(5000);
 

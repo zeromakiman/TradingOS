@@ -38,8 +38,9 @@ const PLATFORMS = ["MANUAL", "CTRADER", "MT5", "MT4", "TRADINGVIEW", "OTHER"] as
 const MONEY = /^\d{1,12}(\.\d{1,2})?$/;
 const DECIMAL = /^\d{1,12}(\.\d{1,8})?$/;
 
-const money = z.string().trim().regex(MONEY).refine(value => new D(value).gt(0));
-const decimal = z.string().trim().regex(DECIMAL).refine(value => new D(value).gt(0));
+// `abort` stops at a failed format check: the refinements below parse the value and must only see well-formed numbers.
+const money = z.string().trim().regex(MONEY, { abort: true }).refine(value => new D(value).gt(0));
+const decimal = z.string().trim().regex(DECIMAL, { abort: true }).refine(value => new D(value).gt(0));
 
 const COPY = {
   requestKey: "Reload the page and submit the form again.",

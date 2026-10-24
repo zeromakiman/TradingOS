@@ -347,6 +347,15 @@ describe("planned execution (§8.5)", () => {
     expect(db.calls("record_planned_entry")[0].p_entered_at).toBe("2026-10-14T09:00:00-05:00");
   });
 
+  it("reports non-numeric prices and sizes as field errors instead of failing the request", async () => {
+    withPlan();
+    expect(await recordEntry(idleState, form({ tradeId: TRADE, entry: "abc", quantity: "0,25" }))).toEqual({
+      status: "error", message: "Some values need attention. Check the highlighted fields.",
+      fieldErrors: { entry: "Entry price must be a positive number with up to 8 decimals.", quantity: expect.any(String) },
+    });
+    expect(db.calls("record_planned_entry")).toEqual([]);
+  });
+
   it("closes with zero fees by default and reports the outcome", async () => {
     db.results.close_planned_trade = () => ({ data: { tradeId: TRADE, outcomeId: KEY, outcome: "WIN", netPnl: "150", realizedR: "3", calculationVersion: "FULL_CLOSE_V1" }, error: null });
     expect(await closePlannedTrade(idleState, form({ tradeId: TRADE, exit: "1.106", exitedAt: "2026-10-14T15:00:00Z" }))).toEqual({

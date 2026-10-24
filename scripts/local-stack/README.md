@@ -307,3 +307,180 @@ For a seeded user, `@name` stands for a showcase id of that user: a path startin
 (`@ftmo/manage` → `/accounts/<id>/manage`), and elsewhere the id is substituted (`journal?account=@personal`). Files are
 named after what was asked (`todayblocked-edit.1440x1000.light.png`); an unknown name fails before the browser starts
 and lists the known ones. In PowerShell quote such arguments (`"@todayBlocked"`), because a bare `@` splats a variable.
+
+## Local OpenAI mock (AI acceptance without a provider)
+
+> **Local acceptance tooling only.** Never use it on Vercel Preview or production. Preview keeps `AI_ENABLED=false` until
+> the real-provider acceptance that follows the independent audit. The mock never contacts OpenAI and costs nothing.
+
+`mock-openai.mjs` is a Node preload. It replaces `globalThis.fetch` in every Node process of `next dev` and answers the
+two calls `src/ai/provider.ts` makes, `POST https://api.openai.com/v1/responses/input_tokens` and
+`POST https://api.openai.com/v1/responses`, from `mock-openai-generator.mjs` (pure and deterministic, no I/O). Every AI
+flow then runs end to end through the real request gate, budget ledger, server-side validators and AI history against
+the local stack: Analyze Setup, Challenge My Bias, Review Trade (V1 and the timeline review), Weekly Review, Recent
+Trades, Monthly Review and the legacy setup evaluator.
+
+### Start
+
+Stack, `.env.local` and data as above (`start.mjs`, `env.mjs`, `seed-v2.mjs`), then from the repository root:
+
+```sh
+# Git Bash
+AI_ENABLED=true OPENAI_API_KEY=sk-local-mock-local MOCK_OPENAI=1 \
+  NODE_OPTIONS="--import=./scripts/local-stack/mock-openai.mjs" npx pnpm@11.19.0 dev
+```
+
+```powershell
+# PowerShell (these variables stay set for the rest of this session)
+$env:AI_ENABLED="true"; $env:OPENAI_API_KEY="sk-local-mock-local"; $env:MOCK_OPENAI="1"
+$env:NODE_OPTIONS="--import=./scripts/local-stack/mock-openai.mjs"; npx pnpm@11.19.0 dev
+```
+
+- The exported variables override `.env.local` (which keeps `AI_ENABLED=false`). The relative `--import` path resolves
+  against each process's working directory; from elsewhere use the absolute form
+  `--import=file:///D:/Maxim/TradingOS/scripts/local-stack/mock-openai.mjs`, as `control.mjs` does for its own preload.
+- `next dev` forwards `NODE_OPTIONS` to its server process, and every Node process of the chain (npx, pnpm, next, the
+  server) loads the preload, so stderr shows one `[mock-openai] active (pid …)` line per process. **No such line means
+  the mock is not loaded: stop the server.**
+- AI must be ON for the account. The seeded FTMO 100K (EUR 10 budget) and Personal 12K (EUR 3) accounts are; Demo 100K is
+  OFF and shows the "AI is OFF" state. On the seeded data a mock answer settles about EUR 0.004-0.03 (about
+  3,000-30,000 input and 250-600 output tokens; per-flow figures under Known limits), so the AI budget summary shows
+  plausible usage; each request reserves about EUR 0.04-0.07 first.
+- As with any manual `next dev`, restore the tracked `next-env.d.ts` before committing.
+
+### Guards (fail closed)
+
+- Inactive unless `MOCK_OPENAI` is exactly `1`: the module then changes nothing and `fetch` stays the original.
+- With `MOCK_OPENAI=1` the import throws, so the server cannot start, when `OPENAI_API_KEY` is set to anything that does
+  not start with `sk-local-mock`, when it is unset and a `.env*` file Next.js would load defines a non-mock key, or on
+  Vercel (`VERCEL` / `VERCEL_ENV` set). The messages never contain the key. `.env*` files are read with Next.js's own
+  dotenv grammar (`KEY=value`, `KEY: value`, `export`, quoted values spanning lines, a value or `=` on the next line;
+  every assignment counts), and every line that can assign the key must also be a single-line `OPENAI_API_KEY=` (empty)
+  or `OPENAI_API_KEY=sk-local-mock…` assignment, optionally quoted or commented; any other form is refused. If you
+  keep a key in `.env.local`, export `OPENAI_API_KEY=sk-local-mock-…` in the shell (it overrides the file) or remove it.
+  `next dev` reloads `.env*` files when they change; without the exported mock key, a real key added to a file while
+  the server runs would be loaded, but it is still never forwarded (bearer check below, logged as `blocked-key`) and AI
+  requests fail as `INPUT_COUNT_UNAVAILABLE`, which holds budget. Always export the mock key as in the start command.
+- Only `POST` to exactly `https://api.openai.com/v1/responses` and `/v1/responses/input_tokens` (default port, no query)
+  with an `sk-local-mock` bearer key is answered. Every other request to `openai.com` or `*.openai.com` is rejected with
+  `MockOpenAiBlockedError` and never forwarded: other paths, methods and subdomains, plain `http`, a real key, and
+  Request- or URL-shaped objects of other fetch implementations that name OpenAI. Every other host (gateway, PostgREST,
+  storage) reaches the original `fetch` with the same arguments.
+- Next.js wraps whatever `globalThis.fetch` is when the server loads (`createPatchedFetcher(createDedupeFetch(fetch))`),
+  and `router-server` restores that same function on HMR, so server actions and route handlers reach the mock. No file
+  under `src/` imports it. `tests/v2-mock-openai.test.ts` asserts both, plus the guards in real Node processes.
+
+### What it answers
+
+- **`input_tokens`**: `{"input_tokens": n}` with n = ceil(UTF-8 bytes of the count body / 4), so oversized facts are
+  still refused by the app's own limits (`INPUT_LIMIT_EXCEEDED`). Exception: a `data:image/…;base64` URL is counted like
+  OpenAI's high-detail image tiles (85 + 170 per 512 px tile after fitting into 2048 px and scaling the short side to
+  768 px; an unreadable header counts 1,445) instead of by its base64 length. Counted as text, a single 60 KB seeded
+  chart would be about 20,000 tokens and every screenshot request would exceed the 16,000-32,000 token operation limits.
+- **`responses`**: `{id: "resp_mock_<n>", object: "response", model: <request model>, status: "completed",
+  output: [{type: "message", role: "assistant", content: [{type: "output_text", text}]}], usage}`. In `usage`,
+  `input_tokens` equals the count above, `output_tokens` = ceil(output text bytes / 4) capped at `max_output_tokens`,
+  `cached_tokens` and `reasoning_tokens` are 0, and `total_tokens` is the sum. `<n>` restarts with each server process.
+- **The output** is generated from the request's `text.format.schema` (`$ref`/`$defs`, `anyOf`/`oneOf`/`allOf`,
+  `enum`/`const`, type arrays and nullable types, `required`/`additionalProperties: false`, item counts, string
+  lengths, `pattern`, numeric bounds), with calm advisory English chosen per field. Per-contract post-processing keeps
+  the server-side validators satisfied: `sourceRefs` come only from the schema's `canonicalCitation` enum (or the
+  request's source manifest), relevant ids first; Analyze Setup's `evidenceStatus` follows the selected evidence; the
+  timeline review's thesis check cites only pre-entry sources (hindsight guard) and `planStatus` decides
+  `NO_PLAN`/`NOT_RECORDED`; the timeline review and Review Trade V1 compare the recorded entry price and fill size
+  (above or below the planned quantity) with the locked plan the same way (`DEVIATION`/`ALIGNED`); the legacy evaluator
+  gets pass-scoped ids, chart-only observed evidence, the structure shift read from the M5 chart (else another intraday
+  or unlabelled chart), `htf_context` from the supplied daily/H4/H1 charts, a gap that names what is actually missing,
+  a CONDITIONAL (INSUFFICIENT_EVIDENCE without a setup-timeframe chart) decision with a material finding and a
+  reconciliation that accounts for every prior finding. It contains no trading directives, signals or price
+  predictions. The same request body always gets the same output; variation comes from a hash of the body.
+
+### Scenarios (failure paths)
+
+`.local/mock-openai-scenarios.json` is re-read on every call; without the file every call is `"ok"`. Keys are json_schema
+names (`analyze_setup_v1`, `challenge_bias_v1`, `review_trade_v1`, `review_trade_timeline_v1`, `weekly_review_v1`,
+`recent_trades_v1`, `monthly_review_v1`, `ict_setup_v2`) or `"*"` (a name wins over `"*"`). Values are a scenario name
+or `{"scenario": name, "delayMs": n}`; a top-level `"delayMs"` applies to every entry without its own.
+
+```json
+{ "weekly_review_v1": "refusal", "review_trade_timeline_v1": { "scenario": "hindsight_citation", "delayMs": 4000 }, "*": "ok" }
+```
+
+`delayMs` (0-600000) delays only the generation call, so the UI shows the request in progress. A delay above 180000
+(for example 200000) outlasts the app's 180-second provider timeout and ends as `TIMEOUT_OR_NETWORK` (held, see
+below); its log line reads `status=timeout note=during-delay-200000ms`. A file that is not valid JSON, or names an
+unknown scenario or field, answers every generation call as a refusal and logs `note=invalid-scenario-file:…`.
+
+| Scenario | Mock behaviour | `ProviderError` | Accounting | What the app shows |
+|---|---|---|---|---|
+| `ok` | Completed; valid generated output | – | Settled | Completed result |
+| `refusal` | Content item of type `refusal`, with usage | `REFUSED` | Settled | Failed: "The AI provider declined the request." |
+| `incomplete` | `status: "incomplete"` (`max_output_tokens`), truncated text; usage charges `max_output_tokens` | `INCOMPLETE` | Settled | Failed: "The AI provider returned an incomplete answer." |
+| `invalid_json` | `output_text` is plain text, with usage | `INVALID_JSON` | Settled | Failed: "The AI response could not be read." |
+| `schema_violation` | Valid JSON: first property removed, unknown property added | – | Settled | Failed with the flow's invalid-output code (`INVALID_ANALYSIS_OUTPUT`, `INVALID_CHALLENGE_OUTPUT`, `INVALID_WEEKLY_OUTPUT`, `INVALID_RECENT_OUTPUT`, `INVALID_MONTHLY_OUTPUT`, `INVALID_REVIEW_OUTPUT`; legacy evaluator pass `INVALID` / `INVALID_OUTPUT`) |
+| `foreign_source` | One citation outside the allowed ids | – | Settled | Failed: invalid-output code; timeline review `FOREIGN_REVIEW_SOURCE`; V1 Review Trade `REVIEW_FAILED`; legacy evaluator `INVALID_OUTPUT` |
+| `hindsight_citation` | Timeline review: the thesis check cites an after-close record. Other schemas: as `foreign_source` | – | Settled | Timeline review failed: `HINDSIGHT_CITATION` "The AI supported the thesis check with records made after entry." |
+| `trading_directive` | First text field becomes "Take the trade at the next touch of the zone." | – | Settled | Failed: invalid-output code; timeline review `TRADING_DIRECTIVE`. App gap: V1 Review Trade and the legacy evaluator have no directive check and complete with that sentence |
+| `http_500` | HTTP 500 `server_error`, no usage | `MODEL_ERROR` | **Held** (UNCERTAIN) | Failed: `ACCOUNTING_UNCERTAIN` "The provider's usage could not be confirmed, so the reserved amount stays held for review." |
+| `http_429` | HTTP 429 `rate_limit_exceeded` | `RATE_LIMIT` | **Held** | as `http_500` |
+| `http_401` | HTTP 401 `invalid_api_key` | `OPENAI_AUTH` | **Held** | as `http_500` |
+| `http_403` | HTTP 403 model access | `MODEL_ACCESS` | **Held** | as `http_500` |
+| `network_error` | The fetch rejects like a dropped connection | `TIMEOUT_OR_NETWORK` | **Held** | as `http_500` |
+| `count_unavailable` | HTTP 503 from `input_tokens`; no generation call | `INPUT_COUNT_UNAVAILABLE` | **Held** | as `http_500` |
+| `input_limit_exceeded` | `input_tokens` = 1,000,000; no generation call | `INPUT_LIMIT_EXCEEDED` | **Held** | as `http_500` |
+
+The `ProviderError` code is stored on the usage row; failed requests show the copy from `src/lib/ai-history.ts`.
+**A held (UNCERTAIN) reservation blocks AI for the whole account** ("AI accounting requires review. No further AI
+requests can run.") until it is resolved. Run those scenarios last, or on an account you do not need (for example
+Personal 12K, or a fresh user from `seed-v2.mjs --reset-users`). On the local stack only, the superuser (psql, see
+Files) can release them:
+
+```sql
+select private.resolve_ai_uncertainty(gen_random_uuid(), u.reservation_id, 'NO_PROVIDER_USAGE_CONFIRMED',
+  'Local mock-openai failure scenario; no provider was called.', '.local/logs/mock-openai.log', '{}'::jsonb)
+from public.ai_usage_records u
+where u.disposition = 'UNCERTAIN'
+  and not exists (select 1 from public.ai_uncertainty_resolutions x where x.reservation_id = u.reservation_id and x.decision <> 'KEEP_UNCERTAIN');
+```
+
+### Log
+
+`.local/logs/mock-openai.log` (the folder is created when missing) gets one line per intercepted call:
+
+```
+2026-10-24T09:00:00.112Z POST /v1/responses/input_tokens schema=analyze_setup_v1 model=gpt-5.4-mini bytes=9908 scenario=ok status=200
+2026-10-24T09:00:00.131Z POST /v1/responses schema=analyze_setup_v1 model=gpt-5.4-mini bytes=9972 scenario=ok status=200
+2026-10-24T09:00:07.540Z GET api.openai.com/v1/models schema=- model=- bytes=- scenario=blocked status=blocked
+```
+
+Each line has the time, method, endpoint, json_schema name, model, request bytes, scenario, HTTP status and sometimes
+`note=` (invalid scenario file, malformed request, or a generator error answered as a refusal). Calls that end without
+an HTTP status are logged too: `blocked`, `network-error`, `timeout` (the app's provider timeout fired, for example
+during `delayMs`: `note=during-delay-<n>ms`), `aborted` (the caller aborted the request) and `error` (the request body
+could not be read). Keys, headers, prompts, facts and outputs are never logged.
+
+### Known limits
+
+- The legacy setup evaluator (`ict_setup_v2`, gpt-6-astra) is served for all three stages, but the app itself refuses
+  that operation since its pricing review expired (`AI_PRICING.validUntil` 2026-10-22): the analyze page reports that
+  the AI provider or budget-accounting configuration requires review, before any provider call. The mini operations'
+  pricing (`MINI_PRICING.validUntil`) expires on 2026-11-12.
+- Token counts are estimates, not OpenAI's tokenizer (dense JSON would count even more), and reasoning tokens are
+  always 0. With the seeded data, whose 29 KB written strategy is part of every facts snapshot, the app's facts-size
+  limits admit requests above an operation's input limit. Recent Trades with a sample of 20 (about 117 KB of facts,
+  about 35,000 estimated tokens against 32,000) and Weekly Review of a week close to the 96 KB scope limit end as
+  `INPUT_LIMIT_EXCEEDED`, which holds the reservation (see above). Samples of 10 (about 23,000 tokens) and weeks with
+  one or two trades (about 12,000 and 22,000) pass; a sample of 30 or a week with three or more trades stops earlier at
+  the app's own size limit, without a reservation. Analyze Setup and Challenge My Bias use about 11,000 tokens plus
+  1,105 per selected 1280×720 screenshot, against 16,000.
+- Settled charge per mock answer (gpt-5.4-mini pricing; measured on the facts the seeded stack persists, or on
+  seeded-size facts for the periodic reviews): Analyze Setup 11,300-13,600 input tokens, EUR 0.0125-0.015; Challenge My
+  Bias 11,100-13,400, EUR 0.0115-0.014; Review Trade (timeline) 3,200-10,100, EUR 0.004-0.011; Weekly Review with one
+  or two trades 11,800-21,600, EUR 0.013-0.022; Recent Trades 17,000-29,300 (5-15 trades), EUR 0.018-0.029; Monthly
+  Review 16,900-26,800 in detailed mode, EUR 0.018-0.027, about 5,000 (EUR 0.007) in deterministic summary mode.
+  Output is 250-600 tokens.
+- Real Structured Outputs would never return `schema_violation` or `foreign_source` outputs. Those scenarios test the
+  server-side validators.
+- Repeating an identical request body returns the identical output.
+
+Tests: `npx pnpm@11.19.0 exec vitest run tests/v2-mock-openai.test.ts`.

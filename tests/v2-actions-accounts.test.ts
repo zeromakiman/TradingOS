@@ -16,6 +16,12 @@ const m = vi.hoisted(() => ({
   headers: new Map<string, string>(),
   createClient: vi.fn(),
   logout: vi.fn(),
+  browser: {
+    auth: {
+      setSession: vi.fn(async (_tokens: unknown): Promise<{ data: unknown; error: Error | null }> => ({ data: {}, error: null })),
+      signOut: vi.fn(async (_options: unknown): Promise<{ error: Error | null }> => ({ error: null })),
+    },
+  },
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: m.revalidate }));
@@ -28,7 +34,7 @@ vi.mock("next/headers", () => ({
   }),
   headers: async () => ({ get: (name: string) => m.headers.get(name) ?? null }),
 }));
-vi.mock("@/lib/supabase/server", () => ({ requireUser: async () => m.session }));
+vi.mock("@/lib/supabase/server", () => ({ requireUser: async () => m.session, supabaseServer: async () => m.browser }));
 vi.mock("@/lib/supabase/config", () => ({ publicConfig: () => ({ url: "https://project.supabase.co", key: "sb_publishable_test", cookiePrefix: "sb-project-auth-token" }) }));
 vi.mock("@/lib/operational-log", () => ({ operationalFailure: m.log }));
 vi.mock("@supabase/supabase-js", async importOriginal => ({ ...(await importOriginal<typeof import("@supabase/supabase-js")>()), createClient: m.createClient }));
@@ -134,6 +140,20 @@ describe("trading accounts (§3.2)", () => {
       },
     });
     expect(db.writes()).toEqual([]);
+  });
+
+  it("reports non-numeric amounts as field errors instead of failing the request", async () => {
+    expect(await createTradingAccount(idleState, form({ ...valid, balance: "abc", equity: "", startingBalance: "1,5" }))).toEqual({
+      status: "error", message: INVALID, fieldErrors: {
+        balance: "Balance must be a positive amount with up to 2 decimals.", equity: "Equity must be a positive amount with up to 2 decimals.",
+        startingBalance: "Starting balance must be a positive amount with up to 2 decimals.",
+      },
+    });
+    expect(await createRiskPolicyVersion(idleState, form({ accountId: ACCOUNT, maxRiskPercent: "x", defaultRiskPercent: "", maxDailyTrades: "3", minRR: "2,5", rrPolicy: "WARN", newsPolicy: "BLOCK" }))).toMatchObject({
+      status: "error", message: INVALID, fieldErrors: { maxRiskPercent: expect.any(String), defaultRiskPercent: expect.any(String), minRR: expect.any(String) },
+    });
+    expect(db.writes()).toEqual([]);
+    expect(m.log).not.toHaveBeenCalled();
   });
 
   it("refuses to write without the 2.0 schema", async () => {
@@ -284,14 +304,34 @@ describe("change password (§14.11): re-authentication with a non-persisting cli
   }
   const valid = { currentPassword: "old-password", newPassword: "new-password-123", confirmation: "new-password-123" };
 
-  it("verifies the current password for the session user, sets the new one on that fresh session and signs out other devices", async () => {
-    const client = verifier({ data: { user: { id: USER } }, error: null });
+  const fresh = { access_token: "fresh-access-token", refresh_token: "fresh-refresh-token" };
+
+  it("verifies the current password for the session user, sets the new one on that fresh session, which this browser adopts, and signs out other devices", async () => {
+    const client = verifier({ data: { user: { id: USER }, session: { ...fresh, expires_in: 3600 } }, error: null });
     expect(await changePassword(idleState, form(valid))).toEqual({ status: "success", message: "Password changed. Other devices were signed out." });
     expect(m.createClient).toHaveBeenCalledWith("https://project.supabase.co", "sb_publishable_test", { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } });
     expect(client.auth.signInWithPassword).toHaveBeenCalledWith({ email: "trader@example.test", password: "old-password" });
     expect(client.auth.updateUser).toHaveBeenCalledWith({ password: "new-password-123" });
+    // The auth server ends every session except the one that changed the password: the browser continues on it.
+    expect(client.auth.signOut).not.toHaveBeenCalled();
+    expect(m.browser.auth.setSession).toHaveBeenCalledWith(fresh);
+    expect(m.browser.auth.signOut).toHaveBeenCalledWith({ scope: "others" });
+    expect(m.browser.auth.setSession.mock.invocationCallOrder[0]).toBeLessThan(m.browser.auth.signOut.mock.invocationCallOrder[0]);
+    expect(db.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it("asks to sign in again when this browser cannot adopt the fresh session, and ends that session", async () => {
+    const client = verifier({ data: { user: { id: USER }, session: fresh }, error: null });
+    m.browser.auth.setSession.mockResolvedValueOnce({ data: null, error: new Error("invalid session") });
+    expect(await changePassword(idleState, form(valid))).toEqual({ status: "success", message: "Password changed. Sign in again with your new password." });
     expect(client.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
-    expect(db.auth.signOut).toHaveBeenCalledWith({ scope: "others" });
+    expect(m.browser.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it("still reports the change when other sessions cannot be signed out", async () => {
+    verifier({ data: { user: { id: USER }, session: fresh }, error: null });
+    m.browser.auth.signOut.mockResolvedValueOnce({ error: new Error("upstream") });
+    expect(await changePassword(idleState, form(valid))).toEqual({ status: "success", message: "Password changed. Sign out on your other devices to apply it there." });
   });
 
   it.each([
@@ -303,6 +343,7 @@ describe("change password (§14.11): re-authentication with a non-persisting cli
       status: "error", message: "Your current password is incorrect.", fieldErrors: { currentPassword: "Your current password is incorrect." },
     });
     expect(client.auth.updateUser).not.toHaveBeenCalled();
+    expect(m.browser.auth.setSession).not.toHaveBeenCalled();
     expect(db.auth.signOut).not.toHaveBeenCalled();
   });
 

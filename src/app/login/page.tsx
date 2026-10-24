@@ -1,18 +1,43 @@
-import Link from "next/link";
-import { Activity, Check, LockKeyhole } from "lucide-react";
+import { Info } from "lucide-react";
+import type { Metadata } from "next";
 import { redirect } from "next/navigation";
+import { AuthFrame, AuthHeading } from "@/components/settings/auth-frame";
+import { SignInForm } from "@/components/settings/auth-forms";
+import { signInNotice, storedTheme } from "@/components/settings/auth-page-data";
+import { Callout } from "@/components/ui/callout";
 import { isConfigured, supabaseServer } from "@/lib/supabase/server";
-import { login } from "@/app/actions";
-import { ActionForm, Field } from "@/components/forms";
-import { Button } from "@/components/ui/button";
+
+export const metadata: Metadata = { title: "Sign in · Trading OS" };
 export const dynamic = "force-dynamic";
-export default async function LoginPage({searchParams}:{searchParams:Promise<{reason?:string}>}) {
-  const {reason}=await searchParams;
+
+/** Public sign-in (docs/V2_ARCHITECTURE.md §14.12). A signed-in visitor goes straight to Today. */
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ reason?: string | string[] }> }) {
+  const { reason } = await searchParams;
   const configured = isConfigured();
-  if (configured) { const db=await supabaseServer(); const {data}=await db.auth.getUser(); if(data.user) redirect("/today"); }
-  return <main className="login-page"><div className="login-intro"><div className="brand"><span className="brand-mark"><Activity size={24}/></span><span>TRADING <b>OS</b></span></div><div className="eyebrow">YOUR PRIVATE TRADING WORKSTATION</div><h1>Make the process<br/>measurable.</h1><p>One place for your written strategy, deliberate risk decisions and the record of what you believed before a trade.</p><div className="login-principles"><span><Check size={16} className="success"/>ICT V1.0, preserved exactly</span><span><Check size={16} className="success"/>Risk checked with deterministic code</span><span><Check size={16} className="success"/>Original plans and history protected</span></div></div>
-    <section className="panel login-panel"><div className="login-lock"><LockKeyhole size={18} aria-hidden="true"/></div><h2>{configured ? "Welcome back." : "Your foundation is ready."}</h2><p>{configured ? "Sign in to your private demo workspace." : "Connect your private Supabase project to enable sign-in and persistent records."}</p>
-    {reason === "session" && <p className="notice" role="status">Your session expired or was invalid. Please sign in again.</p>}{reason === "signed_out" && <p className="notice" role="status">You are signed out.</p>}{configured ? <ActionForm action={login} label="Sign in" pendingLabel="Signing in…"><Field label="Email"><input name="email" type="email" required autoComplete="username"/></Field><Field label="Password"><input name="password" type="password" required autoComplete="current-password"/></Field></ActionForm> : <div className="notice"><p>Authentication and database access are awaiting configuration. You can explore the risk engine now using an isolated example.</p></div>}
-    {reason === "password_updated" && <p className="notice success" role="status">Password updated. Sign in with your new password.</p>}{configured && <Link href="/forgot-password">Forgot password?</Link>}
-    {configured?<Link className="block" style={{marginTop:14}} href="/preview">Explore the risk engine →</Link>:<Button asChild variant="outline" className="full-width"><Link href="/preview">Explore the risk engine →</Link></Button>}<div className="login-footnote">{configured ? "Access is invitation-only. Use the account provisioned in your private project." : "The repository includes the database migrations and a connection runbook in README.md."}<br/>Demo testing only · no broker execution connection.</div></section></main>;
+  if (configured) {
+    const db = await supabaseServer();
+    const { data } = await db.auth.getUser();
+    if (data.user) redirect("/today");
+  }
+  const notice = signInNotice(reason);
+  return (
+    <AuthFrame theme={await storedTheme()}>
+      <AuthHeading
+        title={configured ? "Sign in to Trading OS" : "Sign-in isn't set up yet"}
+        description={configured ? "Access is invitation-only. Use the login provisioned for you." : undefined}
+      />
+      {notice && (
+        <Callout role="status" tone={notice.tone} icon={notice.icon} title={notice.title} className="mb-5">
+          {notice.body}
+        </Callout>
+      )}
+      {configured ? (
+        <SignInForm />
+      ) : (
+        <Callout tone="info" icon={<Info aria-hidden="true" />} title="No database is connected to this deployment">
+          Connect the private Supabase project described in README.md to enable sign-in and saved records.
+        </Callout>
+      )}
+    </AuthFrame>
+  );
 }
