@@ -46,6 +46,28 @@ describe("classifyTiming (spec §5.3)", () => {
     expect(inferStoredPhase("2026-09-04T12:00:00Z", "2026-09-04T12:00:00.000001Z", null)).toBe("PRE_ENTRY");
     expect(inferStoredPhase("2026-09-04T12:00:00Z", "2026-09-04T12:00:00Z", null)).toBe("LIVE");
     expect(inferStoredPhase("2026-09-04T15:00:00Z", "2026-09-04T12:00:00Z", "2026-09-04T15:00:00Z")).toBe("POST_TRADE");
+    // After a plan ended without an entry, like private.trade_phase (§5.2).
+    expect(inferStoredPhase("2026-09-04T12:00:00Z", null, null, "2026-09-04T12:00:00Z")).toBe("POST_TRADE");
+    expect(inferStoredPhase("2026-09-04T11:59:59.999999Z", null, null, "2026-09-04T12:00:00Z")).toBe("PRE_ENTRY");
+  });
+});
+
+describe("classifyTiming after a plan ended without an entry (spec §5.2, §5.3)", () => {
+  const ENDED = "2026-09-04T12:00:00Z";
+
+  it.each([
+    ["stored post-trade after the end, as the database stores it", planned({ storedPhase: "POST_TRADE", endedAt: ENDED }), "AFTER_CLOSE", []],
+    ["stored pre-entry at the end instant (an older row): marked, never pre-entry", planned({ endedAt: ENDED }), "AFTER_CLOSE", ["RECORDED_AFTER_PLAN_ENDED"]],
+    ["stored pre-entry an hour after the end", planned({ recordedAt: "2026-09-04T13:00:00Z", endedAt: ENDED }), "AFTER_CLOSE", ["RECORDED_AFTER_PLAN_ENDED"]],
+    ["recorded one microsecond before the end", planned({ recordedAt: "2026-09-04T11:59:59.999999Z", endedAt: ENDED }), "BEFORE_ENTRY", []],
+    ["a plan that has not ended", planned({ recordedAt: "2026-09-04T13:00:00Z", endedAt: null }), "BEFORE_ENTRY", []],
+  ] as const)("%s", (_name, input, timing, flags) => {
+    expect(classifyTiming(input)).toEqual({ timing, flags });
+  });
+
+  it("only ever downgrades: the end time cannot make anything pre-entry", () => {
+    expect(classifyTiming(planned({ storedPhase: "POST_TRADE", recordedAt: "2026-09-04T11:00:00Z", endedAt: ENDED }))).toEqual({ timing: "AFTER_CLOSE", flags: [] });
+    expect(classifyTiming(planned({ storedPhase: "LIVE", recordedAt: "2026-09-04T11:00:00Z", endedAt: ENDED })).timing).toBe("WHILE_LIVE");
   });
 });
 
@@ -265,6 +287,132 @@ describe("buildTimeline (spec §5.4)", () => {
     expect(withoutDisposition.map(item => [item.title, item.body])).toEqual([["Plan locked", undefined], ["Plan cancelled", "News"]]);
     const withDisposition = buildTimeline({ trade: lockedOnly, legacyEvents: [cancelEvent], disposition: { status: "SKIPPED", reason: "News", recordedAt: "2026-09-04T13:00:00Z" } });
     expect(withDisposition.map(item => [item.title, item.body])).toEqual([["Plan locked", undefined], ["Trade skipped", "News"]]);
+  });
+});
+
+describe("timeline of a plan that ended without an entry (spec §5.3)", () => {
+  const SKIPPED_AT = "2026-09-04T13:00:00Z";
+  const skipped = ledger({ plan_id: ID.plan, locked_at: "2026-09-04T12:30:00Z", lifecycle: "SKIPPED", disposition: "SKIPPED" });
+  const inputs: TimelineInputs = {
+    trade: skipped,
+    revisions: [{ proposalId: ID.rev1, revision: 1, createdAt: "2026-09-04T12:00:00Z" }],
+    legacyEvents: [{ id: ID.note1, eventType: "NOTE_ADDED", payload: { note: "Price ran without me." }, occurredAt: "2026-09-04T13:20:00Z", recordedAt: "2026-09-04T13:20:00Z" }],
+    journal: [
+      { id: ID.stop, kind: "NOTE", body: "Waiting for the retest.", details: {}, phase: "PRE_ENTRY", recordedAt: "2026-09-04T12:40:00Z" },
+      { id: ID.lesson, kind: "LESSON", body: "The skip cost a winner.", details: {}, phase: "POST_TRADE", recordedAt: "2026-09-04T13:10:00Z" },
+      // Stored before the database stored such records post-trade.
+      { id: ID.partial, kind: "NOTE", body: "Where price went.", details: {}, phase: "PRE_ENTRY", recordedAt: "2026-09-04T13:15:00Z" },
+    ],
+    evidence: [
+      { kind: "V2", id: ID.m5, label: "PRE_ENTRY", timeframe: "M5", phase: "PRE_ENTRY", recordedAt: "2026-09-04T12:45:00Z", removedAt: "2026-09-04T13:30:00Z" },
+      { kind: "V2", id: ID.exitShot, label: "OTHER", timeframe: "M15", phase: "POST_TRADE", recordedAt: "2026-09-04T13:05:00Z" },
+      { kind: "LEGACY", id: ID.h4, role: "H4", recordedAt: "2026-09-04T13:25:00Z" },
+    ],
+    tagSets: [{ id: ID.tags, source: "V2", recordedAt: "2026-09-04T13:40:00Z", setupGrade: "C", liquidityContext: null, mssTimeframe: null, tags: ["missed"] }],
+    disposition: { status: "SKIPPED", reason: "No retest.", recordedAt: SKIPPED_AT },
+    planEndedAt: SKIPPED_AT,
+  };
+  const timing = (items: ReturnType<typeof buildTimeline>, id: string) => {
+    const item = items.find(entry => entry.id === id);
+    return item ? [item.timing, item.flags] : null;
+  };
+
+  it("keeps the skip with what came before it and moves everything recorded afterwards to After close", () => {
+    const items = buildTimeline(inputs);
+    expect(timing(items, `journal:${ID.stop}`)).toEqual(["BEFORE_ENTRY", []]);
+    expect(timing(items, `evidence-added:${ID.m5}`)).toEqual(["BEFORE_ENTRY", []]);
+    expect(timing(items, `disposition:${skipped.id}`)).toEqual(["BEFORE_ENTRY", []]);
+    expect(timing(items, `journal:${ID.lesson}`)).toEqual(["AFTER_CLOSE", []]);
+    expect(timing(items, `evidence-added:${ID.exitShot}`)).toEqual(["AFTER_CLOSE", []]);
+    // A stored phase that contradicts the end is kept and marked, never rewritten.
+    expect(timing(items, `journal:${ID.partial}`)).toEqual(["AFTER_CLOSE", ["RECORDED_AFTER_PLAN_ENDED"]]);
+    // Records without a stored phase (V1 notes, legacy screenshots, removals, tags) are dated by the end, unmarked.
+    expect(timing(items, `event:${ID.note1}`)).toEqual(["AFTER_CLOSE", []]);
+    expect(timing(items, `evidence-added:${ID.h4}`)).toEqual(["AFTER_CLOSE", []]);
+    expect(timing(items, `evidence-removed:${ID.m5}`)).toEqual(["AFTER_CLOSE", []]);
+    expect(timing(items, `tags:V2:${ID.tags}`)).toEqual(["AFTER_CLOSE", []]);
+    expect(groupByTiming(items).map(group => [group.label, group.items.map(item => item.kind)])).toEqual([
+      ["Before entry", ["DRAFT_REVISION", "PLAN_LOCKED", "JOURNAL", "EVIDENCE_ADDED", "DISPOSITION"]],
+      ["While live", []],
+      ["After close", ["EVIDENCE_ADDED", "JOURNAL", "JOURNAL", "NOTE", "EVIDENCE_ADDED", "EVIDENCE_REMOVED", "TAGS"]],
+    ]);
+  });
+
+  it("classifies by the stored phase alone without an end time, and ignores an end time on trades without a plan", () => {
+    const loose = buildTimeline({ ...inputs, planEndedAt: null });
+    expect(timing(loose, `journal:${ID.partial}`)).toEqual(["BEFORE_ENTRY", []]);
+    expect(timing(loose, `journal:${ID.lesson}`)).toEqual(["AFTER_CLOSE", []]);
+    const liveFirst = ledger({ origin: "LIVE_FIRST", revision_count: 0, created_at: "2026-09-04T12:00:00Z", entry_recorded_at: "2026-09-04T12:00:00Z", lifecycle: "LIVE" });
+    const items = buildTimeline({ trade: liveFirst, journal: [{ id: ID.note2, kind: "NOTE", body: "Open.", details: {}, phase: "LIVE", recordedAt: "2026-09-04T13:30:00Z" }], planEndedAt: SKIPPED_AT });
+    expect(timing(items, `journal:${ID.note2}`)).toEqual(["WHILE_LIVE", []]);
+  });
+
+  it("keeps a discard with what came before it", () => {
+    const discarded = ledger({ lifecycle: "DISCARDED", discarded_at: "2026-09-04T12:30:00Z" });
+    const items = buildTimeline({
+      trade: discarded,
+      journal: [{ id: ID.note2, kind: "NOTE", body: "Dropped.", details: {}, phase: "PRE_ENTRY", recordedAt: "2026-09-04T12:31:00Z" }],
+      lifecycleEvents: [{ id: ID.reviewed, event: "DRAFT_DISCARDED", reason: "Stale idea.", recordedAt: "2026-09-04T12:30:00Z" }],
+      planEndedAt: "2026-09-04T12:30:00Z",
+    });
+    expect(items.map(item => [item.kind, item.timing, item.flags])).toEqual([
+      ["DRAFT_DISCARDED", "BEFORE_ENTRY", []], ["JOURNAL", "AFTER_CLOSE", ["RECORDED_AFTER_PLAN_ENDED"]],
+    ]);
+  });
+});
+
+describe("decision history in causal order (spec §5.4)", () => {
+  const PROP1 = "00000000-0000-4000-8000-000000000101";
+  const PROP2 = "00000000-0000-4000-8000-000000000102";
+  const EVAL_SAVE1 = "00000000-0000-4000-8000-000000000201";
+  const EVAL_MANUAL = "00000000-0000-4000-8000-000000000202";
+  const EVAL_SAVE2 = "00000000-0000-4000-8000-000000000203";
+  const EVAL_LOCK = "00000000-0000-4000-8000-000000000204";
+  // Gaps measured on the database: a save writes its check ~10 ms before the revision row; a lock stamps locked_at with
+  // the evaluation time and writes the evaluation row ~17 ms later.
+  const locked = ledger({ plan_id: ID.plan, locked_at: "2026-10-24T15:02:54.608822+00:00", lifecycle: "LOCKED", created_at: "2026-10-24T15:02:46.061371+00:00" });
+  const inputs: TimelineInputs = {
+    trade: locked,
+    revisions: [
+      { proposalId: PROP1, revision: 1, createdAt: "2026-10-24T15:02:46.061371+00:00" },
+      { proposalId: PROP2, revision: 2, createdAt: "2026-10-24T15:02:50.568811+00:00" },
+    ],
+    riskChecks: [
+      { id: EVAL_SAVE1, proposalId: PROP1, recordedAt: "2026-10-24T15:02:46.051594+00:00", decision: "BLOCKED" },
+      { id: EVAL_MANUAL, proposalId: PROP1, recordedAt: "2026-10-24T15:02:48.000000+00:00", decision: "BLOCKED" },
+      { id: EVAL_SAVE2, proposalId: PROP2, recordedAt: "2026-10-24T15:02:50.566225+00:00", decision: "APPROVED" },
+      { id: EVAL_LOCK, proposalId: PROP2, recordedAt: "2026-10-24T15:02:54.626000+00:00", decision: "APPROVED" },
+    ],
+    lockEvaluationId: EVAL_LOCK,
+  };
+
+  it("shows each saved revision before its own check, and the evaluation that authorised the lock right before the lock", () => {
+    expect(buildTimeline(inputs).map(item => item.id)).toEqual([
+      `revision:${PROP1}`, `check:${EVAL_SAVE1}`, `check:${EVAL_MANUAL}`, `revision:${PROP2}`, `check:${EVAL_SAVE2}`, `check:${EVAL_LOCK}`, `plan:${ID.plan}`,
+    ]);
+  });
+
+  it("never changes the times it shows, and keeps time order for everything else", () => {
+    const items = buildTimeline(inputs);
+    expect(items.find(item => item.id === `check:${EVAL_LOCK}`)).toMatchObject({ at: "2026-10-24T15:02:54.626000+00:00", recordedAt: "2026-10-24T15:02:54.626000+00:00" });
+    // Without knowing which evaluation authorised the lock, or which revision a check evaluated, time order stands.
+    expect(buildTimeline({ ...inputs, lockEvaluationId: null }).slice(-2).map(item => item.id)).toEqual([`plan:${ID.plan}`, `check:${EVAL_LOCK}`]);
+    const anonymous = (inputs.riskChecks ?? []).map(({ proposalId: _proposal, ...check }) => check);
+    expect(buildTimeline({ ...inputs, riskChecks: anonymous }).slice(0, 2).map(item => item.id)).toEqual([`check:${EVAL_SAVE1}`, `revision:${PROP1}`]);
+    // A check recorded after its revision (an explicit check) stays where its time puts it, as does a lock evaluation
+    // recorded before the lock.
+    const early = { ...inputs, riskChecks: [{ id: EVAL_LOCK, proposalId: PROP2, recordedAt: "2026-10-24T15:02:54.600000+00:00", decision: "APPROVED" as const }] };
+    expect(buildTimeline(early).slice(-2).map(item => item.id)).toEqual([`check:${EVAL_LOCK}`, `plan:${ID.plan}`]);
+  });
+
+  it("orders seeded records written at one instant causally too, deterministically", () => {
+    const at = "2026-10-23T07:24:00Z";
+    const items = buildTimeline({
+      trade: ledger({ created_at: at }),
+      revisions: [{ proposalId: PROP1, revision: 1, createdAt: at }],
+      riskChecks: [{ id: EVAL_SAVE1, proposalId: PROP1, recordedAt: at, decision: "APPROVED" }],
+    });
+    expect(items.map(item => item.kind)).toEqual(["DRAFT_REVISION", "RISK_CHECK"]);
   });
 });
 

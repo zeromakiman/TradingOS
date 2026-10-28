@@ -1,5 +1,5 @@
 import type { DraftCheck, LedgerTrade, Lifecycle, TradeOrigin } from "./ledger";
-import { type Instant, strategyDay } from "./time-display";
+import { compareInstants, type Instant, strategyDay } from "./time-display";
 
 /**
  * Trade lifecycle, vocabulary, next action and editability (spec §2). The lifecycle mirrors the
@@ -79,7 +79,10 @@ export type TradeStateRow = LifecycleRow & Pick<LedgerTrade,
   | "latest_check_decision" | "latest_check_at" | "revision_count">;
 
 export interface TradeStateOptions {
-  /** Server time; an approval from an earlier strategy day is never treated as current. */
+  /**
+   * Server time; an approval from an earlier strategy day is never treated as current, and a block from an earlier
+   * strategy day makes "Recheck risk" the next action.
+   */
   now: Instant;
   /** Result of `isRiskReportCurrent` for the latest approved check (server time). */
   checkCurrent: boolean;
@@ -87,13 +90,20 @@ export interface TradeStateOptions {
   aiAvailable?: boolean;
   /** First blocking reason of the latest check (`explainReport(...).blocking[0].detail`), shown with "Edit draft". */
   blockingReason?: string;
+  /**
+   * The trade's account is archived (§3.2, §9, §14.9): it takes no new activity, so a draft can only be discarded (the
+   * database refuses a new revision, a check or a lock with ACCOUNT_ARCHIVED) and reads "Account archived", none of its
+   * approvals is current, and no trade of it can be duplicated. Trades it already holds are finished as usual: the other
+   * states keep their actions. Default false.
+   */
+  accountArchived?: boolean;
 }
 
-function hasClose(row: LifecycleRow): boolean {
+function hasClose(row: Pick<LifecycleRow, "outcome" | "exited_at" | "close_recorded_at">): boolean {
   return row.outcome !== null || row.exited_at !== null || row.close_recorded_at !== null;
 }
 
-function hasEntry(row: LifecycleRow): boolean {
+function hasEntry(row: Pick<LifecycleRow, "entry_recorded_at" | "entered_at" | "entry_price">): boolean {
   return row.entry_recorded_at !== null || row.entered_at !== null || row.entry_price !== null;
 }
 
@@ -115,6 +125,39 @@ export function deriveDraftCheck(row: LifecycleRow & Pick<LedgerTrade, "latest_c
   return deriveLifecycle(row) === "DRAFT" ? row.latest_check_decision ?? "UNCHECKED" : null;
 }
 
+/** Columns `planEndedAt` reads: the origin, the discard, and whether the plan has a fill or an outcome. */
+export type PlanEndRow = Pick<LedgerTrade,
+  "origin" | "discarded_at" | "entered_at" | "entry_recorded_at" | "entry_price" | "outcome" | "exited_at" | "close_recorded_at">;
+
+/** End facts the ledger names but does not date (timestamps as the database returns them). */
+export interface PlanEndTimes {
+  /** `trade_dispositions.recorded_at` of the linked plan (its skip or cancellation). */
+  dispositionAt?: string | null;
+  /** `setup_human_decisions.recorded_at` of the trade's latest V1 decision, when that decision is SKIPPED. */
+  legacySkipAt?: string | null;
+}
+
+/**
+ * When a planned trade ended without an entry (spec §5.2, `private.plan_ended_at`, parity-tested): the earliest of its
+ * discard, the skip or cancellation of its plan and a latest V1 SKIPPED decision. Null while none exists, once the plan
+ * has a fill or an outcome, and for trades without a Trading OS plan. The earliest fact counts, so a later one never
+ * moves the end. Records made from then on are hindsight: stored post-trade and never pre-entry evidence (§5.3, §7.4).
+ */
+export function planEndedAt(row: PlanEndRow, times: PlanEndTimes = {}): string | null {
+  if (row.origin !== "PLANNED" || hasEntry(row) || hasClose(row)) return null;
+  const facts = [row.discarded_at, times.dispositionAt ?? null, times.legacySkipAt ?? null].filter((at): at is string => at !== null);
+  return facts.reduce<string | null>((earliest, at) => (earliest === null || compareInstants(at, earliest) < 0 ? at : earliest), null);
+}
+
+/**
+ * A draft blocked by a check that ran on an earlier strategy day (fixed UTC−5) than `now`. Daily limits, the session,
+ * today's account values and the risk plan in effect can all differ since, so the stored reasons say nothing certain
+ * about today: the free recheck comes first, as it does for an approval that is no longer current.
+ */
+export function blockedOnEarlierDay(row: LifecycleRow & Pick<LedgerTrade, "latest_check_decision" | "latest_check_at">, now: Instant): boolean {
+  return deriveDraftCheck(row) === "BLOCKED" && row.latest_check_at !== null && strategyDay(row.latest_check_at) !== strategyDay(now);
+}
+
 const ORIGIN_LABELS: Record<TradeOrigin, string> = { PLANNED: "Planned", LIVE_FIRST: "Live-first", IMPORTED: "Imported" };
 
 function action(kind: TradeActionKind, label: string, aiOperation?: AiActionOperation): TradeAction {
@@ -123,6 +166,13 @@ function action(kind: TradeActionKind, label: string, aiOperation?: AiActionOper
 
 const EDIT_DRAFT = action("EDIT_DRAFT", "Edit draft");
 const DISCARD = action("DISCARD", "Discard");
+const RECHECK_RISK = action("RECHECK_RISK", "Recheck risk");
+
+/**
+ * State pill of a draft whose trading account is archived (§3.2, §9): whatever its last check said, the draft waits for
+ * the account to be restored, so the pill names that reason and no risk step ("Recheck needed", "Ready to lock").
+ */
+export const ARCHIVED_DRAFT_LABEL = "Account archived";
 
 /**
  * Entry details a live-first or imported position can still fill once each (`complete_live_entry`):
@@ -165,10 +215,11 @@ function presentation(lifecycle: Lifecycle, draftCheck: DraftCheck | null, curre
   switch (lifecycle) {
     case "DRAFT":
       if (draftCheck === "BLOCKED") {
-        return {
-          label: "Blocked", tone: "danger", step: "Draft", nextAction: options.blockingReason ? { ...EDIT_DRAFT, detail: options.blockingReason } : EDIT_DRAFT,
-          secondaryActions: [...aiActions(action("ANALYZE_BLOCKED", "Analyze blocked setup anyway", "ANALYZE_SETUP")), DISCARD],
-        };
+        const edit = options.blockingReason ? { ...EDIT_DRAFT, detail: options.blockingReason } : EDIT_DRAFT;
+        const others = [...aiActions(action("ANALYZE_BLOCKED", "Analyze blocked setup anyway", "ANALYZE_SETUP")), DISCARD];
+        // A block found on an earlier strategy day: the free recheck gives today's answer before any edit (§2.4, §6.3).
+        if (blockedOnEarlierDay(row, options.now)) return { label: "Blocked", tone: "danger", step: "Draft", nextAction: RECHECK_RISK, secondaryActions: [edit, ...others] };
+        return { label: "Blocked", tone: "danger", step: "Draft", nextAction: edit, secondaryActions: others };
       }
       if (draftCheck === "APPROVED" && current) {
         return {
@@ -180,7 +231,7 @@ function presentation(lifecycle: Lifecycle, draftCheck: DraftCheck | null, curre
         };
       }
       if (draftCheck === "APPROVED") {
-        return { label: "Recheck needed", tone: "warning", step: "Draft", nextAction: action("RECHECK_RISK", "Recheck risk"), secondaryActions: [EDIT_DRAFT] };
+        return { label: "Recheck needed", tone: "warning", step: "Draft", nextAction: RECHECK_RISK, secondaryActions: [EDIT_DRAFT] };
       }
       return { label: "Draft", tone: "neutral", step: "Draft", nextAction: action("CHECK_RISK", "Check risk (free)"), secondaryActions: [EDIT_DRAFT, DISCARD] };
     case "LOCKED":
@@ -221,20 +272,30 @@ export function deriveTradeState(row: TradeStateRow, options: TradeStateOptions)
   const lifecycle = deriveLifecycle(row);
   const draftCheck = lifecycle === "DRAFT" ? row.latest_check_decision ?? "UNCHECKED" : null;
   const sameDay = row.latest_check_at !== null && strategyDay(row.latest_check_at) === strategyDay(options.now);
-  const current = draftCheck === "APPROVED" && options.checkCurrent && sameDay;
+  const archived = options.accountArchived === true;
+  // An archived account's draft can't be locked, so none of its approvals is current (never "Ready to lock").
+  const current = draftCheck === "APPROVED" && options.checkCurrent && sameDay && !archived;
   const planned = row.origin === "PLANNED";
+  const shown = presentation(lifecycle, draftCheck, current, row, options);
+  const editable = editability(lifecycle, row);
+  // A draft of an archived account waits for the account: no new revision, check, lock or analysis (the database refuses
+  // them with ACCOUNT_ARCHIVED), only Discard. Its pill says why instead of a risk step it can't take; `draftCheck` keeps
+  // the fact of its last check.
+  const frozen = archived && lifecycle === "DRAFT";
   return {
     lifecycle,
     draftCheck,
     checkCurrent: current,
-    ...presentation(lifecycle, draftCheck, current, row, options),
+    ...shown,
+    ...(frozen ? { label: ARCHIVED_DRAFT_LABEL, tone: "muted" as const, step: "Draft" as const, nextAction: null, secondaryActions: [DISCARD] } : {}),
     origin: row.origin,
     originLabel: ORIGIN_LABELS[row.origin],
     originTooltip: row.origin === "LIVE_FIRST" ? NO_PLAN_BANNER : null,
     banner: planned ? null : NO_PLAN_BANNER,
-    editable: editability(lifecycle, row),
+    editable: frozen ? { ...editable, plan: false } : editable,
     // Any linked plan is locked and immutable, including a skipped or cancelled one.
     immutableNote: planned && row.plan_id !== null ? LOCKED_PLAN_NOTE : null,
-    canDuplicate: planned && (row.revision_count > 0 || row.plan_id !== null),
+    // A duplicate is a new trade of the same account, which an archived account refuses.
+    canDuplicate: !archived && planned && (row.revision_count > 0 || row.plan_id !== null),
   };
 }

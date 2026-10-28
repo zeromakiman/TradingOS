@@ -9,10 +9,9 @@ import type { TimeDisplay } from "@/domain/time-display";
 import type { TradeDetail } from "@/lib/trades-data";
 import { EvidenceSection } from "./evidence-section";
 import { ExecutionSection } from "./execution-section";
+import { TradeHashFocus } from "./journal-focus";
 import { JournalSection } from "./journal-section";
-import {
-  aiRiskDecision, aiRiskLine, duplicateNotes, evidenceMode, lockSummary, type MainSection, type WorkspaceBlock, workspaceDetail, workspaceLayout,
-} from "./model";
+import { aiRiskDecision, aiRiskLine, duplicateNotes, evidenceMode, lockSummary, type MainSection, type WorkspaceBlock, workspaceLayout } from "./model";
 import { PlanSection } from "./plan-section";
 import { ResultSection } from "./result-section";
 import { ReviewSection } from "./review-section";
@@ -25,7 +24,9 @@ import type { TradeExtras } from "./workspace-data";
  * Trade workspace (docs/V2_ARCHITECTURE.md §14.4): header with the one next action, stepper or live-first banner, then
  * Plan · Execution · Result · Review in the main column and Journal + Evidence beside it (desktop), or one column on
  * phones whose order follows the trade: the journal leads while the position is live. Technical details close the
- * page. Paid AI panels stream in behind their own Suspense boundaries and never run anything on load. Server component.
+ * page. Paid AI panels stream in behind their own Suspense boundaries and never run anything on load. A link to one of
+ * the page's targets (`/trades/<id>#close-trade`, `#record-entry`, `#review`, …) opens it once the trade is on the page
+ * (`TradeHashFocus`). Server component.
  */
 
 /** Per-request idempotency keys of the page's actions (a retry of the same submission replays it). */
@@ -79,17 +80,14 @@ const BLOCK_CLASS: Readonly<Record<WorkspaceBlock, string>> = {
   evidence: "min-w-0 xl:col-start-2",
 };
 
-export function TradeWorkspace({ detail: loaded, extras, now, display, developerMode, keys }: TradeWorkspaceProps) {
-  // What duplicating copies is decided on the trade as stored; everything shown uses the presented trade (hindsight after
-  // a plan ended is never Before entry, and the decision history reads in causal order).
-  const copyNotes = duplicateNotes(loaded);
-  const detail = workspaceDetail(loaded);
+export function TradeWorkspace({ detail, extras, now, display, developerMode, keys }: TradeWorkspaceProps) {
   const layout = workspaceLayout(detail);
   const mode = evidenceMode(detail);
   const lifecycle = detail.state.lifecycle;
   const gallery = toGalleryItems(detail.evidence.items);
   const lock = detail.draft ? lockSummary(detail, extras.lockUsage) : null;
-  const preTradeAi = lifecycle === "DRAFT" && detail.origin === "PLANNED" && detail.draft ? (
+  // Pre-trade AI serves a plan that can still be locked: never on a draft of an archived account (§3.2, §9).
+  const preTradeAi = lifecycle === "DRAFT" && detail.origin === "PLANNED" && detail.draft && detail.account.status !== "ARCHIVED" ? (
     <Suspense fallback={<AiPanelSkeleton label="Loading AI tools" />}>
       <PreTradeAiPanel
         tradeId={detail.tradeId}
@@ -143,11 +141,12 @@ export function TradeWorkspace({ detail: loaded, extras, now, display, developer
         display={display}
         lock={lock}
         keys={{ duplicate: keys.duplicate, discard: keys.discard, reopen: keys.reopen }}
-        duplicateNotes={copyNotes}
+        duplicateNotes={duplicateNotes(detail)}
       />
       <TradeProgress detail={detail} now={now} display={display} />
       {mode.selectable ? <EvidenceSelectionProvider max={mode.max}>{grid}</EvidenceSelectionProvider> : grid}
       <TechnicalSection detail={detail} developerMode={developerMode} />
+      <TradeHashFocus key={detail.tradeId} />
     </div>
   );
 }

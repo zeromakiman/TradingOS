@@ -28,8 +28,10 @@ export function TradeProgress({ detail, now, display }: { detail: TradeDetail; n
   if (state.lifecycle === "SKIPPED" || state.lifecycle === "CANCELLED") {
     const disposition = detail.disposition;
     const title = state.lifecycle === "SKIPPED" ? "Skipped before entry" : "Cancelled before entry";
+    // A skip recorded in an earlier version of Trading OS has no disposition row; its decision still dates the end.
+    const endedAt = disposition?.recordedAt ?? detail.planEndedAt;
     return (
-      <Callout tone="neutral" icon={<Ban aria-hidden="true" />} title={disposition ? `${title} · ${when(disposition.recordedAt)}` : title}>
+      <Callout tone="neutral" icon={<Ban aria-hidden="true" />} title={endedAt ? `${title} · ${when(endedAt)}` : title}>
         {disposition?.reason ? <span className="whitespace-pre-wrap break-words">“{disposition.reason}”</span> : "Recorded in an earlier version of Trading OS, without a reason."}
       </Callout>
     );

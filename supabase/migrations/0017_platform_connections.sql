@@ -428,6 +428,8 @@ begin
     end if;
     return c.id;
   end if;
+  -- A connection imports new trades: an archived account takes none (0015 private.require_active_account).
+  perform private.require_active_account(a.id);
   select * into c from public.platform_connections where account_id = a.id and provider = p_provider for update;
   if found and private.connection_status(c.id) is distinct from 'DISCONNECTED' then
     return c.id;
@@ -583,6 +585,9 @@ begin
     return jsonb_build_object('outcome', 'CHANGED', 'executionId', existing.id, 'tradeId', l.trade_id);
   end if;
 
+  -- A new IMPORTED trade is new activity, which an archived account refuses (0015 private.require_active_account);
+  -- positions already imported keep syncing above, and links to existing trades or held executions create no trade.
+  if v_kind = 'CREATE' then perform private.require_active_account(c.account_id); end if;
   insert into public.external_executions(user_id, account_id, connection_id, external_id, symbol, direction, volume, entry_price,
       entered_at, exit_price, exited_at, commission, swap, realized_pnl, currency, payload_hash)
     values (c.user_id, c.account_id, c.id, x.external_id, x.symbol, x.direction, x.volume, x.entry_price,

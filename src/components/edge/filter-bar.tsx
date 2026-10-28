@@ -1,8 +1,8 @@
 "use client";
 
-import { SlidersHorizontal } from "lucide-react";
+import { SlidersHorizontal, X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useId, useState } from "react";
+import { type FormEvent, useId, useRef, useState } from "react";
 import { Button, buttonClasses } from "@/components/ui/button";
 import { cx } from "@/components/ui/cx";
 import { Field } from "@/components/ui/field";
@@ -28,19 +28,32 @@ export type FilterSelect = {
   value: string;
 };
 
+/** The read-only account filter of All Accounts (src/components/edge/query.ts `accountFilterChip`). */
+export type EdgeAccountFilter = {
+  /** Account id, carried along by every filter change; never shown. */
+  id: string;
+  /** "Account: Personal 12K · archived". */
+  label: string;
+  /** The page without the account filter. */
+  removeHref: string;
+};
+
 export type EdgeFilterBarProps = {
   /** Current URL state (filters and calendar mode). */
   state: EdgeUrlState;
   rangeOptions: { value: RangePreset; label: string }[];
   selects: FilterSelect[];
+  /** Shown as a removable chip in words; kept by every other filter change. */
+  accountFilter?: EdgeAccountFilter | null;
 };
 
 /**
  * The EDGE filter row (§14.6): date range presets or a custom range of exit days, model, session, origin and
- * instrument. Every change navigates (URL state) inside the page transition, so the previous results stay visible,
- * dimmed, until the new ones arrive. Below 768px the dimension filters fold behind a "Filters" button.
+ * instrument, plus the read-only account filter when a link narrowed All Accounts to one account. Every change
+ * navigates (URL state) inside the page transition, so the previous results stay visible, dimmed, until the new ones
+ * arrive. Below 768px the dimension filters fold behind a "Filters" button.
  */
-export function EdgeFilterBar({ state, rangeOptions, selects }: EdgeFilterBarProps) {
+export function EdgeFilterBar({ state, rangeOptions, selects, accountFilter = null }: EdgeFilterBarProps) {
   const router = useRouter();
   const { start } = useEdgeTransition();
   const [range, setRange] = useState<RangePreset>(state.range);
@@ -48,13 +61,16 @@ export function EdgeFilterBar({ state, rangeOptions, selects }: EdgeFilterBarPro
   const [to, setTo] = useState(state.closedTo ?? "");
   const [open, setOpen] = useState(false);
   const groupId = useId();
+  const rangeRef = useRef<HTMLSelectElement>(null);
   const dimensionCount = selects.filter(select => select.value !== "").length;
-  const active = dimensionCount + (state.range === "all" ? 0 : 1);
+  const active = dimensionCount + (state.range === "all" ? 0 : 1) + (accountFilter ? 1 : 0);
 
   // A filter change shows the month of the new results (the calendar month is not carried over) and keeps the
-  // calendar mode and currency, which the calendar may have changed in the URL since the page rendered.
+  // calendar mode and currency, which the calendar may have changed in the URL since the page rendered, and the
+  // account filter.
   const navigate = (next: EdgeUrlState) => {
-    const href = withParams(edgeParams({ ...next, month: undefined, calendar: "NET_R", currency: undefined }).toString(), currentCalendarParams(next));
+    const base = edgeParams({ ...next, month: undefined, calendar: "NET_R", currency: undefined }).toString();
+    const href = withParams(base, { ...currentCalendarParams(next), accountFilter: accountFilter?.id });
     start(() => router.push(href, { scroll: false }));
   };
 
@@ -71,8 +87,21 @@ export function EdgeFilterBar({ state, rangeOptions, selects }: EdgeFilterBarPro
 
   return (
     <form aria-label="Filter closed trades" className="flex flex-wrap items-start gap-2" onSubmit={applyCustom}>
+      {accountFilter && (
+        <div className="filter-chips w-full">
+          <ul className="filter-chip-list" aria-label="Account filter">
+            <li className="chip">
+              <span>{accountFilter.label}</span>
+              {/* Focus stays in the filter row: the date range takes it while the chip goes away. */}
+              <PendingLink href={accountFilter.removeHref} className="chip-remove" aria-label={`Remove filter: ${accountFilter.label}`} onClick={() => rangeRef.current?.focus()}>
+                <X aria-hidden="true" />
+              </PendingLink>
+            </li>
+          </ul>
+        </div>
+      )}
       <Field label="Date range" labelHidden className="min-w-0 flex-1 sm:w-44 sm:flex-none">
-        <Select name="range" value={range} onChange={event => changeRange(event.target.value as RangePreset)} className={cx(range !== "all" && "border-accent")}>
+        <Select ref={rangeRef} name="range" value={range} onChange={event => changeRange(event.target.value as RangePreset)} className={cx(range !== "all" && "border-accent")}>
           {rangeOptions.map(option => (
             <option key={option.value} value={option.value}>
               {option.label}

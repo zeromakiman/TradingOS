@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { clearFormAutosaves } from "../trade/forms/autosave";
 import { useOptionalToast } from "../ui/toast";
 import { type ActionFields, type CallableAction, persistChoice, themeFields, timeDisplayFields } from "./actions";
+import { clearPaletteHistory } from "./palette-history";
 import { isThemePreference, isTimeDisplayMode } from "./preference-options";
 import { applyTheme, browserTimeZone } from "./preferences";
 import type { SetThemeAction, SetTimeDisplayAction, SignOutAction, ThemePreference, TimeDisplay, TimeDisplayMode } from "./types";
@@ -77,11 +79,19 @@ export function useTimeDisplayChoice(mode: TimeDisplayMode, setTimeDisplayAction
   return [current, change] as const;
 }
 
-/** Signs out with the server action, which redirects to the login page; a failure is reported with a toast. */
+/**
+ * Signs out with the server action, which redirects to the login page; a failure is reported with a toast. First this
+ * browser forgets what belongs to the person: the palette's recent entries and the unsaved Plan Trade, Record Live
+ * Trade and Edit Draft entries kept in this tab, so the next person on a shared browser never finds them.
+ */
 export function useSignOut(signOutAction: SignOutAction | undefined) {
   const persist = usePersistence();
   if (!signOutAction) return undefined;
-  return () => persist(signOutAction, {}, { title: "Sign-out did not finish", description: "Try again in a moment." });
+  return () => {
+    clearPaletteHistory();
+    clearFormAutosaves();
+    persist(signOutAction, {}, { title: "Sign-out did not finish", description: "Try again in a moment." });
+  };
 }
 
 export type PreferenceControlsInput = {

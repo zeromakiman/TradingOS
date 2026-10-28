@@ -11,10 +11,14 @@ export const NO_ACCOUNTS_TITLE = "Create your first trading account";
 export const NO_ACCOUNTS_DESCRIPTION = "Reviews look back at the closed trades of one trading account. Add an account, then plan or record trades.";
 
 /**
- * What a periodic review reads from each trade. The weekly, monthly and recent-trades facts are built from the plans,
- * risk versions, executions and outcomes; entries of the trade journal and screenshots are not part of them yet.
+ * What a periodic review reads from each trade (the V2 facts in src/ai/periodic-facts.ts): the locked plan, its risk
+ * version and Risk Engine result, the entry and exit, and the trade's journal entries and tags with their timing.
+ * Weekly and monthly reviews read only journal entries and tags recorded within the period; journal texts and plan
+ * narratives are shortened past a bound and marked. Screenshots are not part of the facts. Live-first and imported
+ * trades are not in the samples (PERIODIC_LIMITATION).
  */
-export const PERIODIC_SOURCES = "Uses their original plans, risk versions, entries and exits. Journal notes and screenshots are not included yet.";
+export const PERIODIC_SOURCES =
+  "Uses each trade's original plan, risk version, entry and exit, plus its journal entries and tags (weekly and monthly reviews read only those recorded within the period). Long notes are shortened; screenshots are not included.";
 
 export const CHOOSE_TITLE = "Choose a trading account";
 export const FACTS_UNAVAILABLE = "Trade counts for this period are unavailable right now. The review itself is not affected.";

@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("server-only", () => ({}));
+
 import { ledgerRow } from "@/domain/ledger";
 import type { ExternalPosition, IngestDecision } from "@/domain/sync/contract";
 import { MOCK_POSITIONS } from "@/domain/sync/mock-provider";
 import { normalizeExternalPosition } from "@/domain/sync/normalize";
 import { classifyTiming, type StoredPhase } from "@/domain/timeline";
+import { type Db, listLinkedExecutions, listUnmatchedExecutions } from "@/lib/sync-service";
 import { type BootstrappedAccount, createTestDatabase, migrationFiles, OTHER, OWNER, type TestDatabase } from "./helpers/pglite";
 
 // docs/V2_ARCHITECTURE.md §8.6 (0017_platform_connections.sql) over all migrations present at run time.
@@ -859,6 +863,93 @@ describe("trader links (link_external_execution / unlink_external_execution)", (
       await expect(db.query(`update public.${table} set user_id = user_id where account_id = $1`, [a.accountId]), table).rejects.toThrow(/Immutable/);
       await expect(db.query(`delete from public.${table} where account_id = $1`, [a.accountId]), table).rejects.toThrow(/Immutable/);
     }
+  });
+});
+
+/**
+ * The PostgREST subset that sync-service's execution lists send (select, is/not-is null, eq, order, limit), run as SQL
+ * on PGlite under the current actor, so row-level security applies exactly as through the API. Rows are serialized
+ * with to_jsonb, as PostgREST does (timestamps with their offset, canonical decimal text).
+ */
+function apiClient(): Db {
+  type Result = { data: unknown; error: { message: string } | null };
+  return {
+    from(table: string) {
+      const where: string[] = [];
+      const params: unknown[] = [];
+      const orders: string[] = [];
+      let limit: number | null = null;
+      const chain = {
+        select: () => chain,
+        is: (column: string, value: null) => {
+          if (value !== null) throw new Error("Unsupported is-filter");
+          where.push(`${column} is null`);
+          return chain;
+        },
+        not: (column: string, operator: string, value: null) => {
+          if (operator !== "is" || value !== null) throw new Error("Unsupported not-filter");
+          where.push(`${column} is not null`);
+          return chain;
+        },
+        eq: (column: string, value: unknown) => {
+          params.push(value);
+          where.push(`${column} = $${params.length}`);
+          return chain;
+        },
+        order: (column: string, options: { ascending?: boolean } = {}) => {
+          orders.push(`${column} ${options.ascending === false ? "desc" : "asc"}`);
+          return chain;
+        },
+        limit: (count: number) => {
+          limit = count;
+          return chain;
+        },
+        // biome-ignore lint/suspicious/noThenProperty: models the thenable PostgREST query builder of supabase-js.
+        then: (resolve: (value: Result) => unknown, reject: (reason: unknown) => unknown) => {
+          const sql = `select to_jsonb(v) as row from public.${table} v${where.length ? ` where ${where.join(" and ")}` : ""}`
+            + `${orders.length ? ` order by ${orders.join(", ")}` : ""}${limit === null ? "" : ` limit ${limit}`}`;
+          return db.query<{ row: Json }>(sql, params)
+            .then((result): Result => ({ data: result.rows.map((item) => item.row), error: null }), (error): Result => ({ data: null, error: { message: String(error) } }))
+            .then(resolve, reject);
+        },
+      };
+      return chain;
+    },
+  } as unknown as Db;
+}
+
+describe("execution lists of Manage → Connection (sync-service, through RLS)", () => {
+  it("lists exactly the executions linked now (automatic, trader and import links), newest entry first, and only to their owner", async () => {
+    const a = await db.bootstrapAccount(OWNER);
+    const connection = await connect(a);
+    const first = await lockedTrade(a);
+    const second = await lockedTrade(a, { target: "1.10601" });
+    const held = await ingest(connection, openPosition({ externalId: "MOCK-LIST-1", enteredAt: first.lockedAt }), { kind: "HOLD" });
+    await link(first.tradeId, held.executionId);
+    const matched = await ingest(connection, openPosition({ externalId: "MOCK-LIST-2", enteredAt: second.lockedAt }), { kind: "LINK", tradeId: second.tradeId });
+    const imported = await ingest(connection, position({ externalId: "MOCK-LIST-3" }));
+    await ingest(connection, openPosition({ externalId: "MOCK-LIST-4", enteredAt: ago(20) }), { kind: "HOLD" });
+    // The automatic match is unlinked by the trader, and another execution is linked to that plan instead.
+    await unlink(second.tradeId, matched.executionId);
+    const relinked = await ingest(connection, openPosition({ externalId: "MOCK-LIST-5", enteredAt: second.lockedAt }), { kind: "HOLD" });
+    await link(second.tradeId, relinked.executionId);
+
+    await db.actor(OWNER);
+    const linked = await listLinkedExecutions(apiClient(), { accountId: a.accountId });
+    expect(linked.map((execution) => [execution.externalId, execution.linkMethod, execution.linkedTradeId])).toEqual([
+      ["MOCK-LIST-5", "USER", second.tradeId], ["MOCK-LIST-1", "USER", first.tradeId], ["MOCK-LIST-3", "IMPORT_CREATED", imported.tradeId],
+    ]);
+    expect(linked.every((execution) => execution.accountId === a.accountId && execution.linkedAt !== null)).toBe(true);
+    expect((await listLinkedExecutions(apiClient(), { accountId: a.accountId, limit: 2 })).map((execution) => execution.externalId)).toEqual(["MOCK-LIST-5", "MOCK-LIST-1"]);
+    // The unlinked automatic match and the held execution wait in the unmatched list instead.
+    expect((await listUnmatchedExecutions(apiClient(), { accountId: a.accountId })).map((execution) => [execution.externalId, execution.linkedTradeId]))
+      .toEqual([["MOCK-LIST-2", null], ["MOCK-LIST-4", null]]);
+
+    // Another user sees none of them, by account or across every account.
+    await db.actor(OTHER);
+    expect(await listLinkedExecutions(apiClient(), { accountId: a.accountId })).toEqual([]);
+    expect((await listLinkedExecutions(apiClient())).filter((execution) => execution.accountId === a.accountId)).toEqual([]);
+    expect(await listUnmatchedExecutions(apiClient(), { accountId: a.accountId })).toEqual([]);
   });
 });
 

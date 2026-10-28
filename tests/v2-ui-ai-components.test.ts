@@ -19,7 +19,7 @@ vi.mock("next/navigation", async importOriginal => ({
 import { analyzeSetupContext } from "@/ai/analyze-setup-context";
 import { biasChallengeContext } from "@/ai/bias-challenge-context";
 import { AiActionButton, type AiActionButtonProps, aiButtonLabel, aiRequestForm, aiResultToast, submitAiRequest } from "@/components/ai/ai-action-button";
-import { aiBudgetStatus, type AiBudgetModel, AiBudgetSummary, smallestRequestMicros } from "@/components/ai/ai-budget-summary";
+import { aiBudgetAmounts, aiBudgetFigures, aiBudgetStatus, type AiBudgetModel, AiBudgetSummary, smallestRequestMicros } from "@/components/ai/ai-budget-summary";
 import { AiCard, type AiCardProps } from "@/components/ai/ai-card";
 import { evidenceSelectionSummary } from "@/components/ai/ai-evidence-actions";
 import { AiHistoryList } from "@/components/ai/ai-history-list";
@@ -482,11 +482,51 @@ describe("AiBudgetSummary", () => {
     expect(visibleText(held)).not.toMatch(/reserv/i);
     expect(detailsBlocks(held).join("")).toMatch(/Reserved for requests in progress<\/dt><dd[^>]*>€0\.06</);
     const uncertain = summary(snapshot({ uncertain: true, heldMicros: 59_400 }));
-    expect(visibleText(uncertain)).toContain("The cost of an earlier request could not be confirmed, so the amount held for it stays in place.");
+    // A held reservation in plain words: what happened, that nothing beyond the held amount was charged, what resolves it.
+    expect(visibleText(uncertain)).toContain(
+      "An earlier AI request ended without a confirmed cost, so the amount held for it stays in place. Nothing beyond that amount was charged. AI requests for this account are paused until an accounting review confirms the cost or releases the hold.",
+    );
     expect(visibleText(uncertain)).not.toMatch(/reserv/i);
     expect(textOf(detailsBlocks(uncertain).join(""))).toContain("reserved for this request");
     for (const html of [held, uncertain, summary(snapshot(), "ENABLED", true), summary(snapshot({ heldMicros: 59_400 }), "ENABLED", true)]) {
       expect(html).not.toMatch(/reservation/i);
+    }
+  });
+
+  it("rounds used up and derives what is left, so used + held + left is the limit and left is never overstated", () => {
+    // 130,500 µ€ used of €10.00: €0.1305 is shown as €0.14, and €10.00 − €0.14 = €9.86 left (not €0.13 + €9.86).
+    const ten = (overrides: Partial<BudgetSnapshot>) => snapshot({ budgetCents: 1000, ...overrides });
+    expect(aiBudgetAmounts(ten({ usedMicros: 130_500 }), budgetPresentation(ten({ usedMicros: 130_500 }), true).remainingMicros)).toBe("€0.14 of €10.00 · €9.86 left");
+    expect(visibleText(summary(ten({ usedMicros: 130_500 })))).toContain("AI usage this month · €0.14 of €10.00 · €9.86 left");
+    const held = ten({ usedMicros: 130_500, heldMicros: 59_400 });
+    expect(aiBudgetAmounts(held, budgetPresentation(held, true).remainingMicros)).toBe("€0.14 of €10.00 · €9.80 left");
+    expect(detailsBlocks(summary(held)).join("")).toMatch(/Reserved for requests in progress<\/dt><dd[^>]*>€0\.06</);
+    for (const used of [0, 1, 9_999, 10_000, 10_001, 130_500, 999_999, 4_999_999, 9_990_001, 10_000_000, 12_345_678]) {
+      for (const heldMicros of [0, 1, 59_400, 67_320]) {
+        const snap = ten({ usedMicros: used, heldMicros });
+        const exactLeft = budgetPresentation(snap, true).remainingMicros;
+        const { usedCents, heldCents, leftCents } = aiBudgetFigures(snap, exactLeft);
+        // Used and held never understated; left never more than really remains; the three reconcile with the limit.
+        expect(usedCents.times(10_000).gte(used)).toBe(true);
+        expect(heldCents.times(10_000).gte(heldMicros)).toBe(true);
+        expect(leftCents.times(10_000).lte(exactLeft)).toBe(true);
+        expect(leftCents.gte(0)).toBe(true);
+        if (usedCents.plus(heldCents).lte(1000)) expect(usedCents.plus(heldCents).plus(leftCents).toNumber()).toBe(1000);
+      }
+    }
+  });
+
+  it("points to the controls next to it inside Settings → AI and to Settings everywhere else", () => {
+    const off = budget(snapshot({ enabled: false }));
+    expect(aiBudgetStatus(off, NOW).reason).toBe("AI is off for this account. Nothing is sent until you turn it on in Settings → AI.");
+    expect(aiBudgetStatus(off, NOW, { inSettings: true }).reason).toBe("AI is off for this account. Nothing is sent until you turn it on below.");
+    const inSettings = visibleText(render(AiBudgetSummary, { accountName: "FTMO 100K", budget: off, now: NOW, inSettings: true }));
+    expect(inSettings).toContain("Nothing is sent until you turn it on below.");
+    expect(inSettings).not.toContain("Settings → AI");
+    expect(visibleText(render(AiBudgetSummary, { accountName: "FTMO 100K", budget: off, now: NOW }))).toContain("Nothing is sent until you turn it on in Settings → AI.");
+    // Only the Off reason depends on the placement.
+    for (const snap of [snapshot(), snapshot({ uncertain: true, heldMicros: 59_400 }), snapshot({ usedMicros: 4_950_000, heldMicros: 60_000 })]) {
+      expect(aiBudgetStatus(budget(snap), NOW, { inSettings: true })).toEqual(aiBudgetStatus(budget(snap), NOW));
     }
   });
 

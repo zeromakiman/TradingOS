@@ -7,8 +7,7 @@ import { useState } from "react";
 import { Button } from "../ui/button";
 import { SegmentedControl } from "../ui/choice";
 import { Sheet, SheetContent } from "../ui/dialog";
-import { activeNavKey, LIVE_TRADE_HREF, type NavKey, PLAN_TRADE_HREF } from "./navigation";
-import { clearPaletteHistory } from "./palette-history";
+import { activeNavKey, LIVE_TRADE_HREF, type NavKey, newTradeAction, PLAN_TRADE_HREF } from "./navigation";
 import { THEME_OPTIONS, TIME_DISPLAY_OPTIONS } from "./preference-options";
 import type { SignOutAction } from "./types";
 import { type PreferenceControlsInput, usePreferenceControls, useSignOut } from "./use-preference-controls";
@@ -22,7 +21,10 @@ const MORE_KEYS: NavKey[] = ["edge", "review", "settings"];
 
 /** Bottom tab bar below 768px: Today · Journal · + · Accounts · More, with safe-area insets. */
 export function MobileTabBar({ email, signOutAction, ...preferences }: MobileTabBarProps) {
-  const active = activeNavKey(usePathname());
+  const pathname = usePathname();
+  const active = activeNavKey(pathname);
+  // Plan Trade and Record Live Trade are reached through `+`, so `+` is the current tab there.
+  const newTrade = newTradeAction(pathname);
   const [sheet, setSheet] = useState<"new" | "more" | null>(null);
   const { theme, changeTheme, timeMode, changeTimeMode, canChangeTimeDisplay } = usePreferenceControls(preferences);
   const signOut = useSignOut(signOutAction);
@@ -39,7 +41,7 @@ export function MobileTabBar({ email, signOutAction, ...preferences }: MobileTab
         <BookOpen aria-hidden="true" />
         <span>Journal</span>
       </Link>
-      <button type="button" className="tabbar-item" aria-haspopup="dialog" onClick={() => setSheet("new")}>
+      <button type="button" className="tabbar-item" aria-haspopup="dialog" aria-current={newTrade ? "page" : undefined} onClick={() => setSheet("new")}>
         <span className="tabbar-plus" aria-hidden="true">
           <Plus />
         </span>
@@ -57,14 +59,14 @@ export function MobileTabBar({ email, signOutAction, ...preferences }: MobileTab
       <Sheet open={sheet === "new"} onOpenChange={(open) => setSheet(open ? "new" : null)}>
         <SheetContent side="bottom" title="New trade" description="Plan before entry, or journal a position that is already open.">
           <div className="action-options">
-            <Link href={PLAN_TRADE_HREF} className="action-option" onClick={close}>
+            <Link href={PLAN_TRADE_HREF} className="action-option" onClick={close} aria-current={newTrade === "plan" ? "page" : undefined}>
               <Crosshair aria-hidden="true" />
               <span>
                 <span className="action-option-title">Plan Trade</span>
                 <span className="action-option-description">Draft the setup and check risk before you enter.</span>
               </span>
             </Link>
-            <Link href={LIVE_TRADE_HREF} className="action-option" onClick={close}>
+            <Link href={LIVE_TRADE_HREF} className="action-option" onClick={close} aria-current={newTrade === "live" ? "page" : undefined}>
               <Radio aria-hidden="true" />
               <span>
                 <span className="action-option-title">Record Live Trade</span>
@@ -109,10 +111,7 @@ export function MobileTabBar({ email, signOutAction, ...preferences }: MobileTab
               variant="secondary"
               icon={<LogOut aria-hidden="true" />}
               className="mt-5 w-full"
-              onClick={() => {
-                clearPaletteHistory();
-                signOut();
-              }}
+              onClick={signOut}
             >
               Sign out
             </Button>

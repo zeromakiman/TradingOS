@@ -4,6 +4,9 @@ import { cx } from "./cx";
 
 const joinIds = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined;
 
+/** Small segmented options are 44px tall on touch screens (§13.5); the compact size stays for mouse and trackpad. */
+export const SEGMENTED_SM_TOUCH = "pointer-coarse:min-h-11";
+
 export type CheckboxProps = Omit<ComponentProps<"input">, "type"> & {
   label: ReactNode;
   description?: ReactNode;
@@ -140,7 +143,7 @@ export function SegmentedControl({ name, legend, legendHidden = true, options, v
         {options.map((option) => (
           <label key={option.value} className="segmented-item">
             <input type="radio" name={name} value={option.value} required={required} disabled={option.disabled} {...radioState(option, { value, defaultValue, onValueChange })} />
-            <span className="segmented-label">{option.label}</span>
+            <span className={cx("segmented-label", size === "sm" && SEGMENTED_SM_TOUCH)}>{option.label}</span>
           </label>
         ))}
       </div>
@@ -171,7 +174,7 @@ export function SegmentedLinks({ label, items, size = "md", className }: { label
   return (
     <nav aria-label={label} className={cx("segmented", size === "sm" && "segmented-sm", className)}>
       {items.map((item) => (
-        <Link key={item.href} href={item.href} className="segmented-label" aria-current={item.current ? "true" : undefined} scroll={false}>
+        <Link key={item.href} href={item.href} className={cx("segmented-label", size === "sm" && SEGMENTED_SM_TOUCH)} aria-current={item.current ? "true" : undefined} scroll={false}>
           {item.label}
         </Link>
       ))}

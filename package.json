@@ -11,8 +11,8 @@
     "lint": "biome lint src tests scripts --error-on-warnings",
     "test": "vitest run",
     "test:live": "node scripts/verify-live.mjs",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
-    "test:ai-live": "node scripts/verify-ai-live.mjs"
+    "acceptance": "node scripts/local-stack/acceptance/run.mjs",
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {
     "@supabase/ssr": "0.12.5",

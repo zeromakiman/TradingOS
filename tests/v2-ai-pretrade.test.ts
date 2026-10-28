@@ -38,6 +38,7 @@ vi.mock("@/lib/supabase/admin", () => ({ trustedServer: () => ({ rpc: m.rpc }) }
 vi.mock("@/ai/request-gate", () => ({ budgetedAiRequest: m.gate }));
 import { operationContract } from "@/ai/operation-contract";
 import { operationFor } from "@/ai/operations";
+import { PRE_TRADE_TOO_LARGE } from "@/ai/pre-trade-draft";
 import { analyzeTradeSetup } from "@/lib/analyze-setup";
 import { loadTradeAnalyzeSetupPanel } from "@/lib/analyze-setup-data";
 import { challengeTradeBias } from "@/lib/bias-challenge";
@@ -238,6 +239,20 @@ describe("V2 pre-trade requests: nothing is written or sent unless the latest dr
     expect(m.rpc).not.toHaveBeenCalled();
   });
 
+  it("refuses a draft whose whole request with its selected screenshots would not fit, before anything is written", async () => {
+    // Three screenshots at the tile maximum leave room for a long thesis; much longer stored text does not fit.
+    const long = { ...structuredClone(source), user: { id: ids.user }, db: m.db, lock: null };
+    long.proposal.proposal = { ...long.proposal.proposal, narrative: "Thesis with every reason recorded. ".repeat(140) };
+    m.load.mockResolvedValue(long);
+    m.gate.mockImplementation(respond(selectedOutput));
+    expect(await analyzeTradeSetup(ids.trade, ids.request, [ids.shotM5, ids.shotEntry, ids.legacyLatest])).toMatchObject({ status: "COMPLETED" });
+    vi.clearAllMocks();
+    m.load.mockResolvedValue({ ...long, strategy: { ...long.strategy, rules: { ...long.strategy.rules, definition: "r".repeat(40_000) } } });
+    expect(await analyzeTradeSetup(ids.trade, ids.request, [ids.shotM5, ids.shotEntry, ids.legacyLatest])).toEqual({ status: "SCOPE_LIMIT", message: PRE_TRADE_TOO_LARGE });
+    expect(m.rpc).not.toHaveBeenCalled();
+    expect(m.gate).not.toHaveBeenCalled();
+  });
+
   it("refuses facts beyond the bounded pre-trade size", async () => {
     m.load.mockResolvedValue({ ...structuredClone(source), strategy: { ...source.strategy, rules: { notes: "x".repeat(70_000) } }, user: { id: ids.user }, db: m.db, lock: null });
     expect(await analyzeTradeSetup(ids.trade, ids.request, [])).toMatchObject({ status: "SCOPE_LIMIT" });
@@ -257,7 +272,9 @@ describe("V2 pre-trade requests: lifecycle", () => {
     expect(start.p_facts).toEqual(sent.context);
     expect(start.p_contract).toEqual(operationContract(operationFor("ANALYZE_SETUP"), sent.context));
     expect(start.p_contract.version).toBe("ANALYZE_SETUP_CITATIONS_V2");
-    expect(sent.context).toMatchObject({ version: "ANALYZE_SETUP_FACTS_V1", proposalId: ids.latest });
+    expect(sent.context).toMatchObject({ version: "ANALYZE_SETUP_FACTS_V2", proposalId: ids.latest });
+    // Compact V2 facts: the strategy is its version and structured rules, without the written prompt text.
+    expect(sent.context.strategy).toEqual({ id: source.strategy.id, version: source.strategy.version, rules: source.strategy.rules });
     expect(sent.context.selectedEvidence).toEqual([
       { id: ids.shotM5, role: "M5", sha256: digest(ids.shotM5), mimeType: "image/png", bytes: bytes(ids.shotM5).length },
       { id: ids.shotEntry, role: "ENTRY", sha256: digest(ids.shotEntry), mimeType: "image/png", bytes: bytes(ids.shotEntry).length },
@@ -281,7 +298,8 @@ describe("V2 pre-trade requests: lifecycle", () => {
     expect(await challengeTradeBias(ids.trade, ids.request, [ids.shotRelabelled])).toMatchObject({ status: "COMPLETED" });
     const sent = m.gate.mock.calls[0][0];
     expect(rpcArgs("start_bias_challenge")).toMatchObject({ p_proposal_id: ids.latest, p_operation: { id: "CHALLENGE_BIAS" } });
-    expect(sent.context).toMatchObject({ version: "CHALLENGE_BIAS_FACTS_V1", selectedEvidence: [{ id: ids.shotRelabelled, role: "H4" }] });
+    expect(sent.context).toMatchObject({ version: "CHALLENGE_BIAS_FACTS_V2", selectedEvidence: [{ id: ids.shotRelabelled, role: "H4" }] });
+    expect(sent.context.strategy).not.toHaveProperty("writtenRules");
     expect(rpcArgs("start_bias_challenge").p_contract.version).toBe("CHALLENGE_BIAS_CITATIONS_V2");
   });
 

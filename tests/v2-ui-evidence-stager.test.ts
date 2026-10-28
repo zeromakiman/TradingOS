@@ -493,3 +493,25 @@ describe("<EvidencePasteTarget>", () => {
     expect(markup).not.toContain("Drop screenshots to add them");
   });
 });
+
+describe("<EvidenceStager> layout follows its own width (container queries)", () => {
+  // Plan Trade's evidence section, a live trade's card on Today and a phone are all narrow; the page width says nothing
+  // about the room the stager has, so its layout queries the stager and each card instead of the viewport.
+  const markup = () => renderToStaticMarkup(createElement(EvidenceStager, { stager: stagerApi([staged({ label: "MANAGEMENT", timeframe: "M5" }), staged()]) }));
+
+  it("is a size container and lays out two previews per row only when the stager itself is wide", () => {
+    const html = markup();
+    // (React hoists the previews as image preloads before the markup.)
+    expect(html).toContain('<div class="@container flex min-w-0 flex-col gap-3">');
+    expect(html).toContain('<ul aria-label="Screenshots to save" class="grid gap-3 @[64rem]:grid-cols-2">');
+    expect(html).not.toContain("sm:grid-cols-2");
+  });
+
+  it("puts an image beside its controls only where the card has room, and the two selects on one line only when both stay readable", () => {
+    const html = markup();
+    expect(html.match(/<li class="@container min-w-0 rounded-card border border-border bg-surface p-2"><div class="flex min-w-0 flex-col gap-3 @\[30rem\]:flex-row">/g)).toHaveLength(2);
+    expect(html).toMatch(/<img [^>]*class="aspect-\[16\/10\] max-h-48 w-full max-w-sm [^"]*@\[30rem\]:w-28"/);
+    expect(html.match(/<div class="grid gap-2 @\[26rem\]:grid-cols-2">/g)).toHaveLength(2);
+    expect(html).not.toContain('class="grid grid-cols-2 gap-2"');
+  });
+});

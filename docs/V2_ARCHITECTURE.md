@@ -57,7 +57,7 @@ Route handlers: `POST /api/trades/[id]/evidence` (upload), `GET /api/evidence/[i
 
 ### 1.3 Proxy
 
-`src/proxy.ts` matcher becomes a catch-all `'/((?!_next/static|_next/image|favicon.ico|robots.txt).*)'` with explicit public lists: pages `/login`, `/forgot-password`, `/update-password`; route handlers `/api/*` and `/edge/export` keep JSON/CSV 401 behaviour (not redirected). This fixes the V1 gap where `/edge/weekly|recent|monthly` had no session refresh. The proxy also implements the account-context cookie (§9.2).
+`src/proxy.ts` matcher becomes a catch-all `'/((?!_next/static|_next/image|favicon.ico|icon.svg|apple-icon.png|robots.txt).*)'` (the app icons load on signed-out pages too) with explicit public lists: pages `/login`, `/forgot-password`, `/update-password`; route handlers `/api/*` and `/edge/export` keep JSON/CSV 401 behaviour (not redirected). This fixes the V1 gap where `/edge/weekly|recent|monthly` had no session refresh. The proxy also implements the account-context cookie (§9.2).
 
 ---
 
@@ -108,6 +108,7 @@ LIVE_FIRST / IMPORTED:
 | DRAFT/BLOCKED | Blocked | danger | Draft |
 | DRAFT/APPROVED (current) | Ready to lock | positive | Validated |
 | DRAFT/APPROVED (stale) | Recheck needed | warning | Draft |
+| DRAFT of an archived account (any check) | Account archived | muted | Draft |
 | LOCKED | Locked · waiting for entry | info | Locked |
 | LIVE | Live | live (accent, pulsing dot) | Live |
 | CLOSED | Closed · review pending | neutral | Closed |
@@ -124,8 +125,10 @@ Stepper (planned trades only): `Draft → Validated → Locked → Live → Clos
 |---|---|---|
 | Draft (unchecked) | Check risk (free) | Edit draft, Discard |
 | Blocked | Edit draft (with first blocking reason inline) | Analyze blocked setup anyway · ≈ €0.02 (only if AI available), Discard |
+| Blocked on an earlier strategy day | Recheck risk (free: today's limits, session and account values can differ) | Edit draft (with first blocking reason inline), Analyze blocked setup anyway · ≈ €0.02 (only if AI available), Discard |
 | Ready to lock | Lock plan | Analyze setup · ≈ €0.02, Challenge my bias · ≈ €0.02, Edit draft |
 | Recheck needed | Recheck risk | Edit draft |
+| Account archived (draft of an archived account) | — (restore the account in Manage account) | Discard |
 | Locked | Record entry | Skip this trade |
 | Live | Add to journal (focus composer) | Close trade |
 | Closed | Write review / mark reviewed | Review this trade with AI · ≈ €0.02 |
@@ -182,6 +185,7 @@ Populated **at migration time** from the body of `public.create_demo_account(tex
    - `update_account_profile(p_account_id uuid, p_input jsonb) returns bigint` — any subset of `{displayName, broker, platform, accountType, startingBalance, status}`; missing keys copy the latest revision; no-op if unchanged (returns latest id).
    - `create_instrument_version(p_account_id uuid, p_input jsonb) returns uuid` — `{symbol (^[A-Z0-9][A-Z0-9._/-]{0,19}$), quantityUnit (1..60), tickSize, pipSize?, tickValue, quantityStep, minimumQuantity}`; `currency` = account currency (tick value must be denominated in it; copy says so); `source 'USER_DEFINED'`. A new version for an existing symbol supersedes it in pickers (latest `created_at` per symbol); old versions stay attached to history.
    - `record_account_values(p_account_id uuid, p_balance text, p_equity text) returns uuid` — wraps `record_observation` with `p_gross_loss = null`.
+4. Archived accounts take no new activity (`private.require_active_account`, error prefix `ACCOUNT_ARCHIVED`, shown as "This trading account is archived, so it takes no new trades or records. Restore it in Manage account to use it again."): `create_planned_trade`, `record_live_trade`, `duplicate_trade_draft`, `revise_trade_draft`, `check_trade_risk`, `lock_trade` (and V1 `check_setup_risk` on a proposal of an archived account), `record_account_values`, `add_external_loss`, `create_platform_connection` and imports that create a trade (`ingest_external_execution`) refuse while the latest profile revision is `ARCHIVED`. History stays readable, and the trades the account already holds can be finished: a locked plan's entry, skip or cancel, closes, discards, journal entries, screenshots, tags and reviews. Restoring the account (`update_account_profile`) re-enables everything; the check runs under the account row lock that archive/restore also takes.
 
 ### 3.3 Trades, revisions, plan links, lifecycle events
 
@@ -460,17 +464,19 @@ Phase is **never** taken from a client label or a client-supplied time.
 `private.trade_phase(trade_id)` at insert time:
 - a close exists (planned outcome or unplanned close) → `POST_TRADE`;
 - an entry exists (planned execution, or any live-first/imported trade — those are live from creation) → `LIVE`;
+- a planned trade that ended without an entry (`private.plan_ended_at`: the earliest of the `DRAFT_DISCARDED` event, the skip/cancel disposition of its plan and a latest V1 `SKIPPED` decision) → `POST_TRADE`, so a note or screenshot added after the end is never stored as pre-entry evidence;
 - otherwise → `PRE_ENTRY`.
 
 `state_at_creation` stores the lifecycle at that moment (`DRAFT`, `LOCKED`, `LIVE`, `CLOSED`, …).
 
 ### 5.3 Effective timing (read time, pure function `classifyTiming`, TS)
 
-Inputs: `recordedAt`, `storedPhase`, `origin`, `entryAt` (null if unknown), `entryRecordedAt`, `exitAt` (null if open). Microsecond-exact instant comparison (reuse `instantKey` from `analytics.ts`).
+Inputs: `recordedAt`, `storedPhase`, `origin`, `entryAt` (null if unknown), `entryRecordedAt`, `exitAt` (null if open), `endedAt` (when a planned trade ended without an entry, `planEndedAt` = `private.plan_ended_at`; null otherwise). Microsecond-exact instant comparison (reuse `instantKey` from `analytics.ts`).
 
 ```
 if origin != PLANNED                                     -> never BEFORE_ENTRY
 if exitAt != null and recordedAt >= exitAt               -> AFTER_CLOSE
+if endedAt != null and recordedAt >= endedAt             -> AFTER_CLOSE (+ flag RECORDED_AFTER_PLAN_ENDED unless storedPhase == POST_TRADE)
 if storedPhase == POST_TRADE                             -> AFTER_CLOSE
 if storedPhase == PRE_ENTRY and (entryAt == null or recordedAt < entryAt)
                                                          -> BEFORE_ENTRY
@@ -480,11 +486,11 @@ otherwise                                                -> WHILE_LIVE
 ```
 For live-first trades with unknown entry time, `entryAt` is treated as `trade.created_at` (the position was already open when recorded).
 
-UI labels (exact): **Before entry**, **While live**, **After close**; flag copy: **"Recorded after execution began"**. Trade Detail groups the timeline into these three bands. Only `BEFORE_ENTRY` items may be presented as pre-entry evidence anywhere (Trade Detail "Plan" section, AI facts `PRE_ENTRY`, analytics). A post-trade note can therefore never masquerade as pre-entry evidence, even if an entry time is later back-dated (the stored phase alone can never upgrade an item to BEFORE_ENTRY; the timestamp check can only downgrade).
+UI labels (exact): **Before entry**, **While live**, **After close**; flag copy: **"Recorded after execution began"**, **"Recorded after the plan ended"** (a row stored before the end rule existed keeps its stored phase and is marked, never rewritten). Trade Detail groups the timeline into these three bands. Only `BEFORE_ENTRY` items may be presented as pre-entry evidence anywhere (Trade Detail "Plan" section, AI facts `PRE_ENTRY`, analytics). A post-trade note can therefore never masquerade as pre-entry evidence, even if an entry time is later back-dated (the stored phase alone can never upgrade an item to BEFORE_ENTRY; the timestamp check can only downgrade).
 
 ### 5.4 Timeline assembly (TS, `src/domain/timeline.ts` + loader)
 
-Items (each `{id, kind, at, recordedAt, timing, title, body?, details?, evidenceId?, source}`), sorted by `(at, recordedAt, id)`:
+Items (each `{id, kind, at, recordedAt, timing, title, body?, details?, evidenceId?, source}`), sorted by `(at, recordedAt, id)` in causal order where one action writes its records a few milliseconds apart: a risk check is never placed before the revision it evaluated (check inputs carry the proposal id), and the evaluation that authorised a lock (`trade_plans.risk_evaluation_id`) is placed right before "Plan locked"; displayed times never change:
 draft revisions ("Draft created" / "Draft revised · revision n"), risk checks ("Risk check: Approved/Blocked" with first reason), plan lock, V1 `trade_events` (NOTE_ADDED as notes; TRADE_OPENED/CLOSED skipped when the execution/outcome rows render them), entry ("Trade opened" at `entered_at`, with "recorded hh:mm" when recorded more than 5 minutes after `entered_at`), size deviation ("Size above plan: 1.00 vs 0.25 lots"), journal entries, evidence added/removed (V2 and legacy screenshots via `uploaded_at`), tag changes, disposition, close ("Trade closed: +3.40R"), AI analyses (compact), review completed/reopened, discard.
 `at` = the event's real time (entry/exit use user-reported times; everything else uses `recordedAt`). Both are shown when they differ by more than 5 minutes ("09:42 · recorded 10:15").
 
@@ -636,7 +642,7 @@ The V1 fields `slotsUsed`, `riskConsumed`, `grossLoss` are removed from `RiskCon
 
 ### 7.4 Reuse on duplicate
 
-Duplicating a draft copies only the source trade's active evidence whose timing in the source was **Before entry** (for a source that is still a draft: all active evidence). Live and after-close evidence is never copied, because it would become "pre-entry" evidence of the new draft. Copies go to the new trade's path (legacy bucket → new bucket via download/upload), registered with `capture_method 'DUPLICATE'`, `copied_from` = source id, same sha256; the viewer shows "Copied from an earlier trade · originally recorded {time}". Revisions of the same trade need no copy (evidence belongs to the trade).
+Duplicating a draft copies only the source trade's active evidence whose timing in the source was **Before entry** (for a source that is still a draft: all active evidence), and of a plan that ended without an entry only what was recorded before its end (`private.copyable_evidence`). Live and after-close evidence is never copied, because it would become "pre-entry" evidence of the new draft. Copies go to the new trade's path (legacy bucket → new bucket via download/upload), registered with `capture_method 'DUPLICATE'`, `copied_from` = source id, same sha256; the viewer shows "Copied from an earlier trade · originally recorded {time}". Revisions of the same trade need no copy (evidence belongs to the trade).
 
 ### 7.5 Gallery and viewer
 
@@ -706,9 +712,10 @@ Settings → Connections UX per account: Manual (active), cTrader ("Read-only sy
 
 ### 9.2 Context selection
 
-- Cookie `tos_account` = `all` | `<uuid>` (httpOnly, SameSite=Lax, path `/`, 400 days). Query parameter `?account=all|<uuid>` overrides it for that request **and** the proxy writes it into the cookie, so drill-down links can switch context explicitly and the choice persists.
+- Cookie `tos_account` = `all` | `<uuid>` (httpOnly, SameSite=Lax, path `/`, 400 days). Query parameter `?account=all|<uuid>` overrides it for that request **and** is stored in the cookie, so drill-down links can switch context explicitly and the choice persists. The proxy stores it for a page load (a document navigation that is not a browser prefetch or prerender); Next.js removes its router headers before the proxy runs, so the router's fetches (client-side navigations and `<Link>` prefetches) are never stored there, and the shell stores the context of a client-side navigation after it happened, through the account action with the same ownership/active checks (`src/components/shell/context-sync.ts`). A prefetch therefore never switches the context; links that carry `?account=` are still not prefetched (the design system's table and chart links never prefetch them), so no page is rendered for an account the person may never open. The header shows the context of the page on screen in every tab, also after client-side navigations and after another tab changed the stored context.
 - Server helper `getAccountContext()` (React `cache()`, in `src/lib/account-context.ts`) loads the user's accounts (RLS) with latest profiles and returns `{accounts, selected: {mode:'all'} | {mode:'account', account}, notice?}`. An unknown/foreign/archived id resolves to All Accounts with `notice:'ACCOUNT_UNAVAILABLE'` (shown once as "That trading account isn't available. Showing All Accounts.") — never a silent fallback to "the first account".
 - The header selector shows the current context on every page: `Trading Account: All Accounts ▾` / `FTMO 100K ▾`; options grouped Active / Archived; a "Manage accounts" link.
+- Read-only account filter `accountFilter=<account id>` (Journal and EDGE): narrows All Accounts to one account, archived ones included (they can never be the context), for history only. It combines with All Accounts only (dropped in an account context), only ever narrows a read (an id that is not one of the user's accounts matches nothing under RLS), and shows as a removable chip in words ("Account: Personal 12K · archived"), never as an id. The archived account dashboard's Journal and EDGE links use it.
 - Plan Trade / Record Live Trade always show an explicit account field. Default: the selected account; in All Accounts, the most recently used active account (cookie `tos_last_account`), or the only active account. The form header repeats the account name and currency.
 
 ### 9.3 Aggregation methodology (All Accounts)
@@ -984,11 +991,11 @@ Minimal, one screen, mobile-first: Trading Account, Instrument (or "Other symbol
 
 ### 14.5 Journal (`/journal`)
 
-Fast scan list (keyset pagination, 50 per page) grouped by trade date (entry day if executed, else lock day, else creation day — stated in the group header tooltip). Row: thumbnail, instrument + direction, date/time, account, model (OB/OTE), planned risk %, realized R, P&L (own currency), state pill, Planned/Live-first/Imported badge, tags, AI-reviewed icon. Filters (URL state, chips): account (context), date range (presets + custom), result (win/loss/BE/open), state, origin, model, session, reviewed vs not, AI-reviewed, tags, instrument; search box (instrument, tag, note text). Row click → trade. Bulk: none.
+Fast scan list (keyset pagination, 50 per page, with the exact RLS-bounded total: "Showing 50 of 312 trades") grouped by trade date (entry day if executed, else lock day, else creation day — stated in the group header tooltip). Row: thumbnail, instrument + direction, date/time, account, model (OB/OTE), planned risk %, realized R, P&L (own currency), state pill, Planned/Live-first/Imported badge, tags, AI-reviewed icon. Filters (URL state, chips): account (context; in All Accounts also the read-only `accountFilter`, §9.2), date range (presets + custom), result (win/loss/BE/open), state, origin, model, session, reviewed vs not, AI-reviewed, tags, instrument; search box (instrument, tag, note text). Row click → trade. Bulk: none.
 
 ### 14.6 EDGE (`/edge`)
 
-Filter row (date range, account context, model, session, origin, instrument) → headline stats (Net R, Expectancy, Win rate, Profit factor, Max R drawdown, Closed trades; money per currency) with sample caveat → charts (§13.6) → breakdowns with drill-down links (`/journal?model=OTE&weekday=Tuesday&from=...`) → calculation definitions. Calendar section with month navigation and mode switch; clicking a day lists that day's trades (sheet) with links to each trade and its evidence. All Accounts uses §9.3.
+Filter row (date range, account context or, in All Accounts, the read-only account filter of §9.2 kept by every link of the page, model, session, origin, instrument) → headline stats (Net R, Expectancy, Win rate, Profit factor, Max R drawdown, Closed trades; money per currency) with sample caveat → charts (§13.6) → breakdowns with drill-down links (`/journal?model=OTE&weekday=Tuesday&from=...`) → calculation definitions. Calendar section with month navigation and mode switch; clicking a day lists that day's trades (sheet) with links to each trade and its evidence. All Accounts uses §9.3.
 
 ### 14.7 Accounts (`/accounts`)
 

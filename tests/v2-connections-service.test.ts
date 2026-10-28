@@ -10,7 +10,7 @@ vi.mock("@/lib/supabase/admin", () => ({ trustedServer: m.trustedServer }));
 
 import {
   accountConnectionStates, connectionErrorCode, connectionErrorMessage, connectMockPlatform, type Db, disconnectPlatform, isMockSyncEnabled,
-  linkPlatformExecution, listConnections, listLinkCandidates, listUnmatchedExecutions, loadAccountConnectionStates, loadExecution,
+  linkPlatformExecution, listConnections, listLinkCandidates, listLinkedExecutions, listUnmatchedExecutions, loadAccountConnectionStates, loadExecution,
   MOCK_SYNC_UNAVAILABLE, type PlatformConnection, platformOptions, SupabaseSyncStore, simulateMockSync, syncConnection, unlinkPlatformExecution,
 } from "@/lib/sync-service";
 
@@ -52,7 +52,8 @@ function fakeClient(tables: Record<string, Row[]> = {}, rpc: (name: string, args
           op === "eq" ? row[column] === value
             : op === "in" ? (value as unknown[]).includes(row[column])
               : op === "is" ? row[column] === value
-                : compare(row[column], value) > 0));
+                : op === "not.is" ? row[column] !== value && row[column] !== undefined
+                  : compare(row[column], value) > 0));
         for (const [column, ascending] of [...query.orders].reverse()) rows = [...rows].sort((a, b) => compare(a[column], b[column]) * (ascending ? 1 : -1));
         if (query.limit !== null) rows = rows.slice(0, query.limit);
         const columns = query.columns.split(",").map(column => column.split("::")[0]);
@@ -63,6 +64,11 @@ function fakeClient(tables: Record<string, Row[]> = {}, rpc: (name: string, args
         eq: (column: string, value: unknown) => { query.filters.push(["eq", column, value]); return chain; },
         in: (column: string, value: unknown[]) => { query.filters.push(["in", column, value]); return chain; },
         is: (column: string, value: unknown) => { query.filters.push(["is", column, value]); return chain; },
+        not: (column: string, operator: string, value: unknown) => {
+          if (operator !== "is") throw new Error(`Unsupported not-filter ${operator}`);
+          query.filters.push(["not.is", column, value]);
+          return chain;
+        },
         gt: (column: string, value: unknown) => { query.filters.push(["gt", column, value]); return chain; },
         order: (column: string, options?: { ascending?: boolean }) => { query.orders.push([column, options?.ascending !== false]); return chain; },
         limit: (count: number) => { query.limit = count; return chain; },
@@ -272,6 +278,30 @@ describe("read models (RLS client)", () => {
     expect(queries.slice(1).map(q => q.limit)).toEqual([1, 500]);
     expect((await loadExecution(db, id(7, 2)))?.linkMethod).toBe("USER");
     expect(await loadExecution(db, id(7, 99))).toBeNull();
+  });
+
+  it("lists linked executions newest first (automatic, trader and import links), never unlinked ones, with a bounded page size", async () => {
+    const rows = [
+      executionRow(1),
+      executionRow(2, { linked_trade_id: trade(1), link_method: "USER", linked_at: "2026-09-15T09:00:00+00:00" }),
+      executionRow(3, { linked_trade_id: trade(2), link_method: "IMPORT_CREATED", linked_at: "2026-09-15T08:00:00+00:00", exit_price: "1.10612", exited_at: "2026-09-15T09:40:00+00:00", realized_pnl: "148.25" }),
+      executionRow(4, { account_id: OTHER_ACCOUNT, linked_trade_id: trade(6), link_method: "AUTO_MATCH", linked_at: "2026-09-15T08:00:00+00:00" }),
+    ];
+    const { db, queries } = fakeClient({ external_execution_status: rows });
+    const linked = await listLinkedExecutions(db, { accountId: ACCOUNT });
+    expect(linked.map(e => [e.externalId, e.linkedTradeId, e.linkMethod])).toEqual([["MOCK-3", trade(2), "IMPORT_CREATED"], ["MOCK-2", trade(1), "USER"]]);
+    expect(linked[0]).toMatchObject({ exitPrice: "1.10612", realizedPnl: "148.25", linkedAt: "2026-09-15T08:00:00+00:00" });
+    expect(queries[0]).toMatchObject({
+      table: "external_execution_status", filters: [["not.is", "linked_trade_id", null], ["eq", "account_id", ACCOUNT]], orders: [["entered_at", false], ["id", true]], limit: 100,
+    });
+    expect((await listLinkedExecutions(db)).map(e => e.externalId)).toEqual(["MOCK-4", "MOCK-3", "MOCK-2"]);
+    await listLinkedExecutions(db, { limit: 0 });
+    await listLinkedExecutions(db, { limit: 10_000 });
+    expect(queries.slice(2).map(q => q.limit)).toEqual([1, 500]);
+    const denied = fakeClient({ external_execution_status: rows });
+    denied.failing.add("external_execution_status");
+    await expect(listLinkedExecutions(denied.db, { accountId: ACCOUNT })).rejects.toThrow(/^Platform executions are unavailable\.$/);
+    await expect(listLinkedExecutions(fakeClient({ external_execution_status: [executionRow(5, { linked_trade_id: trade(1), link_method: "SOMEHOW" })] }).db)).rejects.toThrow();
   });
 
   it("offers link candidates under the database rules, suggested matches first", async () => {

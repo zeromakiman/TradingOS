@@ -19,8 +19,10 @@ import {
   type StoredPhase, TIMING_FLAG_COPY, TIMING_LABELS, type TimelineAiAnalysis, type TimelineEvidence, type TimelineItem, type Timing, type TimingFlag,
   type TimingGroup,
 } from "@/domain/timeline";
-import { deriveTradeState, type TradeState } from "@/domain/trade-state";
-import { accountDirectory, type ContextAccount, currentSession, type Db, getAccountContext, getPreferences } from "./account-context";
+import { deriveTradeState, planEndedAt, type TradeState } from "@/domain/trade-state";
+import {
+  ALL_ACCOUNTS_VALUE, type AccountContext, accountDirectory, type ContextAccount, currentSession, type Db, getAccountContext, getPreferences,
+} from "./account-context";
 import { accountAiAvailability } from "./ai-budget";
 import { loadTradeAiHistory, type TradeAiHistory, timelineAiAnalyses } from "./ai-history";
 import {
@@ -102,6 +104,13 @@ export interface TradeFilters {
   rTo?: string;
   /** Free text over instrument, tags and journal text. */
   q?: string;
+  /**
+   * Read-only account filter (`accountFilter=<id>`): one trading account's trades inside the All Accounts context,
+   * archived accounts included (they can never be the context, §9.2). It only ever narrows a read: the ledger applies
+   * it under RLS, so an id that is not one of the user's accounts matches nothing, and in an account context it has no
+   * effect (see `filteredScope`). Screens show it as a chip with the account's name, never the id.
+   */
+  accountFilter?: string;
 }
 
 export type FilterParams = URLSearchParams | Readonly<Record<string, string | readonly string[] | undefined>>;
@@ -204,7 +213,7 @@ export function parseTradeFilters(params: FilterParams): { filters: TradeFilters
     if (POSITIVE_DECIMAL.test(risk) && new D(risk).gt(0)) filters.riskPercent = stripZeros(risk);
     else invalid.push("risk");
   }
-  const id = (key: "strategy" | "riskPlan", assign: (value: string) => void) => {
+  const id = (key: "strategy" | "riskPlan" | "accountFilter", assign: (value: string) => void) => {
     const raw = readOne(params, key)?.toLowerCase();
     if (raw === undefined) return;
     if (UUID.test(raw)) assign(raw);
@@ -212,6 +221,7 @@ export function parseTradeFilters(params: FilterParams): { filters: TradeFilters
   };
   id("strategy", value => { filters.strategyVersionId = value; });
   id("riskPlan", value => { filters.riskPlanVersionId = value; });
+  id("accountFilter", value => { filters.accountFilter = value; });
   const bound = (key: "rFrom" | "rTo") => {
     const raw = readOne(params, key);
     if (raw === undefined) return;
@@ -229,6 +239,7 @@ export function parseTradeFilters(params: FilterParams): { filters: TradeFilters
 export function tradeFilterParams(filters: TradeFilters): URLSearchParams {
   const params = new URLSearchParams();
   const set = (key: string, value: string | undefined) => { if (value !== undefined && value !== "") params.set(key, value); };
+  set("accountFilter", filters.accountFilter);
   set("from", filters.from);
   set("to", filters.to);
   set("closedFrom", filters.closedFrom);
@@ -255,10 +266,12 @@ export function tradeFilterParams(filters: TradeFilters): URLSearchParams {
 
 /**
  * `/journal?…` for the filters. `account` switches the context explicitly (the proxy stores it); omit it to stay in
- * the current context. Links that switch the context must not be prefetched (`<Link prefetch={false}>`).
+ * the current context. Links that switch the context must not be prefetched (`<Link prefetch={false}>`). The read-only
+ * account filter combines with All Accounts only, so a link that switches to one account leaves it out.
  */
 export function journalHref(filters: TradeFilters, options: { account?: string } = {}): string {
-  const params = tradeFilterParams(filters);
+  const switchesToAccount = options.account !== undefined && options.account !== ALL_ACCOUNTS_VALUE;
+  const params = tradeFilterParams(switchesToAccount ? { ...filters, accountFilter: undefined } : filters);
   if (options.account) params.set("account", options.account);
   const query = params.toString();
   return query ? `/journal?${query}` : "/journal";
@@ -318,6 +331,20 @@ function dayEnd(day: string): string {
 /** Accounts a query covers: one account, or every account the session can read (All Accounts, through RLS). */
 export type TradeScope = { mode: "account"; accountId: string } | { mode: "all" };
 
+/** The scope of an account context: the selected account, or every account (All Accounts). */
+export function contextScope(context: Pick<AccountContext, "selected">): TradeScope {
+  return context.selected.mode === "account" ? { mode: "account", accountId: context.selected.account.id } : { mode: "all" };
+}
+
+/**
+ * The accounts a read covers: the context's scope, narrowed to the read-only account filter in All Accounts. The filter
+ * only ever narrows: in an account context it changes nothing, and under RLS an id that is not one of the user's
+ * accounts matches no trade.
+ */
+export function filteredScope(scope: TradeScope, filters: Pick<TradeFilters, "accountFilter">): TradeScope {
+  return scope.mode === "all" && filters.accountFilter ? { mode: "account", accountId: filters.accountFilter } : scope;
+}
+
 interface Stream {
   source: TradeDateSource;
   column: "entered_at" | "locked_at" | "created_at";
@@ -329,19 +356,29 @@ const STREAMS: readonly Stream[] = [
   { source: "CREATED", column: "created_at" },
 ];
 
-/** `trade_ledger` with exactly the contract's columns. */
-export function ledgerSelect(db: Db) {
-  return db.from("trade_ledger").select(LEDGER_SELECT);
+/** The streams a list reads: only trades dated by their entry when the entry session or weekday is filtered. */
+function listStreams(filters: TradeFilters): readonly Stream[] {
+  return filters.session || filters.weekday ? STREAMS.filter(stream => stream.source === "ENTRY") : STREAMS;
+}
+
+/**
+ * `trade_ledger` with exactly the contract's columns, or with a few of them (typed alike, see LEDGER_SELECT) for counts
+ * and row checks; `count` asks PostgREST for the exact number of matching rows.
+ */
+export function ledgerSelect(db: Db, columns: string = LEDGER_SELECT, options?: { count: "exact"; head?: boolean }) {
+  return db.from("trade_ledger").select(columns as "*", options);
 }
 export type LedgerSelect = ReturnType<typeof ledgerSelect>;
 
 /**
  * Applies every filter PostgREST can evaluate on the ledger (all but the trade-date range, session, weekday and R
- * bounds) plus the account scope. `searchIds` are the trades matched by journal text or tags for `filters.q`.
+ * bounds) plus the account scope, narrowed by the read-only account filter (`filteredScope`). `searchIds` are the
+ * trades matched by journal text or tags for `filters.q`.
  */
 export function applyLedgerFilters(query: LedgerSelect, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null): LedgerSelect {
   let q = query;
-  if (scope.mode === "account") q = q.eq("account_id", scope.accountId);
+  const reads = filteredScope(scope, filters);
+  if (reads.mode === "account") q = q.eq("account_id", reads.accountId);
   if (filters.closedFrom) q = q.gte("exited_at", dayStart(filters.closedFrom));
   if (filters.closedTo) q = q.lt("exited_at", dayEnd(filters.closedTo));
   if (filters.result === "OPEN") q = q.eq("lifecycle", "LIVE");
@@ -367,8 +404,8 @@ export function applyLedgerFilters(query: LedgerSelect, scope: TradeScope, filte
   return q;
 }
 
-function streamQuery(db: Db, stream: Stream, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null, after: CursorPosition | null) {
-  let q = applyLedgerFilters(ledgerSelect(db), scope, filters, searchIds);
+function streamQuery(base: LedgerSelect, stream: Stream, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null, after: CursorPosition | null) {
+  let q = applyLedgerFilters(base, scope, filters, searchIds);
   if (stream.source === "ENTRY") q = q.not("entered_at", "is", null);
   else q = q.is("entered_at", null);
   if (stream.source === "LOCK") q = q.not("locked_at", "is", null);
@@ -427,7 +464,7 @@ export async function searchTradeIds(db: Db, userId: string, scope: TradeScope, 
 }
 
 /** Filters evaluated in TypeScript on parsed rows: entry session and weekday, realized R bounds. */
-export function postFilter(trade: LedgerTrade, filters: TradeFilters): boolean {
+export function postFilter(trade: Pick<LedgerTrade, "entered_at" | "realized_r">, filters: TradeFilters): boolean {
   if (filters.session || filters.weekday) {
     if (trade.entered_at === null) return false;
     if (filters.session && strategyClock(trade.entered_at).session !== filters.session) return false;
@@ -478,15 +515,15 @@ export function normalizeFilters(filters: TradeFilters): TradeFilters {
 export async function loadLedgerPage(db: Db, userId: string, scope: TradeScope, raw: TradeFilters, cursor: string | null, limit = JOURNAL_PAGE_SIZE): Promise<LedgerPage> {
   const filters = normalizeFilters(raw);
   const size = Math.min(Math.max(1, Math.trunc(limit)), 200);
-  const searchIds = filters.q !== undefined ? await searchTradeIds(db, userId, scope, filters.q) : null;
+  const searchIds = filters.q !== undefined ? await searchTradeIds(db, userId, filteredScope(scope, filters), filters.q) : null;
   if (filters.q !== undefined && !searchSymbol(filters.q) && !searchIds?.length) return { rows: [], nextCursor: null, scanned: 0 };
-  const streams = filters.session || filters.weekday ? STREAMS.filter(stream => stream.source === "ENTRY") : STREAMS;
+  const streams = listStreams(filters);
   let position = decodeTradeCursor(cursor);
   const rows: LedgerTrade[] = [];
   let scanned = 0;
   for (;;) {
     const batches = await Promise.all(streams.map(async stream => {
-      const { data, error } = await streamQuery(db, stream, scope, filters, searchIds, position)
+      const { data, error } = await streamQuery(ledgerSelect(db), stream, scope, filters, searchIds, position)
         .order(stream.column, { ascending: false }).order("id", { ascending: false }).limit(SCAN_BATCH);
       if (error) throw new Error("Trades are unavailable.");
       return parseLedger(data);
@@ -517,6 +554,107 @@ export async function loadLedgerPage(db: Db, userId: string, scope: TradeScope, 
     if (!more) return { rows, nextCursor: null, scanned };
     if (scanned >= MAX_SCAN) return { rows, nextCursor: position ? encodeTradeCursor(position) : null, scanned };
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Exact counts of a list (the Journal's paging copy, spec §14.5).
+// ---------------------------------------------------------------------------------------------------------
+/** Candidate rows a count reads at most when it must check rows itself; beyond it there is no count (never an estimate). */
+export const MAX_COUNT_SCAN = 20_000;
+/** Rows per request of a row check (at most PostgREST's row cap). */
+const COUNT_PAGE = 500;
+const COUNT_COLUMNS = "id,entered_at,realized_r";
+const countedRow = z.object({ id: z.uuid(), entered_at: z.string().refine(isInstant).nullable(), realized_r: z.string().regex(/^-?\d+(\.\d+)?$/).nullable() });
+type CountedRow = z.infer<typeof countedRow>;
+
+export interface TradeCounts {
+  /** Trades the list holds across all its pages. */
+  total: number;
+  /** Trades of each requested trade date (strategy day) the list holds. */
+  days: ReadonlyMap<string, number>;
+}
+
+/** Session, weekday and R bounds are checked on each row in TypeScript (see `postFilter`). */
+function checksRows(filters: TradeFilters): boolean {
+  return Boolean(filters.session || filters.weekday || filters.rFrom !== undefined || filters.rTo !== undefined);
+}
+
+/**
+ * The list's reads as query factories (a query builder serves one request): one per stream when a trade-date range or
+ * an entry-only filter applies, since the streams then filter different columns; else one read, as the streams
+ * partition the ledger.
+ */
+function listReads(base: () => LedgerSelect, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null): (() => LedgerSelect)[] {
+  if (!filters.from && !filters.to && !filters.session && !filters.weekday) return [() => applyLedgerFilters(base(), scope, filters, searchIds)];
+  return listStreams(filters).map(stream => () => streamQuery(base(), stream, scope, filters, searchIds, null));
+}
+
+/** Matching rows counted by the database (`count=exact` with no body): nothing is transferred but the number. */
+async function countInDatabase(db: Db, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null): Promise<number> {
+  const results = await Promise.all(listReads(() => ledgerSelect(db, "id", { count: "exact", head: true }), scope, filters, searchIds).map(read => read()));
+  let total = 0;
+  for (const result of results) {
+    if (result.error || typeof result.count !== "number") throw new Error("Trade counts are unavailable.");
+    total += result.count;
+  }
+  return total;
+}
+
+/** The candidate rows of a list (light columns, keyset by id), or null beyond MAX_COUNT_SCAN. */
+async function candidateRows(db: Db, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null): Promise<CountedRow[] | null> {
+  const rows: CountedRow[] = [];
+  for (const read of listReads(() => ledgerSelect(db, COUNT_COLUMNS), scope, filters, searchIds)) {
+    for (let after: string | null = null; ;) {
+      const query = after === null ? read() : read().gt("id", after);
+      const { data, error } = await query.order("id", { ascending: true }).limit(COUNT_PAGE);
+      if (error) throw new Error("Trade counts are unavailable.");
+      const batch = z.array(countedRow).parse(data ?? []);
+      rows.push(...batch);
+      if (rows.length > MAX_COUNT_SCAN) return null;
+      if (batch.length < COUNT_PAGE) break;
+      after = batch[batch.length - 1].id;
+    }
+  }
+  return rows;
+}
+
+/** Rows matching every filter: counted by the database, or checked row by row for session, weekday and R bounds. */
+async function countMatching(db: Db, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null): Promise<number | null> {
+  if (!checksRows(filters)) return countInDatabase(db, scope, filters, searchIds);
+  const rows = await candidateRows(db, scope, filters, searchIds);
+  return rows === null ? null : rows.filter(row => postFilter(row, filters)).length;
+}
+
+/** Trades of one trade date (strategy day) the list holds: none outside the filters' own date range. */
+function countDay(db: Db, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null, day: string): Promise<number | null> {
+  if ((filters.from && day < filters.from) || (filters.to && day > filters.to)) return Promise.resolve(0);
+  return countMatching(db, scope, { ...filters, from: day, to: day }, searchIds);
+}
+
+/**
+ * Exact counts of what `loadLedgerPage` lists across all its pages (same scope, account filter, search and filters),
+ * read with the caller's session, so RLS bounds them exactly like the list. Filters PostgREST evaluates are counted by
+ * the database alone; session, weekday and R bounds need each candidate's entry time or realized R, so those counts
+ * read these light columns (at most MAX_COUNT_SCAN rows, else null). `days` adds the count of each trade date, for a
+ * day the list splits across pages. Null when a count is not available; never an estimate.
+ */
+export async function countLedgerTrades(db: Db, userId: string, scope: TradeScope, raw: TradeFilters, days: readonly string[] = []): Promise<TradeCounts | null> {
+  const filters = normalizeFilters(raw);
+  const wanted = [...new Set(days)].sort();
+  const searchIds = filters.q !== undefined ? await searchTradeIds(db, userId, filteredScope(scope, filters), filters.q) : null;
+  if (filters.q !== undefined && !searchSymbol(filters.q) && !searchIds?.length) return { total: 0, days: new Map(wanted.map(day => [day, 0] as const)) };
+  const [total, ...perDay] = await Promise.all([
+    countMatching(db, scope, filters, searchIds),
+    ...wanted.map(day => countDay(db, scope, filters, searchIds, day)),
+  ]);
+  if (total === null || perDay.some(count => count === null)) return null;
+  return { total, days: new Map(wanted.map((day, index) => [day, perDay[index] as number] as const)) };
+}
+
+/** Exact counts of the Journal list of the request's account context (`countLedgerTrades`). */
+export async function countTrades(filters: TradeFilters, days: readonly string[] = []): Promise<TradeCounts | null> {
+  const [{ db, user }, context] = await Promise.all([currentSession(), getAccountContext()]);
+  return countLedgerTrades(db, user.id, contextScope(context), filters, days);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -679,6 +817,7 @@ export async function decorateTrades(deps: Omit<ListDeps, "scope" | "display">, 
   ]);
   return trades.map(trade => {
     const date = tradeDate(trade);
+    const account = accountLabel(directory, trade);
     return {
       id: trade.id,
       href: `/trades/${trade.id}`,
@@ -686,8 +825,8 @@ export async function decorateTrades(deps: Omit<ListDeps, "scope" | "display">, 
       tradeAt: date.at,
       tradeDay: strategyDay(date.at),
       tradeDateSource: date.source,
-      account: accountLabel(directory, trade),
-      state: deriveTradeState(trade, { now: deps.now, checkCurrent: current.get(trade.id) ?? false }),
+      account,
+      state: deriveTradeState(trade, { now: deps.now, checkCurrent: current.get(trade.id) ?? false, accountArchived: account.status === "ARCHIVED" }),
       thumbnail: trade.cover_evidence_id && trade.cover_evidence_kind ? evidenceSource(trade.cover_evidence_kind, trade.cover_evidence_id) : null,
       ai: activity.get(trade.id) ?? NO_ACTIVITY,
     };
@@ -712,11 +851,37 @@ export async function loadTradeList(deps: ListDeps, filters: TradeFilters, curso
   return { filters, rows, groups: groupByTradeDay(rows, deps.now, deps.display), nextCursor: page.nextCursor, dateDefinition: TRADE_DATE_DEFINITION };
 }
 
-/** The Journal list of the request's account context (spec §14.5). */
+/** The Journal list of the request's account context (spec §14.5), narrowed by a read-only account filter. */
 export async function listTrades(filters: TradeFilters, cursor?: string | null, limit = JOURNAL_PAGE_SIZE): Promise<TradeListPage> {
   const [{ db, user }, context, preferences] = await Promise.all([currentSession(), getAccountContext(), getPreferences()]);
-  const scope: TradeScope = context.selected.mode === "account" ? { mode: "account", accountId: context.selected.account.id } : { mode: "all" };
-  return loadTradeList({ db, userId: user.id, scope, accounts: context.accounts, now: new Date().toISOString(), display: preferences.timeDisplay }, filters, cursor ?? null, limit);
+  const deps = { db, userId: user.id, scope: contextScope(context), accounts: context.accounts, now: new Date().toISOString(), display: preferences.timeDisplay };
+  return loadTradeList(deps, filters, cursor ?? null, limit);
+}
+
+/** What a read-only account filter names, for display: one of the user's accounts, or an account they cannot read. */
+export type AccountFilterState = { kind: "none" } | { kind: "account"; account: ContextAccount } | { kind: "unavailable" };
+
+/**
+ * Resolves the read-only account filter against the user's accounts (ownership for display; RLS bounds the read
+ * itself). It combines with All Accounts only: in an account context it is dropped, so the page and its links show the
+ * context alone. An id that is not one of the user's accounts stays applied (it matches nothing, so no read is ever
+ * broadened) and is shown as unavailable.
+ */
+export function resolveAccountFilter(filters: TradeFilters, context: Pick<AccountContext, "accounts" | "selected">): { filters: TradeFilters; state: AccountFilterState } {
+  if (!filters.accountFilter) return { filters, state: { kind: "none" } };
+  if (context.selected.mode === "account") {
+    const { accountFilter: _context, ...rest } = filters;
+    return { filters: rest, state: { kind: "none" } };
+  }
+  const account = context.accounts.find(item => item.id === filters.accountFilter);
+  return { filters, state: account ? { kind: "account", account } : { kind: "unavailable" } };
+}
+
+/** "Account: Personal 12K · archived": the filter in words, never the id; null without one. */
+export function accountFilterLabel(state: AccountFilterState): string | null {
+  if (state.kind === "none") return null;
+  if (state.kind === "unavailable") return "Account: not available";
+  return `Account: ${state.account.name}${state.account.status === "ARCHIVED" ? " · archived" : ""}`;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -752,16 +917,19 @@ export async function loadPaletteTrades(deps: ListDeps): Promise<{ liveTrades: P
   const recentRows = parseLedger(recent.data);
   const directory = accountDirectory(deps.accounts);
   const current = await draftCheckCurrency(deps.db, deps.userId, recentRows, directory, deps.now);
-  const entry = (trade: LedgerTrade): PaletteTradeEntry => ({
-    id: trade.id,
-    symbol: trade.symbol ?? "Unknown instrument",
-    direction: trade.direction,
-    accountName: accountLabel(directory, trade).name,
-    dateLabel: formatDay(tradeDate(trade).at, deps.display),
-    stateLabel: deriveTradeState(trade, { now: deps.now, checkCurrent: current.get(trade.id) ?? false }).label,
-    tags: trade.tags,
-    resultLabel: trade.realized_r !== null && trade.exited_at !== null ? formatR(trade.realized_r) : null,
-  });
+  const entry = (trade: LedgerTrade): PaletteTradeEntry => {
+    const account = accountLabel(directory, trade);
+    return {
+      id: trade.id,
+      symbol: trade.symbol ?? "Unknown instrument",
+      direction: trade.direction,
+      accountName: account.name,
+      dateLabel: formatDay(tradeDate(trade).at, deps.display),
+      stateLabel: deriveTradeState(trade, { now: deps.now, checkCurrent: current.get(trade.id) ?? false, accountArchived: account.status === "ARCHIVED" }).label,
+      tags: trade.tags,
+      resultLabel: trade.realized_r !== null && trade.exited_at !== null ? formatR(trade.realized_r) : null,
+    };
+  };
   return { liveTrades: liveRows.map(entry), recentTrades: recentRows.map(entry) };
 }
 
@@ -789,9 +957,12 @@ const checkRow = z.object({
 const planRow = z.object({
   id: z.uuid(), proposal: record, risk_result: z.unknown(), nominal_risk: decimalText, locked_at: instantText, trading_day: z.string(),
   account_observation_id: z.uuid(), risk_plan_version_id: z.uuid(), strategy_version_id: z.uuid(), instrument_version_id: z.uuid(),
+  /** The evaluation that authorised the lock (one of the trade's risk checks). */
+  risk_evaluation_id: z.uuid(),
 });
 const eventRow = z.object({ id: z.uuid(), event_type: z.string(), payload: record, occurred_at: instantText, recorded_at: instantText });
 const dispositionRow = z.object({ status: z.enum(["SKIPPED", "CANCELLED"]), reason: z.string(), recorded_at: instantText });
+const decisionRow = z.object({ decision: z.enum(["TAKEN", "SKIPPED"]), recorded_at: instantText });
 const factsRow = z.object({
   id: z.uuid(), recorded_at: instantText, source: z.enum(["USER", "IMPORT"]), instrument_version_id: z.uuid().nullable(), symbol: z.string().nullable(),
   direction: z.enum(["LONG", "SHORT"]).nullable(), entry_model: z.enum(ENTRY_MODELS).nullable(), entry_price: decimalText.nullable(),
@@ -870,7 +1041,11 @@ export interface DraftView {
   createdAt: string;
   proposal: ProposalView;
   latestCheck: CheckView | null;
-  /** The latest check is APPROVED and still current at server time ("Ready to lock"). */
+  /**
+   * The latest check is APPROVED and still current at server time (same strategy day, session, account values, risk
+   * plan and usage). Whether the plan can be locked now is the state's own `checkCurrent` ("Ready to lock"), which is
+   * also false while the account is archived.
+   */
   checkCurrent: boolean;
 }
 
@@ -995,6 +1170,11 @@ export interface TradeDetail {
   execution: ExecutionView | null;
   close: CloseView | null;
   disposition: { status: "SKIPPED" | "CANCELLED"; reason: string; recordedAt: string } | null;
+  /**
+   * When the planned trade ended without an entry (`planEndedAt`: its discard, skip or cancellation, or a V1 skip); null
+   * otherwise. Everything recorded from then on is After close (§5.3), whatever phase an older row stored.
+   */
+  planEndedAt: string | null;
   planVsReality: PlanVsReality;
   /** Records of a live-first/imported position, oldest first. */
   positionFacts: PositionFactView[];
@@ -1085,6 +1265,12 @@ function storedDecision(result: unknown): "APPROVED" | "BLOCKED" {
   return value.data.decision ?? (value.data.status === "RISK_APPROVED" ? "APPROVED" : "BLOCKED");
 }
 
+/** The trade's latest V1 decision on any of its revisions, in the order trade_ledger.legacy_decision reads them. */
+function latestLegacyDecision(db: Db, userId: string, proposalIds: readonly string[]) {
+  return db.from("setup_human_decisions").select("decision,recorded_at").eq("user_id", userId).in("proposal_id", [...proposalIds])
+    .order("recorded_at", { ascending: false }).order("id", { ascending: false }).limit(1).maybeSingle();
+}
+
 function titleOf(trade: LedgerTrade): string {
   const direction = trade.direction === "LONG" ? "Long" : trade.direction === "SHORT" ? "Short" : null;
   return [trade.symbol ?? "Trade", direction].filter(Boolean).join(" · ");
@@ -1107,7 +1293,8 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
   const [revisionsResult, plan, events, disposition, facts, unplannedClose, journal, evidence, relabels, removals, tagSets, legacyTags, lifecycle, activity] = await Promise.all([
     db.from("trade_revisions").select("proposal_id,revision,created_at").eq("trade_id", trade.id).eq("user_id", userId).order("revision", { ascending: true }),
     trade.plan_id
-      ? db.from("trade_plans").select("id,proposal,risk_result,nominal_risk::text,locked_at,trading_day,account_observation_id,risk_plan_version_id,strategy_version_id,instrument_version_id")
+      ? db.from("trade_plans")
+        .select("id,proposal,risk_result,nominal_risk::text,locked_at,trading_day,account_observation_id,risk_plan_version_id,strategy_version_id,instrument_version_id,risk_evaluation_id")
         .eq("id", trade.plan_id).eq("user_id", userId).maybeSingle()
       : NONE,
     trade.plan_id
@@ -1137,7 +1324,7 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
   if (trade.plan_id && !planRecord) throw new Error("Locked plan unavailable");
   const proposalIds = revisionRows.map(row => row.proposal_id);
 
-  const [proposals, checks, screenshots, screenshotRemovals, observation] = await Promise.all([
+  const [proposals, checks, screenshots, screenshotRemovals, observation, legacyDecision] = await Promise.all([
     proposalIds.length ? db.from("setup_proposals").select("id,proposal,created_at,instrument_version_id").eq("user_id", userId).in("id", proposalIds) : EMPTY,
     proposalIds.length
       ? db.from("setup_risk_checks").select("id,proposal_id,risk:risk_evaluations(id,result,recorded_at,risk_plan_version_id,instrument_version_id,strategy_version_id)")
@@ -1149,6 +1336,8 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
       : EMPTY,
     proposalIds.length ? db.from("setup_screenshot_removals").select("screenshot_id,recorded_at").eq("user_id", userId).in("proposal_id", proposalIds) : EMPTY,
     planRecord ? db.from("account_observations").select("equity::text").eq("id", planRecord.account_observation_id).eq("user_id", userId).maybeSingle() : NONE,
+    // When the latest V1 decision (the ledger names it) was recorded: a V1 skip ends the plan at that instant.
+    trade.legacy_decision === "SKIPPED" && proposalIds.length ? latestLegacyDecision(db, userId, proposalIds) : NONE,
   ]);
   const proposalRows = rows(proposalRow, proposals, "Draft revisions");
   const checkRows = rows(checkRow, checks, "Risk checks");
@@ -1226,6 +1415,7 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
   const checkCurrent = current.get(trade.id) ?? false;
   const state = deriveTradeState(trade, {
     now: deps.now, checkCurrent, aiAvailable: aiAvailable, blockingReason: latestCheck?.decision === "BLOCKED" ? latestCheck.explained.blocking[0]?.detail : undefined,
+    accountArchived: account.status === "ARCHIVED",
   });
   const draft: DraftView | null = trade.lifecycle === "DRAFT" && latestRevision
     ? {
@@ -1259,6 +1449,11 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
     }
     : null;
   const closeRecord = single(unplannedCloseRow, unplannedClose, "Close");
+  const dispositionRecord = single(dispositionRow, disposition, "Disposition");
+  const legacySkip = single(decisionRow, legacyDecision, "Decisions");
+  const endedAt = planEndedAt(trade, {
+    dispositionAt: dispositionRecord?.recorded_at ?? null, legacySkipAt: legacySkip?.decision === "SKIPPED" ? legacySkip.recorded_at : null,
+  });
   const close: CloseView | null = trade.exited_at !== null
     ? {
       exitPrice: trade.exit_price, exitedAt: trade.exited_at, recordedAt: trade.close_recorded_at, fees: trade.fees, grossPnl: trade.gross_pnl, netPnl: trade.net_pnl,
@@ -1266,7 +1461,6 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
       basisLabel: basisLabel(trade),
     }
     : null;
-  const dispositionRecord = single(dispositionRow, disposition, "Disposition");
   const observationEquity = planRecord ? single(z.object({ equity: decimalText }), observation, "Account values")?.equity ?? null : null;
   const planRisk = planRecord ? riskPlanById.get(planRecord.risk_plan_version_id) : undefined;
 
@@ -1279,8 +1473,8 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
   ]);
   const entryRecordedAt = trade.entry_recorded_at ?? (planned ? null : trade.created_at);
   const timingOf = (recordedAt: string, storedPhase: StoredPhase | null) => classifyTiming({
-    recordedAt, storedPhase: storedPhase ?? inferStoredPhase(recordedAt, entryRecordedAt, trade.close_recorded_at), origin: trade.origin,
-    entryAt: trade.entered_at, entryRecordedAt, exitAt: trade.exited_at, tradeCreatedAt: trade.created_at,
+    recordedAt, storedPhase: storedPhase ?? inferStoredPhase(recordedAt, entryRecordedAt, trade.close_recorded_at, endedAt), origin: trade.origin,
+    entryAt: trade.entered_at, entryRecordedAt, exitAt: trade.exited_at, tradeCreatedAt: trade.created_at, endedAt,
   });
   const flagWords = (flags: readonly TimingFlag[]) => flags.map(flag => TIMING_FLAG_COPY[flag]);
   const screenshotRows = rows(screenshotRow, screenshots, "Screenshots");
@@ -1343,6 +1537,8 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
     disposition: dispositionRecord ? { status: dispositionRecord.status, reason: dispositionRecord.reason, recordedAt: dispositionRecord.recorded_at } : null,
     aiAnalyses,
     lifecycleEvents: lifecycleRows.map(row => ({ id: row.id, event: row.event, reason: row.reason, recordedAt: row.recorded_at })),
+    planEndedAt: endedAt,
+    lockEvaluationId: planRecord?.risk_evaluation_id ?? null,
     explainLookup,
   }, deps.display);
 
@@ -1366,6 +1562,7 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
     execution,
     close,
     disposition: dispositionRecord ? { status: dispositionRecord.status, reason: dispositionRecord.reason, recordedAt: dispositionRecord.recorded_at } : null,
+    planEndedAt: endedAt,
     planVsReality: planVsReality(trade, instrument ? { tickSize: instrument.tickSize, pipSize: instrument.pipSize, quantityStep: instrument.quantityStep, quantityUnit: instrument.quantityUnit } : null, {
       equity: observationEquity, maxRiskPercent: planRisk?.maxRiskPercent ?? null, minRR: planRisk?.minRR ?? null,
     }),

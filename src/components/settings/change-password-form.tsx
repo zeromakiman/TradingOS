@@ -15,7 +15,8 @@ const fieldId = (field: (typeof FIELDS)[number]) => `settings-${field}`;
 
 /**
  * Settings → Security → Change password (docs/V2_ARCHITECTURE.md §14.11). The current password is required and is
- * verified on the server with a separate sign-in, and the server signs out the other devices.
+ * verified on the server with a separate sign-in; the new password is set on that freshly verified session, which this
+ * browser then adopts (it stays signed in), and the server signs out every other device and browser.
  */
 export function ChangePasswordForm({ email }: { email: string }) {
   const [state, dispatch, pending] = useActionState(changePassword, idleState);

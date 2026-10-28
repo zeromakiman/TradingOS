@@ -1,18 +1,14 @@
 import Decimal from "decimal.js";
 import { operationFor } from "@/ai/operations";
 import type { RiskLineDecision } from "@/components/ai/model";
-import { defaultLabelForTiming } from "@/components/evidence/labels";
 import type { EvidenceLabel } from "@/components/evidence/types";
-import { timingHintForLifecycle } from "@/components/trade/journal/composer-model";
+import { defaultLabelForLifecycle, timingHintForLifecycle } from "@/components/trade/journal/composer-model";
 import { formatMoney, formatMoneyExact, formatPercent, formatPrice, formatQuantity, formatR, formatSignedMoney, plural, stripZeros } from "@/domain/format";
 import type { Lifecycle, TradeOrigin } from "@/domain/ledger";
-import {
-  compareInstants, differsByMoreThan, displayDay, formatDateTime, formatDay, formatDuration, formatTime, type Instant, instantMicros, STRATEGY_TIME, strategyDay,
-  type TimeDisplay,
-} from "@/domain/time-display";
-import { groupByTiming, TIMING_LABELS, TIMING_ORDER, type TimelineItem, type TimelineKind, type Timing } from "@/domain/timeline";
+import { differsByMoreThan, displayDay, formatDateTime, formatDay, formatDuration, formatTime, type Instant, STRATEGY_TIME, strategyDay, type TimeDisplay } from "@/domain/time-display";
+import { TIMING_LABELS, type TimelineItem, type Timing } from "@/domain/timeline";
 import type { TradeAction, TradeActionKind, TradeState } from "@/domain/trade-state";
-import type { CheckView, EvidenceGroup, EvidenceItemView, ProposalView, TradeDetail } from "@/lib/trades-data";
+import type { CheckView, ProposalView, TradeDetail } from "@/lib/trades-data";
 import {
   directionLabel, gradeLabel, liquidityLabel, MSS_TIMEFRAMES, modelLabel, NEWS_LABELS, OUTCOME_LABELS, PNL_SOURCE_LABELS, RISK_BASIS_LABELS, unitWord,
 } from "./copy";
@@ -119,28 +115,16 @@ export interface HeaderActionsModel {
 /** Secondary actions that get a visible button; Discard and Skip stay in the menu behind a confirmation. */
 const VISIBLE_SECONDARY: ReadonlySet<TradeActionKind> = new Set(["EDIT_DRAFT", "CLOSE_TRADE", "ADD_ENTRY_DETAILS", "REOPEN_REVIEW"]);
 
-export interface HeaderActionsOptions {
-  /**
-   * The draft's blocking check is from an earlier trading day (`blockedOnEarlierDay`): the free recheck comes first,
-   * because daily limits and sessions have reset since, and editing would create a revision for reasons that may no
-   * longer apply. Edit draft stays one click away.
-   */
-  recheckFirst?: boolean;
-}
-
-const RECHECK_RISK: TradeAction = { kind: "RECHECK_RISK", label: "Recheck risk" };
-const EDIT_DRAFT: TradeAction = { kind: "EDIT_DRAFT", label: "Edit draft" };
-
 /**
- * Paid AI actions never sit in the header: they live with their estimate in the Plan (pre-trade tools) and Review
- * (trade review) sections, which load their own availability.
+ * The state's next action (`deriveTradeState`, the same one Today, the Journal and the command palette read: "Recheck
+ * risk" for a draft blocked on an earlier trading day) and its visible secondary actions. Paid AI actions never sit in
+ * the header: they live with their estimate in the Plan (pre-trade tools) and Review (trade review) sections, which
+ * load their own availability.
  */
-export function headerActions(state: TradeState, options: HeaderActionsOptions = {}): HeaderActionsModel {
-  const recheckFirst = options.recheckFirst === true && state.lifecycle === "DRAFT" && state.draftCheck === "BLOCKED";
-  const next = recheckFirst ? RECHECK_RISK : state.nextAction;
-  const others = recheckFirst ? [EDIT_DRAFT, ...state.secondaryActions.filter(action => action.kind !== "EDIT_DRAFT")] : state.secondaryActions;
+export function headerActions(state: TradeState): HeaderActionsModel {
+  const next = state.nextAction;
   const primary = next && !next.aiOperation ? next : null;
-  const secondary = others.filter(action => !action.aiOperation && VISIBLE_SECONDARY.has(action.kind));
+  const secondary = state.secondaryActions.filter(action => !action.aiOperation && VISIBLE_SECONDARY.has(action.kind));
   const menu: MenuEntry[] = primary === null ? [] : secondary.map(action => ({ kind: action.kind as MenuKind, label: action.label, compactOnly: true }));
   if (state.canDuplicate) menu.push({ kind: "DUPLICATE", label: "Duplicate draft" });
   if (state.lifecycle === "DRAFT") menu.push({ kind: "DISCARD", label: "Discard draft", destructive: true });
@@ -171,14 +155,27 @@ function latestCheckAt(detail: Pick<TradeDetail, "draft" | "technical">): string
 }
 
 /**
- * A draft blocked by a check from an earlier trading day (strategy day, UTC−5). Daily limits and sessions have reset
- * since, so the stored reasons may no longer apply: the free recheck is the next step, as it is for an approval that
- * is no longer current.
+ * A draft blocked by a check from an earlier trading day (strategy day, UTC−5), as the trade's state decided it
+ * (`deriveTradeState` then leads with "Recheck risk"). Daily limits and sessions have reset since, so the stored
+ * reasons may no longer apply: the free recheck is the next step, as it is for an approval that is no longer current.
  */
-export function blockedOnEarlierDay(detail: Pick<TradeDetail, "state" | "draft" | "technical">, now: Instant): boolean {
-  const checkedAt = latestCheckAt(detail);
-  return detail.state.lifecycle === "DRAFT" && detail.state.draftCheck === "BLOCKED" && checkedAt !== null && strategyDay(checkedAt) !== strategyDay(now);
+export function blockedOnEarlierDay(detail: Pick<TradeDetail, "state">): boolean {
+  const { state } = detail;
+  return state.lifecycle === "DRAFT" && state.draftCheck === "BLOCKED" && state.nextAction?.kind === "RECHECK_RISK";
 }
+
+/** The exact first blocking reason of a blocked draft: with Edit draft (§2.4), else from the latest check. */
+function firstBlockingReason(detail: Pick<TradeDetail, "state" | "draft">): string | undefined {
+  const { state } = detail;
+  const edit = state.nextAction?.kind === "EDIT_DRAFT" ? state.nextAction : state.secondaryActions.find(action => action.kind === "EDIT_DRAFT");
+  return edit?.detail ?? detail.draft?.latestCheck?.explained.blocking[0]?.detail;
+}
+
+/**
+ * A draft of an archived account (§3.2, §9): the account takes no new activity, so the draft can't be edited, checked or
+ * locked until the account is restored (the database refuses with ACCOUNT_ARCHIVED); it can still be discarded.
+ */
+export const ARCHIVED_DRAFT_HINT = "This trading account is archived, so this draft can't be edited, checked or locked. Restore the account in Manage account to continue it.";
 
 /** One sentence under the title that says why the primary action is the next step. */
 export function nextStepHint(detail: TradeDetail, now: Instant, display: TimeDisplay): NextStepHint | null {
@@ -186,11 +183,12 @@ export function nextStepHint(detail: TradeDetail, now: Instant, display: TimeDis
   const when = (instant: Instant) => whenLabel(instant, now, display);
   switch (state.lifecycle) {
     case "DRAFT": {
+      if (detail.account.status === "ARCHIVED") return { tone: "warning", text: ARCHIVED_DRAFT_HINT };
       const check = detail.draft?.latestCheck ?? null;
       if (state.draftCheck === "BLOCKED") {
-        const reason = state.nextAction?.detail ?? check?.explained.blocking[0]?.detail;
+        const reason = firstBlockingReason(detail);
         const checkedAt = latestCheckAt(detail);
-        if (checkedAt !== null && blockedOnEarlierDay(detail, now)) {
+        if (checkedAt !== null && blockedOnEarlierDay(detail)) {
           // The stored sentences speak of "today" as the day of the check; the time in front says which day that was.
           return {
             tone: "warning",
@@ -310,8 +308,9 @@ export interface EvidenceMode {
   /** Band new records most likely land in (the composer's hint). The server decides the real timing. */
   timingHint: Timing;
   /**
-   * Label of new screenshots staged in Evidence: Pre-entry before entry, Exit after a close, and Other once a plan
-   * ended without an entry (what is pasted then shows what happened later, never pre-entry evidence; §5.3).
+   * Label of new screenshots (Evidence stager and journal composer): Pre-entry before entry, Management while live, Exit
+   * after a close, and Other once a plan ended without an entry (what is pasted then shows what happened later, never
+   * pre-entry evidence; §5.3).
    */
   defaultLabel: EvidenceLabel;
   /** Active screenshots the trade can still take (24 at most). */
@@ -320,108 +319,37 @@ export interface EvidenceMode {
 
 export function evidenceMode(detail: TradeDetail): EvidenceMode {
   const { lifecycle } = detail.state;
-  const preTrade = lifecycle === "DRAFT" && detail.origin === "PLANNED";
+  // Pre-trade AI serves a plan that can still be locked: never on a draft of an archived account (§3.2, §9).
+  const preTrade = lifecycle === "DRAFT" && detail.origin === "PLANNED" && detail.account.status !== "ARCHIVED";
   const review = ENDED.has(lifecycle);
-  const ended = endedWithoutEntry(lifecycle);
   const max = preTrade
     ? Math.min(operationFor("ANALYZE_SETUP").maxImages, operationFor("CHALLENGE_BIAS").maxImages)
     : review ? operationFor("REVIEW_TRADE_TIMELINE").maxImages : 0;
-  // A skipped, cancelled or discarded plan never had an entry, yet whatever is recorded on it now is hindsight.
-  const timingHint: Timing = ended ? "AFTER_CLOSE" : timingHintForLifecycle(lifecycle);
   return {
     selectable: detail.ai.available && (preTrade || review) && max > 0,
     max,
     pasteTo: EXECUTED.has(lifecycle) ? "journal" : "evidence",
-    timingHint,
-    defaultLabel: ended ? "OTHER" : defaultLabelForTiming(timingHint),
+    // A skipped, cancelled or discarded plan never had an entry, yet whatever is recorded on it now is hindsight: the
+    // database stores it post-trade (§5.2), so it lands After close.
+    timingHint: timingHintForLifecycle(lifecycle),
+    defaultLabel: defaultLabelForLifecycle(lifecycle),
     remaining: Math.max(0, detail.evidence.limit - detail.evidence.activeCount),
   };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Plans that ended without an entry (§5.3): what is recorded after the skip, the cancellation or the discard is
-// hindsight and is never presented as pre-entry evidence. The stored phase of such records still reads pre-entry
-// (there is no execution), so the workspace downgrades their timing itself; a timestamp can only downgrade.
+// hindsight. The database stores such records post-trade and the trade detail classifies older rows by the end time
+// (`planEndedAt`, "Recorded after the plan ended"), so the workspace only words it.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const ENDED_WITHOUT_ENTRY: ReadonlySet<Lifecycle> = new Set(["SKIPPED", "CANCELLED", "DISCARDED"]);
-
-/** Skipped, cancelled, or a discarded draft: the plan ended and no entry can follow. */
-export function endedWithoutEntry(lifecycle: Lifecycle): boolean {
-  return ENDED_WITHOUT_ENTRY.has(lifecycle);
-}
-
-/**
- * When a planned trade ended without an entry: the skip or cancellation, or the discard of the draft. Null for every
- * other trade, and for a plan skipped in an earlier version of Trading OS (that decision carries no time to compare).
- */
-export function planEndedAt(detail: Pick<TradeDetail, "origin" | "state" | "disposition" | "technical">): string | null {
-  if (detail.origin !== "PLANNED") return null;
-  switch (detail.state.lifecycle) {
-    case "SKIPPED":
-    case "CANCELLED":
-      return detail.disposition?.recordedAt ?? null;
-    case "DISCARDED":
-      return detail.technical.ledger.discarded_at;
-    default:
-      return null;
-  }
-}
-
-/** The records that end a plan keep their place in the history; only what came after them is hindsight. */
-const END_MARKERS: ReadonlySet<TimelineKind> = new Set(["DISPOSITION", "DRAFT_DISCARDED"]);
-
-function recordedSince(endedAt: string): (recordedAt: string) => boolean {
-  return recordedAt => compareInstants(recordedAt, endedAt) >= 0;
-}
-
-function groupEvidence(items: readonly EvidenceItemView[]): EvidenceGroup[] {
-  const active = items.filter(item => item.removedAt === null);
-  return TIMING_ORDER.map(timing => ({ timing, label: TIMING_LABELS[timing], items: active.filter(item => item.timing === timing) }));
-}
-
-/**
- * The trade with records added after its plan ended moved from Before entry to After close, in the timeline (and so
- * the lessons) and in the gallery (and so the viewer's timing and relabel options). The same object when nothing moves.
- */
-export function withPlanEndTiming(detail: TradeDetail): TradeDetail {
-  const endedAt = planEndedAt(detail);
-  if (endedAt === null) return detail;
-  const since = recordedSince(endedAt);
-  let moved = false;
-  const timeline = detail.timeline.map(item => {
-    if (item.timing !== "BEFORE_ENTRY" || END_MARKERS.has(item.kind) || !since(item.recordedAt)) return item;
-    moved = true;
-    return { ...item, timing: "AFTER_CLOSE" as const, flags: [] };
-  });
-  const items = detail.evidence.items.map(item => {
-    if (item.timing !== "BEFORE_ENTRY" || !since(item.recordedAt)) return item;
-    moved = true;
-    return { ...item, timing: "AFTER_CLOSE" as const, timingLabel: TIMING_LABELS.AFTER_CLOSE, flags: [] };
-  });
-  if (!moved) return detail;
-  return { ...detail, timeline, timelineGroups: groupByTiming(timeline), evidence: { ...detail.evidence, items, groups: groupEvidence(items) } };
-}
-
-/**
- * Active screenshots recorded after the plan ended that the trade detail still classifies Before entry: duplicating
- * copies exactly the screenshots classified Before entry (§7.4), so these would arrive in the new draft as pre-entry
- * evidence. Counted on the detail as loaded, before `withPlanEndTiming`; zero once the stored timing knows the end.
- */
-export function copiedAfterPlanEnded(detail: TradeDetail): number {
-  const endedAt = planEndedAt(detail);
-  if (endedAt === null) return 0;
-  const since = recordedSince(endedAt);
-  return detail.evidence.items.filter(item => item.removedAt === null && item.timing === "BEFORE_ENTRY" && since(item.recordedAt)).length;
-}
-
-const END_WORDS: Readonly<Record<"SKIPPED" | "CANCELLED" | "DISCARDED", { after: string; event: string }>> = {
-  SKIPPED: { after: "after the plan was skipped", event: "after the skip" },
-  CANCELLED: { after: "after the plan was cancelled", event: "after the cancellation" },
-  DISCARDED: { after: "after the draft was discarded", event: "after the discard" },
+const END_WORDS: Readonly<Record<"SKIPPED" | "CANCELLED" | "DISCARDED", { event: string }>> = {
+  SKIPPED: { event: "after the skip" },
+  CANCELLED: { event: "after the cancellation" },
+  DISCARDED: { event: "after the discard" },
 };
 
-function endWords(lifecycle: Lifecycle): { after: string; event: string } | null {
+function endWords(lifecycle: Lifecycle): { event: string } | null {
   return lifecycle === "SKIPPED" || lifecycle === "CANCELLED" || lifecycle === "DISCARDED" ? END_WORDS[lifecycle] : null;
 }
 
@@ -437,80 +365,21 @@ export function lessonTiming(lesson: Pick<TimelineItem, "timing">, lifecycle: Li
   return TIMING_LABELS[lesson.timing];
 }
 
-/** What duplicating copies (§3.4, §7.4), as the confirmation's bullet points. */
+/**
+ * What duplicating copies (§3.4, §7.4), as the confirmation's bullet points. The copy takes exactly the screenshots the
+ * trade shows Before entry; anything added after a plan ended is After close and stays here (`private.copyable_evidence`).
+ */
 export function duplicateNotes(detail: TradeDetail): string[] {
   const notes = [
     "Economic news is reset to “Not checked”: verify it again for the new trade.",
     "Screenshots recorded before entry are copied; live and after-close screenshots are not.",
   ];
-  const late = copiedAfterPlanEnded(detail);
   const words = endWords(detail.state.lifecycle);
-  if (late > 0 && words) {
-    const one = late === 1;
-    notes.push(
-      `${one ? "1 screenshot" : `${late} screenshots`} added ${words.after} ${one ? "is" : "are"} copied too, as pre-entry evidence of the new draft. Remove ${one ? "it" : "them"} there if ${one ? "it shows" : "they show"} what happened later.`,
-    );
+  const later = detail.evidence.items.filter(item => item.removedAt === null && item.timing === "AFTER_CLOSE").length;
+  if (words && later > 0) {
+    notes.push(`${later === 1 ? "1 screenshot" : `${later} screenshots`} added ${words.event} ${later === 1 ? "stays" : "stay"} with this trade.`);
   }
   return notes;
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// Decision history in causal order (§5.4).
-// ---------------------------------------------------------------------------------------------------------------------
-
-/** Records this close together come from one save or one lock (the database writes them milliseconds apart). */
-const SAME_ACTION_MICROS = 1_000_000n;
-
-function sameAction(earlier: string, later: string): boolean {
-  const gap = instantMicros(later) - instantMicros(earlier);
-  return gap >= 0n && gap < SAME_ACTION_MICROS;
-}
-
-/** Which revision a timeline check evaluated; null when unknown. */
-export type CheckedRevision = (check: TimelineItem) => number | null;
-
-/** The revision each of the trade's checks evaluated, found by the check's recording time (a shared time is ambiguous). */
-export function checkedRevisionOf(checks: readonly Pick<CheckView, "recordedAt" | "revision">[]): CheckedRevision {
-  const byTime = new Map<string, number | null>();
-  for (const check of checks) byTime.set(check.recordedAt, byTime.has(check.recordedAt) ? null : check.revision);
-  return check => (check.kind === "RISK_CHECK" ? byTime.get(check.recordedAt) ?? null : null);
-}
-
-function revisionNumber(item: TimelineItem): number | null {
-  const revision = item.details?.revision;
-  return typeof revision === "number" ? revision : null;
-}
-
-/**
- * Saving a draft stores its free check a few milliseconds before the revision row, and locking stores the plan a few
- * milliseconds before the check that authorised it, so sorting by time alone shows a check of a draft that doesn't
- * exist yet and a lock before its own check. Within one such action the revision comes before the check of that very
- * revision, and the check before the lock (nothing can be checked after a lock); every other order is kept, so applying
- * this to an already causal history changes nothing.
- */
-export function inCausalOrder(items: readonly TimelineItem[], checkedRevision: CheckedRevision): TimelineItem[] {
-  const ordered = [...items];
-  for (let index = 0; index + 1 < ordered.length; index += 1) {
-    const first = ordered[index];
-    const second = ordered[index + 1];
-    const revision = second.kind === "DRAFT_REVISION" ? revisionNumber(second) : null;
-    const checkBeforeItsRevision = first.kind === "RISK_CHECK" && revision !== null && checkedRevision(first) === revision && sameAction(first.recordedAt, second.recordedAt);
-    const lockBeforeItsCheck = first.kind === "PLAN_LOCKED" && second.kind === "RISK_CHECK" && sameAction(first.recordedAt, second.recordedAt);
-    if (checkBeforeItsRevision || lockBeforeItsCheck) {
-      ordered[index] = second;
-      ordered[index + 1] = first;
-      index += 1;
-    }
-  }
-  return ordered;
-}
-
-/** The trade as the workspace presents it: hindsight after a plan ended downgraded, the history in causal order. */
-export function workspaceDetail(detail: TradeDetail): TradeDetail {
-  const view = withPlanEndTiming(detail);
-  const timeline = inCausalOrder(view.timeline, checkedRevisionOf(view.checks));
-  if (timeline.every((item, index) => item === view.timeline[index])) return view;
-  return { ...view, timeline, timelineGroups: groupByTiming(timeline) };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -574,8 +443,10 @@ export function lockBlockedReason(state: Pick<TradeState, "draftCheck" | "checkC
  * locked on (§6.2), which is today only for a plan locked today.
  */
 export function skipSlotNote(detail: Pick<TradeDetail, "plan" | "technical">, now: Instant): string {
-  const day = detail.plan?.tradingDay ?? detail.technical.ledger.plan_trading_day;
-  if (!day || day === strategyDay(now)) return "It still counts as one of today's planned trades.";
+  const ledger = detail.technical.ledger;
+  const day = detail.plan?.tradingDay ?? ledger.plan_trading_day ?? (ledger.locked_at ? strategyDay(ledger.locked_at) : null);
+  if (day === null) return "It still counts as one of the planned trades of the day it was locked.";
+  if (day === strategyDay(now)) return "It still counts as one of today's planned trades.";
   return `It still counts as one of ${tradingDayWords(day, now)}'s planned trades.`;
 }
 

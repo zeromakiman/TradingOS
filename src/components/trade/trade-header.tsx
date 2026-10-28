@@ -6,7 +6,7 @@ import { cx } from "@/components/ui/cx";
 import type { TimeDisplay } from "@/domain/time-display";
 import type { TradeDetail } from "@/lib/trades-data";
 import { LiveFor } from "./live-for";
-import { blockedOnEarlierDay, headerActions, headerFacts, type LockSummary, nextStepHint, originBadge, resultSummary, skipSlotNote } from "./model";
+import { headerActions, headerFacts, type LockSummary, nextStepHint, originBadge, resultSummary, skipSlotNote } from "./model";
 import { TRADE_TITLE_ID } from "./reveal";
 import { type TradeActionContext, TradeHeaderActions } from "./trade-actions";
 
@@ -35,7 +35,7 @@ export interface TradeHeaderProps {
   display: TimeDisplay;
   lock: LockSummary | null;
   keys: TradeActionContext["keys"];
-  /** What duplicating copies, in words (`duplicateNotes`, from the trade as loaded). */
+  /** What duplicating copies, in words (`duplicateNotes`). */
   duplicateNotes: readonly string[];
 }
 
@@ -91,7 +91,8 @@ export function TradeHeader({ detail, now, display, lock, keys, duplicateNotes }
                 <span className="text-text-3">{account.currency}</span>
               </span>
             </Link>
-            {account.status === "ARCHIVED" && <StatusPill tone="muted">Archived account</StatusPill>}
+            {/* A draft's state pill already says it ("Account archived"). */}
+            {account.status === "ARCHIVED" && state.lifecycle !== "DRAFT" && <StatusPill tone="muted">Archived account</StatusPill>}
             <span className="num min-w-0">
               {withKeys(facts, fact => fact.text).map(({ key, value: fact }, index) => (
                 <span key={key}>
@@ -108,7 +109,7 @@ export function TradeHeader({ detail, now, display, lock, keys, duplicateNotes }
             </span>
           </div>
         </div>
-        <TradeHeaderActions model={headerActions(state, { recheckFirst: blockedOnEarlierDay(detail, now) })} context={context} />
+        <TradeHeaderActions model={headerActions(state)} context={context} />
       </div>
       {hint && HintIcon && (
         <p className={cx("flex max-w-3xl items-start gap-2 text-sm leading-5", HINT_STYLE[hint.tone].className)} data-tone={hint.tone}>

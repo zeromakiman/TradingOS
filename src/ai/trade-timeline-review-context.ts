@@ -2,9 +2,14 @@ import type { LedgerTrade } from "@/domain/ledger";
 import { storedRiskSchema } from "@/domain/risk-report";
 import { compareInstants } from "@/domain/time-display";
 import { classifyTiming, type EvidenceLabel, inferStoredPhase, type JournalKind, type StoredPhase, type Timing, type TimingFlag } from "@/domain/timeline";
+import { operationFor } from "./operations";
+import { estimateRequest } from "./request-estimate";
 import {
   maxTimelineFactsBytes, type PlanStatus, TIMELINE_REVIEW_FACTS_VERSION, TIMELINE_REVIEW_LIMITS, withTimelineSources,
 } from "./trade-timeline-review-sources";
+
+/** A screenshot whose size is not read here counts at the maximum tile cost (src/ai/request-estimate.ts). */
+const UNSIZED_IMAGE = "data:image/png;base64,AA==";
 
 /**
  * REVIEW_TRADE_TIMELINE_FACTS_V1 (spec §11.4): an explicit allowlist of one closed trade's records. Every timeline
@@ -275,8 +280,12 @@ export function tradeTimelineReviewContext(input: TimelineReviewInput, capturedA
       timing: input.tags.recordedAt ? timingOf(input.tags.recordedAt).timing : null,
     },
   });
-  const limit = maxTimelineFactsBytes(evidence.length);
-  if (Buffer.byteLength(JSON.stringify(facts)) > limit) {
+  // The facts bound first, then the whole request (prompt, schema, facts and every selected screenshot at its maximum
+  // tile cost) by the conservative estimate the request gate applies, so a dense trade is refused before anything is written.
+  const operation = operationFor("REVIEW_TRADE_TIMELINE");
+  const screenshots = evidence.map(item => ({ sourceId: `evidence:${item.id}`, role: item.timeframe ?? item.label, dataUrl: UNSIZED_IMAGE }));
+  if (Buffer.byteLength(JSON.stringify(facts)) > maxTimelineFactsBytes(evidence.length)
+    || estimateRequest(operation, { context: facts, images: screenshots, prior: [] }).tokens > operation.maxInputTokens) {
     throw new TimelineReviewScopeError(evidence.length
       ? "This trade's records and the selected screenshots exceed the bounded review size. Select fewer screenshots. Nothing was sent."
       : "This trade's records exceed the bounded review size. Nothing was sent and no record was left out silently.");

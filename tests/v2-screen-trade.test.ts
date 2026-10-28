@@ -83,8 +83,10 @@ import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
 import { planVsReality } from "@/domain/plan-vs-reality";
 import type { ExplainedIssue } from "@/domain/risk-explain";
 import { STRATEGY_TIME } from "@/domain/time-display";
-import { buildTimeline, groupByTiming, type TimelineEvidence, type TimelineJournalEntry, type TimelineRevision, type TimelineRiskCheck } from "@/domain/timeline";
-import { deriveTradeState } from "@/domain/trade-state";
+import {
+  buildTimeline, groupByTiming, TIMING_FLAG_COPY, type TimelineEvidence, type TimelineItem, type TimelineJournalEntry, type TimelineRevision, type TimelineRiskCheck,
+} from "@/domain/timeline";
+import { deriveTradeState, planEndedAt } from "@/domain/trade-state";
 import type { CheckView, EvidenceItemView, ProposalView, TradeDetail } from "@/lib/trades-data";
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -149,6 +151,8 @@ interface Scenario {
   /** Revisions and stored checks as the timeline sees them (default: revision 1 at the trade's creation, no checks). */
   revisions?: TimelineRevision[];
   timelineChecks?: TimelineRiskCheck[];
+  /** The evaluation that authorised the lock (`trade_plans.risk_evaluation_id`). */
+  lockEvaluationId?: string;
   draftProposal?: ProposalView;
   planProposal?: ProposalView;
   journal?: TimelineJournalEntry[];
@@ -157,14 +161,18 @@ interface Scenario {
   lifecycleEvents?: { id: string; event: "DRAFT_DISCARDED" | "REVIEW_COMPLETED" | "REVIEW_REOPENED"; reason: string | null; recordedAt: string }[];
   close?: Partial<NonNullable<TradeDetail["close"]>>;
   instrument?: TradeDetail["instrument"];
+  /** The trade's account is archived (§3.2, §9). */
+  archived?: boolean;
 }
 
-function evidenceView(item: TimelineEvidence & { kind: "V2" }, timing: EvidenceItemView["timing"]): EvidenceItemView {
+/** A gallery item with the timing and flags the timeline gave its "added" record (the loader classifies both alike). */
+function evidenceView(item: TimelineEvidence & { kind: "V2" }, added: TimelineItem | undefined): EvidenceItemView {
+  const timing = added?.timing ?? "BEFORE_ENTRY";
   return {
     kind: "V2", src: `/api/evidence/${item.id}`, thumbSrc: `/api/evidence/${item.id}?variant=thumb`, id: item.id, name: "M5 chart", label: item.label,
     timeframe: item.timeframe, caption: item.caption ?? null, timing, timingLabel: timing === "BEFORE_ENTRY" ? "Before entry" : timing === "WHILE_LIVE" ? "While live" : "After close",
-    flags: [], recordedAt: item.recordedAt, removedAt: item.removedAt ?? null, copiedFromRecordedAt: null, copied: false, originalFilename: "chart.png", mimeType: "image/png",
-    width: 1600, height: 900, byteSize: 120000, relabelable: true, removable: true,
+    flags: (added?.flags ?? []).map(flag => TIMING_FLAG_COPY[flag]), recordedAt: item.recordedAt, removedAt: item.removedAt ?? null, copiedFromRecordedAt: null, copied: false,
+    originalFilename: "chart.png", mimeType: "image/png", width: 1600, height: 900, byteSize: 120000, relabelable: true, removable: true,
   };
 }
 
@@ -175,8 +183,9 @@ function detailOf(s: Scenario): TradeDetail {
   const latestCheck = checks.at(-1) ?? null;
   const state = deriveTradeState(trade, {
     now: NOW, checkCurrent: s.checkCurrent ?? false, aiAvailable: s.aiAvailable ?? false,
-    blockingReason: latestCheck?.decision === "BLOCKED" ? latestCheck.explained.blocking[0]?.detail : undefined,
+    blockingReason: latestCheck?.decision === "BLOCKED" ? latestCheck.explained.blocking[0]?.detail : undefined, accountArchived: s.archived === true,
   });
+  const endedAt = planEndedAt(trade, { dispositionAt: s.disposition?.recordedAt ?? null });
   const timeline = buildTimeline({
     trade,
     instrument,
@@ -186,14 +195,16 @@ function detailOf(s: Scenario): TradeDetail {
     evidence: s.evidence ?? [],
     disposition: s.disposition ? { status: s.disposition.status, reason: s.disposition.reason, recordedAt: s.disposition.recordedAt } : null,
     lifecycleEvents: s.lifecycleEvents ?? [],
+    planEndedAt: endedAt,
+    lockEvaluationId: s.lockEvaluationId ?? null,
   }, STRATEGY_TIME);
-  const items = (s.evidence ?? []).map(item => evidenceView(item, timeline.find(entry => entry.evidenceId === item.id)?.timing ?? "BEFORE_ENTRY"));
+  const items = (s.evidence ?? []).map(item => evidenceView(item, timeline.find(entry => entry.kind === "EVIDENCE_ADDED" && entry.evidenceId === item.id)));
   const planned = trade.origin === "PLANNED";
   const hasEntry = !planned || trade.entry_recorded_at !== null;
   return {
     tradeId: trade.id,
     href: `/trades/${trade.id}`,
-    account: { id: ACCOUNT, name: "FTMO 100K", currency: trade.currency, status: "ACTIVE" },
+    account: { id: ACCOUNT, name: "FTMO 100K", currency: trade.currency, status: s.archived ? "ARCHIVED" : "ACTIVE" },
     origin: trade.origin,
     title: [trade.symbol ?? "Trade", trade.direction === "LONG" ? "Long" : trade.direction === "SHORT" ? "Short" : null].filter(Boolean).join(" · "),
     symbol: trade.symbol,
@@ -204,7 +215,7 @@ function detailOf(s: Scenario): TradeDetail {
     state,
     revisionCount: trade.revision_count,
     draft: state.lifecycle === "DRAFT"
-      ? { revision: trade.latest_revision ?? 1, expectedRevision: trade.latest_revision ?? 1, createdAt: trade.created_at, proposal: s.draftProposal ?? proposal(), latestCheck, checkCurrent: state.checkCurrent }
+      ? { revision: trade.latest_revision ?? 1, expectedRevision: trade.latest_revision ?? 1, createdAt: trade.created_at, proposal: s.draftProposal ?? proposal(), latestCheck, checkCurrent: deriveTradeState(trade, { now: NOW, checkCurrent: s.checkCurrent ?? false }).checkCurrent }
       : null,
     plan: trade.plan_id && trade.locked_at
       ? {
@@ -228,6 +239,7 @@ function detailOf(s: Scenario): TradeDetail {
       }
       : null,
     disposition: s.disposition ?? null,
+    planEndedAt: endedAt,
     planVsReality: planVsReality(trade, instrument ? { tickSize: instrument.tickSize, pipSize: instrument.pipSize, quantityStep: instrument.quantityStep, quantityUnit: instrument.quantityUnit } : null, {
       equity: "100000", maxRiskPercent: "0.75", minRR: "3",
     }),
@@ -346,14 +358,17 @@ const discarded = () => detailOf({
   lifecycleEvents: [{ id: uuid(902), event: "DRAFT_DISCARDED", reason: "Setup is three days old.", recordedAt: "2026-10-23T18:44:00Z" }],
 });
 
-/** Skipped at 04:55 UTC−5; a lesson and a screenshot of where price went were recorded after the skip. */
-const skippedWithHindsight = () => detailOf({
+/**
+ * Skipped at 04:55 UTC−5; a lesson and a screenshot of where price went were recorded after the skip. `stored` is the
+ * phase those two rows carry: POST_TRADE as the database stores them now, PRE_ENTRY for rows written before it did.
+ */
+const skippedWithHindsight = (stored: "PRE_ENTRY" | "POST_TRADE" = "PRE_ENTRY") => detailOf({
   trade: ledger(13, { ...LOCKED_FIELDS, lifecycle: "SKIPPED", disposition: "SKIPPED", disposition_reason: "Price never returned to the order block." }),
   disposition: { status: "SKIPPED", reason: "Price never returned to the order block.", recordedAt: "2026-10-23T09:55:00Z" },
-  journal: [{ id: uuid(1301), kind: "LESSON", body: "Price ran to the target without a retest; the skip cost a winner.", details: {}, phase: "PRE_ENTRY", recordedAt: "2026-10-23T10:16:00Z" }],
+  journal: [{ id: uuid(1301), kind: "LESSON", body: "Price ran to the target without a retest; the skip cost a winner.", details: {}, phase: stored, recordedAt: "2026-10-23T10:16:00Z" }],
   evidence: [
     { kind: "V2", id: uuid(1302), label: "HTF", timeframe: "H4", caption: "H4 FVG still open above", phase: "PRE_ENTRY", recordedAt: "2026-10-23T07:45:00Z" },
-    { kind: "V2", id: uuid(1303), label: "PRE_ENTRY", timeframe: "M15", caption: "Where price went after the skip", phase: "PRE_ENTRY", recordedAt: "2026-10-23T10:16:30Z" },
+    { kind: "V2", id: uuid(1303), label: stored === "PRE_ENTRY" ? "PRE_ENTRY" : "OTHER", timeframe: "M15", caption: "Where price went after the skip", phase: stored, recordedAt: "2026-10-23T10:16:30Z" },
   ],
 });
 
@@ -521,6 +536,65 @@ describe("trade workspace · drafts", () => {
     // AI selection on the gallery (max 3 for pre-trade tools) only while AI can run.
     expect(text).toContain("Select up to 3 screenshots for AI");
     expect(html).toContain('aria-label="Use M5 chart');
+    expectClean(html);
+  });
+
+  it("freezes a draft of an archived account: no edit, check, lock, duplicate or pre-trade AI, a way to restore and Discard", async () => {
+    const detail = detailOf({
+      trade: ledger(2, { latest_check_decision: "APPROVED", latest_check_at: "2026-10-23T18:58:00Z", draft_check: "APPROVED" }),
+      checkCurrent: true, aiAvailable: true, archived: true,
+      checks: [check("APPROVED", "2026-10-23T18:58:00Z", 1, [], [NEWS_UNKNOWN], [COSTS])],
+      evidence: [{ kind: "V2", id: uuid(201), label: "PRE_ENTRY", timeframe: "M5", caption: "Sweep and MSS", phase: "PRE_ENTRY", recordedAt: "2026-10-23T18:50:00Z" }],
+    });
+    const html = await render(detail);
+    const text = visibleText(html);
+    // The database refuses a new revision, a check and a lock (ACCOUNT_ARCHIVED): the pill names the archived account as
+    // the reason and no risk step, and the page offers none of them.
+    expect(html).toContain('data-tone="muted" data-lifecycle="draft">Account archived</span>');
+    expect(text).not.toMatch(/Recheck needed|Ready to lock/);
+    // The pill already says it: no second "Archived account" chip beside the account.
+    expect(text).not.toContain("Archived account");
+    expect(text).toContain("This trading account is archived, so this draft can't be edited, checked or locked. Restore the account in Manage account to continue it.");
+    // No next action: the only primary button is the journal composer's own commit.
+    expect(primaryButtonLabels(html)).toEqual(["Add to journal"]);
+    expect(html).not.toContain(`href="/trades/${detail.tradeId}/edit"`);
+    const plan = sectionOf(html, "plan");
+    expect(visibleText(plan)).not.toMatch(/Edit draft|Recheck risk|Check risk|Lock plan/);
+    expect(plan).toContain(`href="/accounts/${ACCOUNT}/manage"`);
+    expect(visibleText(plan)).toContain("Restore in Manage");
+    expect(visibleText(plan)).toContain("Discard…");
+    expect(visibleText(plan)).toContain("The account is archived: restore it to edit, check or lock this draft. Discarding stays possible.");
+    // Paid pre-trade AI serves a plan that can still be locked: no AI tools, no AI selection on the gallery.
+    expect(m.preTradeProps).toEqual([]);
+    expect(text).not.toContain("Select up to 3 screenshots for AI");
+    expect(html).not.toContain('aria-label="Use M5 chart');
+    // Its history stays readable, and notes and screenshots can still be added.
+    expect(text).toContain("Every hard rule passes for this revision.");
+    expect(text).toContain("Add screenshots");
+    expectClean(html);
+  });
+
+  it("says an archived account's stale approval is no longer current without asking for a recheck it can't take", async () => {
+    const detail = detailOf({
+      trade: ledger(2, { latest_check_decision: "APPROVED", latest_check_at: "2026-10-22T14:00:00Z", draft_check: "APPROVED" }),
+      checkCurrent: false, archived: true,
+      checks: [check("APPROVED", "2026-10-22T14:00:00Z", 1)],
+    });
+    expect(detail.state).toMatchObject({ label: "Account archived", nextAction: null, checkCurrent: false });
+    const html = await render(detail);
+    const text = visibleText(html);
+    expect(text).toContain("Account archived");
+    expect(text).not.toContain("Recheck needed");
+    const plan = visibleText(sectionOf(html, "plan"));
+    expect(plan).toContain("Approved earlier");
+    expect(plan).toMatch(/This approval is no longer current: the session, account values, risk plan or today's usage changed since [^.]+\./);
+    expect(plan).not.toMatch(/Recheck risk|Check risk|Edit draft|Lock plan/);
+    expect(plan).toContain("The account is archived: restore it to edit, check or lock this draft. Discarding stays possible.");
+    expect(primaryButtonLabels(html)).toEqual(["Add to journal"]);
+    // A trade the archived account already holds keeps the account chip: its pill speaks of the trade.
+    const lockedHtml = await render(detailOf({ trade: ledger(5, { ...LOCKED_FIELDS, lifecycle: "LOCKED" }), archived: true }));
+    expect(visibleText(lockedHtml)).toContain("Archived account");
+    expect(visibleText(lockedHtml)).toContain("Locked · waiting for entry");
     expectClean(html);
   });
 
@@ -711,6 +785,7 @@ describe("trade workspace · locked and live", () => {
         { id: uuid(1502), recordedAt: "2026-10-23T07:40:00.000000Z", decision: "APPROVED", proposalId },
         { id: uuid(1503), recordedAt: "2026-10-23T07:52:00.625822Z", decision: "APPROVED", proposalId },
       ],
+      lockEvaluationId: uuid(1503),
       checks: [check("APPROVED", "2026-10-23T07:40:00.000000Z", 1), check("APPROVED", "2026-10-23T07:52:00.625822Z", 1)],
     });
     const before = bandText(sectionOf(await render(detail), "journal"), "Before entry");
@@ -816,23 +891,30 @@ describe("trade workspace · result and review", () => {
   });
 
   it("keeps what was recorded after a skip out of Before entry, in the timeline, the gallery and the lessons", async () => {
-    const html = await render(skippedWithHindsight());
-    const journal = sectionOf(html, "journal");
-    expect(visibleText(journal)).toContain("new entries: after the skip");
-    const beforeEntry = bandText(journal, "Before entry");
-    expect(beforeEntry).toContain("H4 chart added");
-    expect(beforeEntry).toContain("Trade skipped");
-    expect(beforeEntry).not.toContain("M15 chart added");
-    expect(beforeEntry).not.toContain("the skip cost a winner");
-    const afterward = bandText(journal, "After close");
-    expect(afterward).toContain("M15 chart added");
-    expect(afterward).toContain("the skip cost a winner");
-    const evidence = sectionOf(html, "evidence");
-    expect(bandText(evidence, "Before entry")).toContain("H4 FVG still open above");
-    expect(bandText(evidence, "Before entry")).not.toContain("Where price went after the skip");
-    expect(bandText(evidence, "After close")).toContain("Where price went after the skip");
-    expect(visibleText(sectionOf(html, "review"))).toContain("After the skip · 05:16");
-    expectClean(html);
+    for (const stored of ["POST_TRADE", "PRE_ENTRY"] as const) {
+      const html = await render(skippedWithHindsight(stored));
+      const journal = sectionOf(html, "journal");
+      expect(visibleText(journal)).toContain("new entries: after the skip");
+      const beforeEntry = bandText(journal, "Before entry");
+      expect(beforeEntry).toContain("H4 chart added");
+      expect(beforeEntry).toContain("Trade skipped");
+      expect(beforeEntry).not.toContain("M15 chart added");
+      expect(beforeEntry).not.toContain("the skip cost a winner");
+      const afterward = bandText(journal, "After close");
+      expect(afterward).toContain("M15 chart added");
+      expect(afterward).toContain("the skip cost a winner");
+      const evidence = sectionOf(html, "evidence");
+      expect(bandText(evidence, "Before entry")).toContain("H4 FVG still open above");
+      expect(bandText(evidence, "Before entry")).not.toContain("Where price went after the skip");
+      expect(bandText(evidence, "After close")).toContain("Where price went after the skip");
+      expect(visibleText(sectionOf(html, "review"))).toContain("After the skip · 05:16");
+      // Rows stored as pre-entry before the database knew the skip keep their stored phase and say why they read
+      // After close; rows stored post-trade need no marker.
+      const marked = (afterward.match(/Recorded after the plan ended/g) ?? []).length;
+      expect(marked, stored).toBe(stored === "PRE_ENTRY" ? 2 : 0);
+      expect(bandText(evidence, "After close").includes("Recorded after the plan ended"), stored).toBe(stored === "PRE_ENTRY");
+      expectClean(html);
+    }
   });
 
   it("keeps a discarded draft's last revision and reason readable, with no review", async () => {

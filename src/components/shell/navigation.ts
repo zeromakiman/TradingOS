@@ -20,9 +20,24 @@ export const LIVE_TRADE_HREF = "/trades/live/new";
 
 const matches = (pathname: string, prefix: string) => pathname === prefix || pathname.startsWith(`${prefix}/`);
 
-/** The navigation section a path belongs to; trade pages live under Journal. */
+export type NewTradeAction = "plan" | "live";
+
+/**
+ * The global primary action a page belongs to (§1.1, §13.3): Plan Trade (`/trades/new`) and Record Live Trade
+ * (`/trades/live/new`) are the header's two actions (the `+` tab on phones), not a section of the navigation.
+ */
+export function newTradeAction(pathname: string | null | undefined): NewTradeAction | null {
+  if (pathname === PLAN_TRADE_HREF) return "plan";
+  if (pathname === LIVE_TRADE_HREF) return "live";
+  return null;
+}
+
+/**
+ * The navigation section a path belongs to. Trades (their workspace and Edit Draft) live under Journal; the new-trade
+ * forms belong to no section, because the header's primary action that opened them is marked instead.
+ */
 export function activeNavKey(pathname: string | null | undefined): NavKey | null {
-  if (!pathname) return null;
+  if (!pathname || newTradeAction(pathname) !== null) return null;
   if (matches(pathname, "/trades")) return "journal";
   return NAV_ITEMS.find((item) => matches(pathname, item.href))?.key ?? null;
 }

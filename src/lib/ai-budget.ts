@@ -1,7 +1,7 @@
 import "server-only";
 import { requireUser } from "./supabase/server";
 import { trustedServer } from "./supabase/admin";
-import { aiAvailability, type AiAvailability } from "@/ai/availability";
+import { aiAvailability, type AiAvailability, HELD_RESERVATION_MESSAGE } from "@/ai/availability";
 import { budgetPresentation, budgetSnapshotSchema } from "@/ai/budget";
 import { operationFor } from "@/ai/operations";
 import { operationPricing, reservationMicros } from "@/ai/pricing";
@@ -36,6 +36,8 @@ export async function accountAiAvailability(accountId:string,operationId="SETUP_
  if(system.status!=="ENABLED")return system;
  const data=await loadAiBudget(accountId);
  if(!data.snapshot||!data.presentation)return {status:"CONFIGURATION_ERROR",message:data.error??"AI accounting is unavailable",deepEnabled:false};
+ // A held (uncertain) reservation pauses the account's AI until an audited resolution; say so plainly.
+ if(data.snapshot.uncertain)return {status:"ACCOUNTING_REVIEW",message:HELD_RESERVATION_MESSAGE,deepEnabled:false};
  if(data.presentation.state==="UNAVAILABLE")return {status:"CONFIGURATION_ERROR",message:"AI accounting requires review. No further AI requests can run.",deepEnabled:false};
  if(!data.snapshot.enabled)return {status:"ACCOUNT_OFF",message:"AI is OFF for this account. Enable it explicitly in Settings.",deepEnabled:false};
  if(data.presentation.state==="BUDGET REACHED"||data.presentation.remainingMicros<reservationMicros(operationPricing(operationFor(operationId)),operationFor(operationId)))return {status:"BUDGET_REACHED",message:"The AI budget cannot cover the required request reservation. Review your limit and usage in Settings.",deepEnabled:false};

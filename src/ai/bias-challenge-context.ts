@@ -10,14 +10,19 @@ export interface BiasContextSource {
  risk:{id:string;result:z.infer<typeof storedRiskSchema>;recorded_at:string};
  riskVersion:string;
 }
-/** No account aggregates, unrelated history, old AI output, storage URLs or implicit images. */
+/**
+ * CHALLENGE_BIAS_FACTS_V2: no account aggregates, unrelated history, old AI output, storage URLs or implicit images.
+ * The strategy is its version and structured rules (as the timeline review, spec §11.4): its written prompt text
+ * (CHALLENGE_BIAS_FACTS_V1 carried it) made a request with three screenshots exceed the reviewed 16,000 input tokens.
+ * Stored V1 facts keep validating (src/ai/citation-sources.ts).
+ */
 export function biasChallengeContext(s:BiasContextSource,evidence:ReviewEvidence[]) {
  const p=s.proposal.proposal,r=s.risk.result;
- return withOperationSources("CHALLENGE_BIAS",{version:"CHALLENGE_BIAS_FACTS_V1",proposalId:s.proposal.id,capturedAt:new Date().toISOString(),
+ return withOperationSources("CHALLENGE_BIAS",{version:"CHALLENGE_BIAS_FACTS_V2",proposalId:s.proposal.id,capturedAt:new Date().toISOString(),
   proposal:{createdAt:s.proposal.created_at,instrument:s.instrument.symbol,direction:p.direction,entryModel:p.model,entry:p.entry,stop:p.stop,target:p.target,riskPercent:p.riskPercent,news:p.news,contractConfirmed:p.contractConfirmed},
   currentThesis:p.narrative,
   contextPolicy:"Pre-market and liquidity context are user-reported only where explicitly recorded in the thesis or selected evidence. Otherwise unverified. Session is the recorded risk-check session, not current market data.",
-  strategy:{id:s.strategy.id,version:s.strategy.version,rules:s.strategy.rules,writtenRules:s.strategy.written_rules},
+  strategy:{id:s.strategy.id,version:s.strategy.version,rules:s.strategy.rules},
   deterministic:{evaluationId:s.risk.id,recordedAt:s.risk.recorded_at,engineVersion:r.engineVersion,evaluatedAt:r.evaluatedAt,tradingDay:r.tradingDay,session:r.session,strategyVersionId:r.strategyVersionId,riskPlanVersionId:r.riskPlanVersionId,riskPlanVersion:s.riskVersion,status:r.status,issues:r.issues,calculations:r.calculations,...("ruleResults" in r?{ruleResults:r.ruleResults}:{})},
   selectedEvidence:evidence.map(e=>({id:e.id,role:e.role,sha256:e.sha256,mimeType:e.mime_type,bytes:e.byte_size})),
   sourceRefs:["proposal","currentThesis","strategy","deterministic",...evidence.map(e=>`evidence:${e.id}`)]});

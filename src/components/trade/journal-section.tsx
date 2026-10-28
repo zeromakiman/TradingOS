@@ -4,7 +4,6 @@ import { TradeTimeline } from "@/components/trade/journal/timeline";
 import { plural } from "@/domain/format";
 import type { TimeDisplay } from "@/domain/time-display";
 import type { TradeDetail } from "@/lib/trades-data";
-import { JournalHashFocus } from "./journal-focus";
 import { type EvidenceMode, newEntriesLabel } from "./model";
 import { TRADE_TARGETS } from "./reveal";
 import { WorkspaceSection } from "./section";
@@ -14,7 +13,7 @@ import { WorkspaceSection } from "./section";
  * While live / After close with exact times and flags, then the composer ("Add to trade journal…", kind chips Note ·
  * Decision · Stop · Target · Partial · Lesson, screenshots, Ctrl/⌘+Enter). While the position is live the composer
  * docks above the tab bar on phones, and Ctrl/⌘+V anywhere on the page attaches screenshots to it. `#journal` opens the
- * page with the composer focused. Server component.
+ * page with the composer focused (`TradeHashFocus`). Server component.
  */
 
 export interface JournalSectionProps {
@@ -41,6 +40,7 @@ export function JournalSection({ detail, display, developerMode, mode, gallery, 
       <JournalComposer
         tradeId={detail.tradeId}
         timingHint={mode.timingHint}
+        defaultLabel={mode.defaultLabel}
         instrument={detail.instrument ? { tickSize: detail.instrument.tickSize, quantityStep: detail.instrument.quantityStep } : null}
         requestKey={composerKey}
         sticky={sticky}
@@ -50,7 +50,6 @@ export function JournalSection({ detail, display, developerMode, mode, gallery, 
         // must be their containing block or the off-screen ones widen the page past the viewport.
         className="[&_.filter-chips]:relative"
       />
-      <JournalHashFocus />
     </WorkspaceSection>
   );
 }

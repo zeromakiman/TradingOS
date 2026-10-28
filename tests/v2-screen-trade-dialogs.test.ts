@@ -66,8 +66,8 @@ describe("skip and cancel confirmation (§2.4, §6.2)", () => {
 });
 
 describe("duplicate confirmation (§3.4, §7.4)", () => {
-  it("lists what duplicating copies, including screenshots added after the plan ended", () => {
-    const notes = ["Economic news is reset.", "Screenshots recorded before entry are copied.", "1 screenshot added after the plan was skipped is copied too."];
+  it("lists what duplicating copies, including that screenshots added after the plan ended stay with the trade", () => {
+    const notes = ["Economic news is reset.", "Screenshots recorded before entry are copied.", "1 screenshot added after the skip stays with this trade."];
     const html = renderToStaticMarkup(createElement(DuplicateDialog, { tradeId: "trade", requestKey: "key", notes }));
     expect(html.match(/<li>/g)).toHaveLength(3);
     for (const note of notes) expect(html).toContain(`<li>${note}</li>`);

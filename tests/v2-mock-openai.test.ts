@@ -664,13 +664,14 @@ describe("budget settlement through the real request gate", () => {
   });
 
   // What every scenario means for accounting (README table): the usage disposition the gate settles and the error the
-  // calling flow receives (null: the call succeeds and the flow's own validator decides).
-  const GATE_OUTCOMES: Record<MockScenarioName, [disposition: "SETTLED" | "UNCERTAIN", thrown: string | null]> = {
+  // calling flow receives (null: the call succeeds and the flow's own validator decides). The two count-endpoint
+  // scenarios fail before the recheck commits a generation, so the gate releases them unsent (CANCELLED, 0).
+  const GATE_OUTCOMES: Record<MockScenarioName, [disposition: "SETTLED" | "UNCERTAIN" | "CANCELLED", thrown: string | null]> = {
     ok: ["SETTLED", null], schema_violation: ["SETTLED", null], foreign_source: ["SETTLED", null], hindsight_citation: ["SETTLED", null],
     trading_directive: ["SETTLED", null], refusal: ["SETTLED", "REFUSED"], incomplete: ["SETTLED", "INCOMPLETE"], invalid_json: ["SETTLED", "INVALID_JSON"],
     http_500: ["UNCERTAIN", "ACCOUNTING_UNCERTAIN"], http_429: ["UNCERTAIN", "ACCOUNTING_UNCERTAIN"], http_401: ["UNCERTAIN", "ACCOUNTING_UNCERTAIN"],
     http_403: ["UNCERTAIN", "ACCOUNTING_UNCERTAIN"], network_error: ["UNCERTAIN", "ACCOUNTING_UNCERTAIN"],
-    count_unavailable: ["UNCERTAIN", "ACCOUNTING_UNCERTAIN"], input_limit_exceeded: ["UNCERTAIN", "ACCOUNTING_UNCERTAIN"],
+    count_unavailable: ["CANCELLED", "INPUT_COUNT_UNAVAILABLE"], input_limit_exceeded: ["CANCELLED", "INPUT_LIMIT_EXCEEDED"],
   };
   it.each(Object.entries(GATE_OUTCOMES))("scenario %s settles as %j through budgetedAiRequest", async (scenario, [disposition, thrown]) => {
     const operation = operationFor("WEEKLY_REVIEW");
@@ -681,8 +682,12 @@ describe("budget settlement through the real request gate", () => {
     const record = book.settle.mock.calls[0][2];
     expect(record.disposition).toBe(disposition);
     if (disposition === "UNCERTAIN") {
-      // The whole reservation stays held and the account reports "AI accounting requires review" until resolved.
+      // The whole reservation stays held and the account's AI is paused for an accounting review until resolved.
       expect(record).toMatchObject({ chargedMicros: reservationMicros(operationPricing(operation), operation), errorCode: MOCK_SCENARIOS[scenario as MockScenarioName].providerError });
+    } else if (disposition === "CANCELLED") {
+      // No generation request was sent: nothing is charged and the hold is released (SQL re-checks it, 0018 Part 4).
+      expect(record).toEqual({ disposition: "CANCELLED", chargedMicros: 0, usage: { generation: "NOT_SENT" }, errorCode: MOCK_SCENARIOS[scenario as MockScenarioName].providerError });
+      expect(book.recheck).not.toHaveBeenCalled();
     } else {
       expect(record.chargedMicros as number).toBeGreaterThan(0);
       expect(record.chargedMicros as number).toBeLessThan(reservationMicros(operationPricing(operation), operation));

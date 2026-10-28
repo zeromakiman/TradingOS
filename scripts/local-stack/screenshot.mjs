@@ -194,7 +194,9 @@ await runMain(async () => {
         await page.setViewportSize({ width: viewport.width, height: Math.min(Math.max(height, viewport.height), 16_000) });
       }
       const file = path.join(out, `${slugOf(label)}.${viewport.width}x${viewport.height}.${theme}.png`);
-      await page.screenshot({ path: file, fullPage: true });
+      // caret: "initial" keeps Playwright from injecting `caret-color` styles into the page, which can land before
+      // React has hydrated a streamed page and then shows up as a spurious hydration warning.
+      await page.screenshot({ path: file, fullPage: true, caret: "initial" });
       if (grow) await page.setViewportSize(viewport);
       entry.file = path.relative(process.cwd(), file);
     } catch (error) {

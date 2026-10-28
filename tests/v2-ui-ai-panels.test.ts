@@ -62,6 +62,7 @@ vi.mock("@/lib/weekly-review-source", () => ({ ownedWeeklyAccount: m.weeklyOwner
 vi.mock("@/lib/recent-trades-source", () => ({ ownedRecentAccount: m.recentOwner, loadRecentFacts: m.recentFacts, RecentScopeError: m.ScopeError }));
 vi.mock("@/lib/monthly-review-source", () => ({ ownedMonthlyAccount: m.monthlyOwner, loadMonthlyFacts: m.monthlyFacts, MonthlyScopeError: m.ScopeError }));
 
+import { HELD_RESERVATION_MESSAGE } from "@/ai/availability";
 import type { PreTradePanel } from "@/ai/pre-trade-draft";
 import { analyzeSetupContext } from "@/ai/analyze-setup-context";
 import { biasChallengeContext } from "@/ai/bias-challenge-context";
@@ -409,6 +410,16 @@ describe("TradeReviewAiPanel", () => {
     m.timeline.mockRejectedValue(new Error("Trade unavailable"));
     expect(visibleText(await html(TradeReviewAiPanel(props)))).toContain("AI review is unavailable");
   });
+
+  it("explains a held reservation in plain words on the review button, without sending the trader to settings", async () => {
+    m.timeline.mockResolvedValue(panel({ availability: { status: "ACCOUNTING_REVIEW", message: HELD_RESERVATION_MESSAGE, deepEnabled: false } }));
+    m.tradeHistory.mockRejectedValue(new Error("Trade unavailable"));
+    const markup = await html(TradeReviewAiPanel(props));
+    expect(visibleText(markup)).toContain(HELD_RESERVATION_MESSAGE);
+    expect(markup).toContain('aria-disabled="true"');
+    expect(inertButtonDescriptions(markup)).toEqual([HELD_RESERVATION_MESSAGE]);
+    expect(markup).not.toContain("#ai");
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -444,6 +455,16 @@ describe("PeriodicReviewPanel", () => {
     weekly_ai_review_results: [{ review_id: reviewRequest.id, ...done(weeklyOutput, "2025-10-13T12:01:00Z") }],
     ai_request_reservations: [],
     ai_usage_records: [],
+  });
+
+  it("explains a held reservation on the run button", async () => {
+    m.weeklyOwner.mockResolvedValue(owner(tables()));
+    m.weeklyFacts.mockResolvedValue({ sample: { count: 8 } });
+    m.availability.mockResolvedValue({ status: "ACCOUNTING_REVIEW", message: HELD_RESERVATION_MESSAGE, deepEnabled: false });
+    const markup = await html(PeriodicReviewPanel({ kind: "weekly", accountId: ACCOUNT, period: "2025-10-08" }));
+    expect(visibleText(markup)).toContain(HELD_RESERVATION_MESSAGE);
+    expect(inertButtonDescriptions(markup)).toEqual([HELD_RESERVATION_MESSAGE]);
+    expectNoAiRequest();
   });
 
   it("states the explicit scope and the limitation, with the run button and its estimate", async () => {

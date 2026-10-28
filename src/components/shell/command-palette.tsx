@@ -24,6 +24,7 @@ import { Dialog as RadixDialog } from "radix-ui";
 import { type KeyboardEvent, type MouseEvent, useEffect, useId, useMemo, useState, useTransition } from "react";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
+import { useAccountContextSelection } from "./account-context-sync";
 import { switchAccountContext } from "./actions";
 import { readPaletteHistory, recentItemIds, rememberPaletteItem } from "./palette-history";
 import { buildPaletteItems, PALETTE_GROUP_LABELS, type PaletteIcon, type PaletteItem, paletteSections } from "./palette-items";
@@ -82,7 +83,8 @@ type Entry = { key: string; item: PaletteItem };
  * Search field, results and keyboard handling of the palette. It renders inside the palette
  * dialog (its Cancel button closes that dialog); `CommandPalette` is the component to mount.
  */
-export function CommandPaletteBody({ index, context, userEmail, selectAccountAction, onClose }: CommandPaletteProps & { onClose: () => void }) {
+export function CommandPaletteBody({ index, context: rendered, userEmail, selectAccountAction, onClose }: CommandPaletteProps & { onClose: () => void }) {
+  const context = useAccountContextSelection(rendered);
   const currentHref = useCurrentHref();
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -136,7 +138,8 @@ export function CommandPaletteBody({ index, context, userEmail, selectAccountAct
     onClose();
     const value = item.accountValue;
     const plainClick = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
-    // An explicit ?account= in the URL overrides the cookie, so those switches navigate instead.
+    // On a page whose URL names a context (?account=), the switch follows the link (the URL decides what the page
+    // shows) and the shell stores the new context after the navigation.
     if (value === undefined || !selectAccountAction || !plainClick || new URL(window.location.href).searchParams.has("account")) return;
     event.preventDefault();
     startTransition(() => switchAccountContext(selectAccountAction, value, item.href, (target) => router.push(target)));

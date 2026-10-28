@@ -2,7 +2,7 @@
 "use client";
 
 import { Camera, CircleAlert, CircleCheck, ImagePlus, LoaderCircle, RefreshCw, Upload, X } from "lucide-react";
-import { type ChangeEvent, type DragEvent, type ReactNode, useRef, useState } from "react";
+import { type ChangeEvent, type DragEvent, type ReactNode, type RefObject, useRef, useState } from "react";
 import { useModifierKeyLabel } from "@/components/shell/use-media-query";
 import { Button, IconButton } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -21,6 +21,11 @@ import type { EvidenceStagerApi } from "./use-evidence-stager";
  * its label, optional timeframe and caption, and remove or replace before anything is saved. `compact`
  * is the journal composer's variant: attach buttons and a horizontal strip of small previews, without
  * the large drop zone (the composer itself takes drops) and without captions.
+ *
+ * The layout follows the width the stager gets, not the page's (container queries): Plan Trade's evidence section, a
+ * live trade's card on Today and a phone are all narrow. Previews sit two per row only in a wide stager, an image sits
+ * beside its controls only where the card has room, and the label and timeframe selects share a line only when both
+ * stay readable.
  */
 
 export interface EvidenceStagerProps {
@@ -87,7 +92,7 @@ export function EvidenceStager({ stager, compact = false, showLabels = true, dis
   );
 
   return (
-    <div className={cx("flex min-w-0 flex-col", compact ? "gap-2" : "gap-3")}>
+    <div className={cx("@container flex min-w-0 flex-col", compact ? "gap-2" : "gap-3")}>
       {compact ? (
         <div className="flex flex-wrap items-center gap-2">
           {pickers}
@@ -136,7 +141,7 @@ export function EvidenceStager({ stager, compact = false, showLabels = true, dis
         </Callout>
       )}
       {stager.items.length > 0 && (
-        <ul aria-label="Screenshots to save" className={compact ? "flex gap-2 overflow-x-auto pb-1" : "grid gap-3 sm:grid-cols-2"}>
+        <ul aria-label="Screenshots to save" className={compact ? "flex gap-2 overflow-x-auto pb-1" : "grid gap-3 @[64rem]:grid-cols-2"}>
           {stager.items.map(item =>
             compact ? (
               <CompactCard key={item.localId} item={item} stager={stager} showLabels={showLabels} disabled={disabled} />
@@ -235,37 +240,57 @@ function StagedCard({ item, stager, showLabels, disabled }: CardProps) {
   };
 
   return (
-    <li className="flex min-w-0 gap-3 rounded-card border border-border bg-surface p-2">
-      <img src={item.previewUrl} alt={`Preview: ${name}`} className="aspect-[16/10] w-28 shrink-0 self-start rounded-control bg-surface-sunken object-contain" />
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <div className="flex items-start gap-2">
-          <p className="t-meta min-w-0 flex-1 truncate font-medium text-text">{name}</p>
-          <IconButton label={`Remove ${name}`} icon={<X />} size="sm" disabled={!editable} onClick={() => stager.remove(item.localId)} />
-        </div>
-        {showLabels && editable ? (
-          <>
-            <div className="grid grid-cols-2 gap-2">
-              <LabelSelect item={item} stager={stager} name={name} disabled={!editable} />
-              <TimeframeSelect item={item} stager={stager} name={name} disabled={!editable} />
-            </div>
-            <Field label={<>Caption<span className="sr-only"> of {name}</span></>} optional>
-              <Input value={item.caption} maxLength={MAX_CAPTION_LENGTH} placeholder="What does it show?" onChange={event => stager.update(item.localId, { caption: event.target.value })} />
-            </Field>
-          </>
-        ) : (
-          <p className="t-caption">{evidenceTagText(item.label, item.timeframe)}</p>
-        )}
-        <StatusLine item={item} />
-        {editable && (
-          <div>
-            <Button type="button" variant="link" size="sm" icon={<RefreshCw aria-hidden="true" />} onClick={() => replaceInput.current?.click()}>
-              Replace image
-            </Button>
-            <input ref={replaceInput} type="file" accept={ACCEPTED_IMAGE_INPUT} hidden tabIndex={-1} onChange={replaced} />
-          </div>
-        )}
+    <li className="@container min-w-0 rounded-card border border-border bg-surface p-2">
+      <div className="flex min-w-0 flex-col gap-3 @[30rem]:flex-row">
+        <img
+          src={item.previewUrl}
+          alt={`Preview: ${name}`}
+          className="aspect-[16/10] max-h-48 w-full max-w-sm shrink-0 self-start rounded-control bg-surface-sunken object-contain @[30rem]:w-28"
+        />
+        <StagedControls item={item} stager={stager} showLabels={showLabels} name={name} editable={editable} replaceInput={replaceInput} onReplaced={replaced} />
       </div>
     </li>
+  );
+}
+
+function StagedControls({
+  item,
+  stager,
+  showLabels,
+  name,
+  editable,
+  replaceInput,
+  onReplaced,
+}: Omit<CardProps, "disabled"> & { name: string; editable: boolean; replaceInput: RefObject<HTMLInputElement | null>; onReplaced: (event: ChangeEvent<HTMLInputElement>) => void }) {
+  return (
+    <div className="@container flex min-w-0 flex-1 flex-col gap-2">
+      <div className="flex items-start gap-2">
+        <p className="t-meta min-w-0 flex-1 truncate font-medium text-text">{name}</p>
+        <IconButton label={`Remove ${name}`} icon={<X />} size="sm" disabled={!editable} onClick={() => stager.remove(item.localId)} />
+      </div>
+      {showLabels && editable ? (
+        <>
+          <div className="grid gap-2 @[26rem]:grid-cols-2">
+            <LabelSelect item={item} stager={stager} name={name} disabled={!editable} />
+            <TimeframeSelect item={item} stager={stager} name={name} disabled={!editable} />
+          </div>
+          <Field label={<>Caption<span className="sr-only"> of {name}</span></>} optional>
+            <Input value={item.caption} maxLength={MAX_CAPTION_LENGTH} placeholder="What does it show?" onChange={event => stager.update(item.localId, { caption: event.target.value })} />
+          </Field>
+        </>
+      ) : (
+        <p className="t-caption">{evidenceTagText(item.label, item.timeframe)}</p>
+      )}
+      <StatusLine item={item} />
+      {editable && (
+        <div>
+          <Button type="button" variant="link" size="sm" icon={<RefreshCw aria-hidden="true" />} onClick={() => replaceInput.current?.click()}>
+            Replace image
+          </Button>
+          <input ref={replaceInput} type="file" accept={ACCEPTED_IMAGE_INPUT} hidden tabIndex={-1} onChange={onReplaced} />
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -7,16 +7,23 @@ import { assertAiExecutionAllowed } from "./availability";
 import { consumeAiPermit } from "./permit";
 export class ProviderError extends Error {constructor(public code:string,public usage:unknown=null,public responseId:string|null=null,public model:string|null=null){super(code);}}
 const responseSchema=z.object({id:z.string(),model:z.string(),status:z.string(),usage:z.unknown().optional(),output:z.array(z.object({type:z.string(),content:z.array(z.object({type:z.string(),text:z.string().optional()}).passthrough()).optional()}).passthrough())}).passthrough();
-export async function callResponses(input:AiProviderRequest,transport:typeof fetch=fetch,permit?:object,operation?:AiOperation,beforeGenerate?:()=>Promise<void>):Promise<AiProviderResult>{
- if(operation)assertOperationExecutionAllowed(operation.provider,input.apiKey);else assertAiExecutionAllowed(input.apiKey);
- // Existing adapter tests inject an in-memory transport; production has no ungated network path.
- if(process.env.NODE_ENV!=="test"||transport===fetch){consumeAiPermit(permit);if(!operation)throw new Error("A bounded operation is required");}
+/**
+ * The exact generation body and the exact input-count body of one request. The pre-flight size estimate
+ * (src/ai/request-estimate.ts) measures this same count body, so it can never measure something else than is sent.
+ */
+export function responsesWire(input:Pick<AiProviderRequest,"config"|"context"|"images"|"prior">,operation?:AiOperation){
  const content:Record<string,unknown>[]=[{type:"input_text",text:JSON.stringify({context:input.context,prior_evaluations:input.prior})}];
  for(const img of input.images)content.push({type:"input_text",text:`Chart source ${img.sourceId}; user-assigned timeframe ${img.role}.`},{type:"input_image",image_url:img.dataUrl,detail:input.config.imageDetail});
  const contract=operationContract(operation,input.context);
  const payload={model:input.config.model,instructions:contract.instructions,input:[{role:"user",content}],store:false,service_tier:"default",truncation:"disabled",reasoning:{effort:input.config.reasoningEffort},max_output_tokens:input.config.maxOutputTokens,text:{format:{type:"json_schema",name:contract.name,strict:true,schema:contract.schema}}};
- const wire=JSON.stringify(payload);
  const countWire=JSON.stringify({model:payload.model,instructions:payload.instructions,input:payload.input,reasoning:payload.reasoning,text:payload.text,truncation:payload.truncation});
+ return {wire:JSON.stringify(payload),countWire};
+}
+export async function callResponses(input:AiProviderRequest,transport:typeof fetch=fetch,permit?:object,operation?:AiOperation,beforeGenerate?:()=>Promise<void>):Promise<AiProviderResult>{
+ if(operation)assertOperationExecutionAllowed(operation.provider,input.apiKey);else assertAiExecutionAllowed(input.apiKey);
+ // Existing adapter tests inject an in-memory transport; production has no ungated network path.
+ if(process.env.NODE_ENV!=="test"||transport===fetch){consumeAiPermit(permit);if(!operation)throw new Error("A bounded operation is required");}
+ const {wire,countWire}=responsesWire(input,operation);
  const send=(url:string,body=wire)=>transport(url,{method:"POST",headers:{Authorization:`Bearer ${input.apiKey}`,"Content-Type":"application/json"},body,signal:AbortSignal.timeout(input.config.timeoutMs)});
  if(operation){
   if(operation.provider!=="openai"||operation.model!==input.config.model||operation.maxOutputTokens!==input.config.maxOutputTokens||operation.reasoningEffort!==input.config.reasoningEffort||operation.tools.length||input.images.length>operation.maxImages)throw new ProviderError("INVALID_OPERATION_ENVELOPE");

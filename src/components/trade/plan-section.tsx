@@ -61,12 +61,17 @@ function DraftPlan({ detail, extras, now, display, lock, discardKey, ai }: PlanS
   const { draft, state } = detail;
   const source = draftSource(detail) as PlanSource;
   const check = draft.latestCheck;
-  const stale = check?.decision === "APPROVED" && !state.checkCurrent;
+  // Whether the approval itself still describes the present; on an archived account the toolbar says why nothing can be
+  // checked or locked, so a stale approval names no recheck.
+  const stale = check?.decision === "APPROVED" && !draft.checkCurrent;
+  const archived = detail.account.status === "ARCHIVED";
   return (
     <WorkspaceSection
       id="plan"
       title="Plan"
-      meta={`Revision ${draft.revision} · editing saves revision ${draft.revision + 1}; checks, notes and screenshots stay with the trade`}
+      meta={archived
+        ? `Revision ${draft.revision}`
+        : `Revision ${draft.revision} · editing saves revision ${draft.revision + 1}; checks, notes and screenshots stay with the trade`}
       actions={<StrategyAction extras={extras} />}
     >
       {detail.duplicatedFromHref && (
@@ -82,7 +87,7 @@ function DraftPlan({ detail, extras, now, display, lock, discardKey, ai }: PlanS
         </p>
       )}
       <div className="flex flex-col gap-4 rounded-card border border-border bg-surface-sunken p-3 sm:p-4" data-panel="draft-check">
-        {check ? <RiskCheckView check={check} now={now} display={display} label="Risk check" stale={stale} /> : <NotChecked />}
+        {check ? <RiskCheckView check={check} now={now} display={display} label="Risk check" stale={stale} recheckable={!archived} /> : <NotChecked />}
         <DraftToolbar
           tradeId={detail.tradeId}
           editHref={`${detail.href}/edit`}
@@ -91,6 +96,7 @@ function DraftPlan({ detail, extras, now, display, lock, discardKey, ai }: PlanS
           lockBlockedReason={lockBlockedReason(state, blockingCheckOf(detail), now)}
           lock={lock ?? lockSummary(detail, null)}
           discardKey={discardKey}
+          {...(archived ? { archivedManageHref: `/accounts/${detail.account.id}/manage` } : {})}
         />
       </div>
       <PlanValues detail={detail} source={source} label={`Draft values, revision ${draft.revision}`} />

@@ -86,6 +86,7 @@ export const EXPORT_TABLES: Readonly<Record<JsonExportPart, readonly ExportTable
     table("ai_preference_events"),
     table("ai_request_reservations"),
     table("ai_request_dispatches", ["reservation_id"]),
+    table("ai_request_generations", ["reservation_id"]),
     table("ai_usage_records", ["reservation_id"]),
     table("ai_uncertainty_resolutions"),
     table("ai_analysis_attempts"),

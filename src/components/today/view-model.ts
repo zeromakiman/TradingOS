@@ -488,11 +488,13 @@ function checkedOn(trade: LedgerTrade, day: string): string | null {
 function planActions(group: PlanGroup, row: TradeListRow, day: string): PlanActionView[] {
   const trade = row.trade;
   // A block found on an earlier day says nothing certain about today (trade slots, risk used, session, account values
-  // and the risk plan in effect can all differ): the free check gives today's answer, like a stale approval's
-  // "Recheck needed". Edit draft stays beside it for a reason the trader already knows to change.
-  if (group === "blocked" && checkedOn(trade, day) !== null) {
+  // and the risk plan in effect can all differ): the shared trade state makes the free check its next action, like a
+  // stale approval's "Recheck needed" (`deriveTradeState`, the trade page, Journal and palette agree). Edit draft stays
+  // beside it for a reason the trader already knows to change. A draft of an archived account gets neither: the
+  // database refuses its checks and revisions, and its state offers nothing but Discard on the trade page.
+  if (group === "blocked" && row.state.nextAction?.kind === "RECHECK_RISK") {
     return [
-      { kind: "link", label: "Edit draft", href: `${row.href}/edit`, variant: "ghost" },
+      ...(row.state.editable.plan ? [{ kind: "link", label: "Edit draft", href: `${row.href}/edit`, variant: "ghost" } as const] : []),
       { kind: "check", label: "Recheck risk", tradeId: row.id },
     ];
   }

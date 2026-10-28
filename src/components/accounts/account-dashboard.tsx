@@ -22,8 +22,9 @@ import { Disclosure } from "@/components/ui/disclosure";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader, SectionHeader } from "@/components/ui/page-header";
 import { Stat } from "@/components/ui/stat";
+import { edgeAccountHistoryHref } from "@/components/edge/query";
 import type { AccountDashboard } from "@/lib/accounts-data";
-import { tradeHref } from "@/lib/performance-data";
+import { accountHistoryDrill, accountHistoryJournalHref, breakdownHref, closedOnHref, type DrillDown, tradeHref } from "@/lib/performance-data";
 import { ConfirmUnchangedButton } from "./account-values-forms";
 import { connectionLabel } from "./accounts-overview";
 import { ContextSwitchScope } from "./context-switch-scope";
@@ -37,7 +38,8 @@ import { HIT_AREA, KnownValue, Money, RValue, SignedMoney, STAT_GRID_4, STAT_GRI
  * closed trades add up to, in the account's own currency. Every chart answers one question, has a table view and
  * drills into trades (points open the trade; days open the Journal filtered to that day). Live trades move to the top
  * while any exist (the next action, as on Today §14.1). An archived account can't be the working context (§9.2), so its
- * dashboard offers no link that would switch to it: only its own history and its trades.
+ * dashboard never links to a switch to it: its Journal, EDGE and drill-down links open All Accounts with the read-only
+ * account filter instead (`historyLinks`).
  */
 
 const D = Decimal.clone({ precision: 100 });
@@ -69,11 +71,22 @@ export interface AccountDashboardViewProps {
   currentContext: string;
 }
 
+/**
+ * The account's Journal and EDGE: an active account becomes the context (the data layer's links); an archived one,
+ * which can never be the context (§9.2), opens in All Accounts with the read-only account filter.
+ */
+function historyLinks(dashboard: AccountDashboard): { journal: string; edge: string; manage: string } {
+  const { account, links } = dashboard;
+  if (account.status !== "ARCHIVED") return links;
+  return { journal: accountHistoryJournalHref(account.id), edge: edgeAccountHistoryHref(account.id), manage: links.manage };
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Header and today's status.
 // ---------------------------------------------------------------------------------------------------------
 function DashboardHeader({ dashboard, display }: { dashboard: AccountDashboard; display: TimeDisplay }) {
-  const { account, metrics, links } = dashboard;
+  const { account, metrics } = dashboard;
+  const links = historyLinks(dashboard);
   const archived = account.status === "ARCHIVED";
   const parts = [typeAndBroker(account.type, account.broker), metrics.platform.label, connectionLabel(dashboard.connection, display), account.currency];
   return (
@@ -94,12 +107,10 @@ function DashboardHeader({ dashboard, display }: { dashboard: AccountDashboard; 
       }
       actions={
         <>
-          {!archived && (
-            <Link href={links.journal} prefetch={false} className={buttonClasses({ variant: "secondary" })}>
-              <BookOpen aria-hidden="true" />
-              Journal
-            </Link>
-          )}
+          <Link href={links.journal} prefetch={false} className={buttonClasses({ variant: "secondary" })}>
+            <BookOpen aria-hidden="true" />
+            Journal
+          </Link>
           <Link href={links.manage} className={buttonClasses({ variant: "secondary" })}>
             <Settings2 aria-hidden="true" />
             Manage
@@ -311,11 +322,13 @@ function ChartCard({ children, className }: { children: ReactNode; className?: s
 const NO_R_EMPTY = { title: "No closed trades with a recorded risk yet.", description: "Plan or record a trade on this account; R results appear here after you close it." };
 
 /**
- * Day and group drill-downs open the Journal in this account's context. An archived account can't be that context (the
- * Journal would show every account instead), so its days and groups show their readout only; points still open trades.
+ * Day and group drill-downs open the Journal in this account's context (`href`, from the data layer). An archived
+ * account can't be that context (the switch would be refused and the Journal would list every account), so its
+ * drill-downs open All Accounts with the read-only account filter (`history`, given that drill-down).
  */
-function journalDrill(dashboard: AccountDashboard, href: string | null): string | undefined {
-  return dashboard.account.status === "ARCHIVED" ? undefined : (href ?? undefined);
+function journalDrill(dashboard: AccountDashboard, href: string | null, history: (drill: DrillDown) => string | null): string | undefined {
+  if (href === null) return undefined;
+  return dashboard.account.status === "ARCHIVED" ? (history(accountHistoryDrill(dashboard.account.id)) ?? undefined) : href;
 }
 
 function DashboardCharts({ dashboard, display }: { dashboard: AccountDashboard; display: TimeDisplay }) {
@@ -364,7 +377,7 @@ function DashboardCharts({ dashboard, display }: { dashboard: AccountDashboard; 
       label: formatDay(point.day),
       value: money?.netPnl ?? null,
       valueLabel: money ? formatSignedMoney(money.netPnl, currency) : "—",
-      href: journalDrill(dashboard, point.href),
+      href: journalDrill(dashboard, point.href, drill => closedOnHref(point.day, drill)),
       detail: `${plural(point.closed, "trade")}${point.netR !== null ? ` · ${formatR(point.netR)}` : ""}`,
     };
   });
@@ -372,11 +385,7 @@ function DashboardCharts({ dashboard, display }: { dashboard: AccountDashboard; 
 
   return (
     <section aria-labelledby="account-charts" className="flex flex-col">
-      <SectionHeader
-        id="account-charts"
-        title="Performance"
-        description={account.status === "ARCHIVED" ? "Click a point to open its trade." : "Click a point to open its trade, or a day to list its trades in the Journal."}
-      />
+      <SectionHeader id="account-charts" title="Performance" description="Click a point to open its trade, or a day to list its trades in the Journal." />
       <div className="grid gap-4 xl:grid-cols-2">
         <ChartCard>
           <LineChart
@@ -441,7 +450,7 @@ function CalendarSection({ dashboard, month, mode }: { dashboard: AccountDashboa
     .map(day => ({
       day: day.day,
       value: day.value,
-      href: journalDrill(dashboard, day.href),
+      href: journalDrill(dashboard, day.href, drill => closedOnHref(day.day, drill)),
       detail: day.closed ? plural(day.closed, "closed trade") : undefined,
     }));
   const modeLinks = (Object.keys(CALENDAR_MODE_LABELS) as CalendarMode[]).map(item => ({
@@ -503,18 +512,16 @@ function LiveTradesCard({ dashboard, display }: { dashboard: AccountDashboard; d
 
 /** Recent trades, next to the (empty) live trades card unless live trades are already shown at the top. */
 function TradesSection({ dashboard, display, withLive }: { dashboard: AccountDashboard; display: TimeDisplay; withLive: boolean }) {
-  const { recentTrades, links } = dashboard;
+  const { recentTrades } = dashboard;
   return (
     <div className={cx("grid items-start gap-4", withLive && "lg:grid-cols-2")}>
       {withLive && <LiveTradesCard dashboard={dashboard} display={display} />}
       <Card as="section" aria-labelledby="recent-trades">
         <CardHeader>
           <CardTitle id="recent-trades">Recent trades</CardTitle>
-          {dashboard.account.status === "ACTIVE" && (
-            <Link href={links.journal} prefetch={false} className={TEXT_LINK}>
-              All in Journal
-            </Link>
-          )}
+          <Link href={historyLinks(dashboard).journal} prefetch={false} className={TEXT_LINK}>
+            All in Journal
+          </Link>
         </CardHeader>
         <CardBody>
           {recentTrades.length ? (
@@ -537,7 +544,7 @@ function breakdownData(dashboard: AccountDashboard, groups: AccountDashboard["br
     label: group.value === null ? missing : group.label,
     value: group.metrics.netR,
     valueLabel: group.metrics.netR === null ? "—" : formatR(group.metrics.netR),
-    href: journalDrill(dashboard, group.href),
+    href: journalDrill(dashboard, group.href, drill => breakdownHref(group, drill)),
     detail: `${plural(group.closed, "trade")}${group.evidenceLabel ? ` · ${group.evidenceLabel.toLowerCase()}` : ""}`,
   }));
 }
@@ -611,7 +618,7 @@ function NoResultsYet({ dashboard }: { dashboard: AccountDashboard }) {
 }
 
 function QuickLinks({ dashboard }: { dashboard: AccountDashboard }) {
-  const { links } = dashboard;
+  const links = historyLinks(dashboard);
   const items = [
     { href: links.journal, icon: <BookOpen aria-hidden="true" />, title: "Journal", description: "Every trade of this account, with filters and search.", prefetch: false },
     { href: links.edge, icon: <ChartNoAxesCombined aria-hidden="true" />, title: "EDGE", description: "Statistics, calendar and breakdowns for this account.", prefetch: false },
@@ -702,12 +709,10 @@ export function AccountDashboardView({ dashboard, display, month, mode, currentC
       </section>
       {dashboard.truncated && (
         <Callout tone="info" icon={<Info aria-hidden="true" />}>
-          {archived
-            ? "This account has more trades than one page can analyse. Charts show the first 20,000."
-            : "This account has more trades than one page can analyse. Charts show the first 20,000; open EDGE for filtered views."}
+          This account has more trades than one page can analyse. Charts show the first 20,000; open EDGE for filtered views.
         </Callout>
       )}
-      {!archived && <QuickLinks dashboard={dashboard} />}
+      <QuickLinks dashboard={dashboard} />
     </ContextSwitchScope>
   );
 }

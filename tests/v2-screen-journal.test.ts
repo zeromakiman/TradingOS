@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
   listTrades: vi.fn(),
+  countTrades: vi.fn(),
   context: null as unknown,
   timeDisplay: { mode: "strategy" } as { mode: "strategy" | "utc" | "local"; zone?: string },
   versionRows: { strategy_versions: [] as unknown[], risk_plan_versions: [] as unknown[] },
@@ -43,7 +44,9 @@ vi.mock("@/lib/account-context", async importOriginal => {
     getPreferences: async () => ({ theme: "system", timeDisplay: m.timeDisplay, developerMode: false, sidebarCollapsed: false }),
   };
 });
-vi.mock("@/lib/trades-data", async importOriginal => ({ ...(await importOriginal<typeof import("@/lib/trades-data")>()), listTrades: m.listTrades }));
+vi.mock("@/lib/trades-data", async importOriginal => ({
+  ...(await importOriginal<typeof import("@/lib/trades-data")>()), listTrades: m.listTrades, countTrades: m.countTrades,
+}));
 
 const USER = "10000000-0000-4000-8000-000000000001";
 
@@ -56,7 +59,7 @@ import { formHref, isPlainClick, neighbourChip, searchFieldValue } from "@/compo
 import { readCursor, readTrail, trimToPage } from "@/components/journal/load-journal";
 import { INSTRUMENT_PATTERN, OPTIONAL_INSTRUMENT_PATTERN, TAG_LIST_PATTERN, TAG_PATTERN } from "@/components/journal/patterns";
 import type { FilterMenuView, JournalView } from "@/components/journal/types";
-import { buildJournalView, datePresets, type JournalInput, rangeText, rowView } from "@/components/journal/view-model";
+import { buildJournalView, datePresets, dayCountLabel, type JournalInput, rangeText, resultSummary, rowView, splitDays } from "@/components/journal/view-model";
 import type { LedgerTrade } from "@/domain/ledger";
 import { LEDGER_COLUMNS } from "@/domain/ledger";
 import { strategyDay } from "@/domain/time-display";
@@ -177,6 +180,9 @@ beforeEach(() => {
   m.dbCalls = [];
   m.listTrades.mockReset();
   m.listTrades.mockResolvedValue(listPage(ROWS()));
+  // Without counts the paging copy states only what the page itself proves.
+  m.countTrades.mockReset();
+  m.countTrades.mockResolvedValue(null);
 });
 afterEach(() => vi.useRealTimers());
 
@@ -599,6 +605,123 @@ describe("Journal empty states", () => {
     expect(html).toContain('role="status"');
     expect(html).toContain("Loading trades");
     expect(html).toContain("skeleton");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Exact counts and the read-only account filter
+// ---------------------------------------------------------------------------------------------------------------------
+const OLD = "20000000-0000-4000-8000-000000000003";
+const OLD_CHALLENGE: ContextAccount = { ...account(OLD, "Old challenge", "USD"), status: "ARCHIVED" };
+
+describe("Journal paging copy with exact counts (§14.5)", () => {
+  // Ten trades on Fri Oct 23 and 41 on Thu Oct 22: the page shows 50, and the 51st proves Thursday continues.
+  const firstPage = () => [...liveTrades(10, "2026-10-23T18:00:00.000Z"), ...liveTrades(41, "2026-10-22T18:00:00.000Z", 900)];
+
+  it("states the exact total across pages and counts the day a page shares with the next one", async () => {
+    m.listTrades.mockResolvedValue(listPage(firstPage()));
+    m.countTrades.mockResolvedValue({ total: 93, days: new Map([["2026-10-22", 44]]) });
+    const text = visibleText(await render());
+    expect(m.countTrades).toHaveBeenCalledWith({}, ["2026-10-22"]);
+    expect(text).toContain("Showing 50 of 93 trades");
+    expect(text).not.toContain("on this page");
+    expect(text).toContain("Today · Fri, Oct 23 10 trades");
+    expect(text).toContain("40 of 44 trades · more on the next page");
+  });
+
+  it("names the part of a day that started on the previous page", async () => {
+    const shown = firstPage().slice(0, JOURNAL_PAGE_SIZE);
+    const cursor = encodeTradeCursor({ t: shown[shown.length - 1].tradeAt, id: shown[shown.length - 1].id });
+    m.listTrades.mockResolvedValue(listPage([...liveTrades(4, "2026-10-22T16:00:00.000Z", 950), ...liveTrades(10, "2026-10-21T18:00:00.000Z", 960)]));
+    m.countTrades.mockResolvedValue({ total: 93, days: new Map([["2026-10-22", 44]]) });
+    const text = visibleText(await render({ cursor, back: "0" }));
+    expect(m.countTrades).toHaveBeenCalledWith({}, ["2026-10-22"]);
+    expect(text).toContain("Showing 14 of 93 trades");
+    expect(text).toContain("4 of 44 trades · more on the previous page");
+    expect(text).toContain("Wed, Oct 21 10 trades");
+  });
+
+  it("filtered lists say matching trades; a single page needs no count; without counts the page keeps its own wording", async () => {
+    m.listTrades.mockResolvedValue(listPage(firstPage()));
+    m.countTrades.mockResolvedValue({ total: 61, days: new Map([["2026-10-22", 51]]) });
+    expect(visibleText(await render({ model: "OB_FIRST_TOUCH" }))).toContain("Showing 50 of 61 matching trades");
+    expect(m.countTrades).toHaveBeenLastCalledWith({ model: "OB_FIRST_TOUCH" }, ["2026-10-22"]);
+    m.countTrades.mockClear();
+    m.listTrades.mockResolvedValue(listPage(ROWS()));
+    expect(visibleText(await render())).toContain("4 trades");
+    expect(m.countTrades).not.toHaveBeenCalled();
+    // A count that cannot be read never breaks the list: the copy states only what the page proves.
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    m.listTrades.mockResolvedValue(listPage(firstPage()));
+    m.countTrades.mockRejectedValue(new Error("count failed"));
+    const text = visibleText(await render());
+    expect(text).toContain("50 trades on this page");
+    expect(text).toContain("40 trades · more on the next page");
+    expect(log).toHaveBeenCalledWith(JSON.stringify({ event: "data_read_failed", status: 500 }));
+    log.mockRestore();
+  });
+
+  it("words counts exactly: totals only when known and consistent, a day's split only where it is", () => {
+    expect(resultSummary(4, "trade", false, 93)).toBe("4 trades");
+    expect(resultSummary(50, "trade", true, 93)).toBe("Showing 50 of 93 trades");
+    expect(resultSummary(1, "matching trade", true, 51)).toBe("Showing 1 of 51 matching trades");
+    expect(resultSummary(50, "trade", true, null)).toBe("50 trades on this page");
+    expect(resultSummary(50, "trade", true, 40)).toBe("50 trades on this page");
+    expect(dayCountLabel(12, 12, false, false)).toBe("12 trades");
+    expect(dayCountLabel(12, 14, false, true)).toBe("12 of 14 trades · more on the next page");
+    expect(dayCountLabel(2, 14, true, false)).toBe("2 of 14 trades · more on the previous page");
+    expect(dayCountLabel(50, 120, true, true)).toBe("50 of 120 trades · more on the previous and next pages");
+    expect(dayCountLabel(1, undefined, false, true)).toBe("1 trade · more on the next page");
+    const page = listPage(firstPage().slice(0, JOURNAL_PAGE_SIZE));
+    expect(splitDays(page, null, true)).toEqual({ first: null, last: "2026-10-22" });
+    expect(splitDays(page, encodeTradeCursor({ t: "2026-10-23T23:00:00.000Z", id: uuid(1) }), false)).toEqual({ first: "2026-10-23", last: null });
+    expect(splitDays(page, encodeTradeCursor({ t: "2026-10-24T18:00:00.000Z", id: uuid(1) }), false)).toEqual({ first: null, last: null });
+  });
+});
+
+describe("Journal read-only account filter (§9.2)", () => {
+  beforeEach(() => {
+    m.context = allContext([...ACCOUNTS, OLD_CHALLENGE]);
+  });
+
+  it("lists one account of All Accounts, archived ones included, named in words and removable", async () => {
+    const html = await render({ accountFilter: OLD.toUpperCase(), state: "closed" });
+    const text = visibleText(html);
+    expect(m.listTrades).toHaveBeenCalledWith({ accountFilter: OLD, states: ["CLOSED"] }, null, FETCH);
+    expect(text).toContain("Old challenge (archived) · Every trade");
+    expect(text).toContain("Account: Old challenge · archived");
+    expect(text).not.toMatch(UUID);
+    expect(html).toContain('aria-label="Remove filter: Account: Old challenge · archived"');
+    // Removing it keeps the other filters; every other link keeps it.
+    const links = hrefs(html).filter(href => href.startsWith("/journal"));
+    expect(links).toContain("/journal?state=closed");
+    expect(links.filter(href => href !== "/journal" && href !== "/journal?state=closed").every(href => paramsOf(href).get("accountFilter") === OLD)).toBe(true);
+    expect(html).toContain(`name="accountFilter" value="${OLD}"`);
+  });
+
+  it("combines with All Accounts only: an account context lists its own trades, without the filter", async () => {
+    m.context = accountContext(ACCOUNTS[0]);
+    const text = visibleText(await render({ accountFilter: OLD }));
+    expect(m.listTrades).toHaveBeenCalledWith({}, null, FETCH);
+    expect(text).toContain("FTMO 100K · Every trade");
+    expect(text).not.toContain("Account: ");
+  });
+
+  it("says when the account is not the user's: the filter matches nothing and is shown without its id", async () => {
+    const foreign = "20000000-0000-4000-8000-000000000099";
+    m.listTrades.mockResolvedValue(listPage([]));
+    const text = visibleText(await render({ accountFilter: foreign }));
+    expect(m.listTrades).toHaveBeenCalledWith({ accountFilter: foreign }, null, FETCH);
+    expect(text).toContain("That trading account isn't available, so no trade matches the account filter.");
+    expect(text).toContain("Account: not available");
+    expect(text).toContain("No trades match these filters.");
+    expect(text).not.toMatch(UUID);
+    expect(visibleText(await render({ accountFilter: "Old challenge" }))).toContain("Some filters couldn't be read and were ignored (trading account).");
+  });
+
+  it("keeps the account filter when the mobile sheet is applied", () => {
+    const sheet = buildJournalView(input({ filters: { accountFilter: OLD, model: "OTE" }, accountFilter: { kind: "account", account: OLD_CHALLENGE } })).filters.sheet;
+    expect(sheet.hidden).toContainEqual({ name: "accountFilter", value: OLD });
   });
 });
 

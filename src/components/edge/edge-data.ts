@@ -90,7 +90,8 @@ export function assembleEdge(input: AssembleInput): EdgeData {
 export async function loadEdge(params: FilterParams): Promise<EdgeData> {
   const [{ db, user }, context, preferences] = await Promise.all([currentSession(), getAccountContext(), getPreferences()]);
   const now = new Date().toISOString();
-  const query = parseEdgeQuery(params, now);
+  // The account filter applies in All Accounts only: a filter left in the URL by a context switch is dropped here.
+  const query = parseEdgeQuery(params, now, context);
   const base = { now, display: preferences.timeDisplay, developerMode: preferences.developerMode, context, query };
   if (context.accounts.length === 0) return assembleEdge({ ...base, loaded: { rows: [], truncated: false } });
   const scope: TradeScope = context.selected.mode === "account" ? { mode: "account", accountId: context.selected.account.id } : { mode: "all" };

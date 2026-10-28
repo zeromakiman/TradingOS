@@ -407,6 +407,11 @@ export interface DistributionBin {
   to: string | null;
   label: string;
   count: number;
+  /**
+   * Trades exactly at 0R (break-even) among `count`; non-zero only in the bin that starts at 0R. Charts and tables
+   * treat them as neither profit nor loss.
+   */
+  breakEven: number;
   tradeIds: string[];
 }
 
@@ -428,19 +433,25 @@ function signedR(value: Decimal): string {
 /** "How are outcomes distributed?" — 0.5R bins [k·0.5, (k+1)·0.5), contiguous between the extremes. */
 export function distributionR(trades: readonly PerformanceTrade[]): DistributionR {
   const { withR, excluded } = closedTrades(trades);
-  const keyed = withR.map(trade => ({ trade, bin: new R(trade.realized_r as string).div(BIN_WIDTH).floor().toNumber() }));
+  const keyed = withR.map(trade => {
+    const r = new R(trade.realized_r as string);
+    return { trade, bin: r.div(BIN_WIDTH).floor().toNumber(), breakEven: r.isZero() };
+  });
   if (!keyed.length) return { bins: [], count: 0, excludedNoRiskBasis: excluded };
   const clamped = keyed.map(entry => Math.min(Math.max(entry.bin, LOWEST_BIN - 1), HIGHEST_BIN + 1));
   const low = Math.min(...clamped);
   const high = Math.max(...clamped);
   const bins: DistributionBin[] = [];
   for (let bin = low; bin <= high; bin++) {
-    const members = keyed.filter((_, index) => clamped[index] === bin).map(entry => entry.trade.id);
+    const entries = keyed.filter((_, index) => clamped[index] === bin);
+    const members = entries.map(entry => entry.trade.id);
+    const breakEven = entries.filter(entry => entry.breakEven).length;
     const from = new R(bin).mul(BIN_WIDTH);
     const to = from.plus(BIN_WIDTH);
-    if (bin < LOWEST_BIN) bins.push({ from: null, to: to.toFixed(), label: `Below ${signedR(to)}`, count: members.length, tradeIds: members });
-    else if (bin > HIGHEST_BIN) bins.push({ from: from.toFixed(), to: null, label: `${signedR(from)} and above`, count: members.length, tradeIds: members });
-    else bins.push({ from: from.toFixed(), to: to.toFixed(), label: `${signedR(from)} to ${signedR(to)}`, count: members.length, tradeIds: members });
+    const shared = { count: members.length, breakEven, tradeIds: members };
+    if (bin < LOWEST_BIN) bins.push({ from: null, to: to.toFixed(), label: `Below ${signedR(to)}`, ...shared });
+    else if (bin > HIGHEST_BIN) bins.push({ from: from.toFixed(), to: null, label: `${signedR(from)} and above`, ...shared });
+    else bins.push({ from: from.toFixed(), to: to.toFixed(), label: `${signedR(from)} to ${signedR(to)}`, ...shared });
   }
   return { bins, count: withR.length, excludedNoRiskBasis: excluded };
 }

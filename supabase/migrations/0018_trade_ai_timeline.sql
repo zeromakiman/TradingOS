@@ -346,4 +346,141 @@ grant execute on function
   public.finish_trade_timeline_review(uuid, uuid, text, jsonb, text, jsonb, uuid)
   to service_role;
 
+-- ---------------------------------------------------------------------------------------------------------
+-- Part 3: periodic AI reviews (weekly, recent trades, monthly) accept the compact V2 facts of new requests as well as
+-- the V1 facts of stored ones. Only the facts-version check of the 0011/0012/0013 start functions changes; the exact
+-- scope, sample and trade-id checks against the database are unchanged.
+-- Wave 4a AI track: periodic AI reviews accept the compact V2 facts (new requests) as well as V1.
+-- Bodies are identical to their last definitions (0011/0012/0013) except the version check.
+-- create or replace keeps owner, security definer, search_path, grants and revokes.
+create or replace function public.start_weekly_ai_review(p_id uuid,p_user_id uuid,p_account_id uuid,p_week_start date,p_facts jsonb,p_hash text,p_operation jsonb,p_contract jsonb)
+returns boolean language plpgsql security definer set search_path='' as $$
+declare existing public.weekly_ai_reviews;
+begin
+ perform 1 from public.accounts where id=p_account_id and user_id=p_user_id for update;
+ if not found then raise exception 'Account not found'; end if;
+ select * into existing from public.weekly_ai_reviews where id=p_id;
+ if found then
+  if existing.user_id<>p_user_id or existing.account_id<>p_account_id or existing.week_start<>p_week_start then raise exception 'Review not found'; end if;
+  return false;
+ end if;
+ if p_week_start is null or extract(isodow from p_week_start)<>1 or ((p_week_start+7)::timestamp+interval '5 hours') at time zone 'UTC'>clock_timestamp() then raise exception 'A completed Monday week is required'; end if;
+ if p_facts->'period'->>'startDate' is distinct from p_week_start::text or coalesce(p_facts->>'version','') not in ('WEEKLY_REVIEW_FACTS_V1','WEEKLY_REVIEW_FACTS_V2') then raise exception 'Weekly scope mismatch'; end if;
+ if exists(select 1 from public.weekly_ai_reviews r where r.account_id=p_account_id and r.week_start=p_week_start and r.deadline_at>clock_timestamp() and not exists(select 1 from public.weekly_ai_review_results x where x.review_id=r.id)) then raise exception 'Review already running'; end if;
+ insert into public.weekly_ai_reviews(id,user_id,account_id,week_start,facts,input_hash,operation,contract)
+ values(p_id,p_user_id,p_account_id,p_week_start,p_facts,p_hash,p_operation,p_contract);
+ return true;
+end $$;
+create or replace function public.start_recent_ai_analysis(p_id uuid,p_user_id uuid,p_account_id uuid,p_requested integer,p_trade_ids uuid[],p_captured_at timestamptz,p_facts jsonb,p_hash text,p_operation jsonb,p_contract jsonb)
+returns boolean language plpgsql security definer set search_path='' as $$
+declare existing public.recent_ai_analyses; expected uuid[];
+begin
+ perform 1 from public.accounts where id=p_account_id and user_id=p_user_id for update;
+ if not found then raise exception 'Account not found'; end if;
+ select * into existing from public.recent_ai_analyses where id=p_id;
+ if found then
+  if existing.user_id<>p_user_id or existing.account_id<>p_account_id or existing.requested_sample<>p_requested then raise exception 'Analysis not found'; end if;
+  return false;
+ end if;
+ if p_requested is null or p_requested not in (10,20,30) or p_captured_at is null or p_captured_at>clock_timestamp() or p_captured_at<clock_timestamp()-interval '10 minutes' then raise exception 'Invalid sample snapshot'; end if;
+ select array(select p.id from public.trade_plans p join public.trade_outcomes o on o.plan_id=p.id and o.user_id=p.user_id and o.account_id=p.account_id where p.account_id=p_account_id and p.user_id=p_user_id and o.exited_at<=p_captured_at order by o.exited_at desc,p.id asc limit p_requested) into expected;
+ if cardinality(expected)=0 or p_trade_ids is distinct from expected then raise exception 'Sample changed or is not the most recent completed trades; refresh'; end if;
+ if coalesce(p_facts->>'version','') not in ('RECENT_TRADES_FACTS_V1','RECENT_TRADES_FACTS_V2') or p_facts->'sample'->>'requested' is distinct from p_requested::text or p_facts->'sample'->>'actual' is distinct from cardinality(expected)::text or p_facts->'sample'->'tradeIds' is distinct from to_jsonb(expected) or (p_facts->>'capturedAt')::timestamptz is distinct from p_captured_at then raise exception 'Sample metadata mismatch'; end if;
+ if (select jsonb_agg(t->'tradeId' order by n) from jsonb_array_elements(p_facts->'trades') with ordinality as x(t,n)) is distinct from to_jsonb(expected) then raise exception 'Sample facts mismatch'; end if;
+ if exists(select 1 from public.recent_ai_analyses r where r.account_id=p_account_id and r.deadline_at>clock_timestamp() and not exists(select 1 from public.recent_ai_analysis_results x where x.review_id=r.id)) then raise exception 'Analysis already running'; end if;
+ insert into public.recent_ai_analyses(id,user_id,account_id,requested_sample,actual_sample,trade_ids,captured_at,facts,input_hash,operation,contract)
+ values(p_id,p_user_id,p_account_id,p_requested,cardinality(expected),expected,p_captured_at,p_facts,p_hash,p_operation,p_contract);
+ return true;
+end $$;
+create or replace function public.start_monthly_ai_review(p_id uuid,p_user_id uuid,p_account_id uuid,p_month_start date,p_facts jsonb,p_hash text,p_operation jsonb,p_contract jsonb)
+returns boolean language plpgsql security definer set search_path='' as $$
+declare existing public.monthly_ai_reviews; lower_bound timestamptz; upper_bound timestamptz; expected uuid[];
+begin
+ perform 1 from public.accounts where id=p_account_id and user_id=p_user_id for update;
+ if not found then raise exception 'Account not found'; end if;
+ select * into existing from public.monthly_ai_reviews where id=p_id;
+ if found then
+  if existing.user_id<>p_user_id or existing.account_id<>p_account_id or existing.month_start<>p_month_start then raise exception 'Review not found'; end if;
+  return false;
+ end if;
+ lower_bound:=(p_month_start::timestamp+interval '5 hours') at time zone 'UTC';
+ upper_bound:=(p_month_start::timestamp+interval '1 month 5 hours') at time zone 'UTC';
+ if p_month_start is null or extract(day from p_month_start)<>1 or p_month_start<date '2000-01-01' or p_month_start>date '2099-12-01' or upper_bound>clock_timestamp() then raise exception 'A completed calendar month is required'; end if;
+ select array(select p.id from public.trade_plans p join public.trade_outcomes o on o.plan_id=p.id and o.user_id=p.user_id and o.account_id=p.account_id where p.account_id=p_account_id and p.user_id=p_user_id and o.exited_at>=lower_bound and o.exited_at<upper_bound order by o.exited_at,p.id limit 121) into expected;
+ if cardinality(expected)=0 or cardinality(expected)>120 then raise exception 'Monthly sample is empty or exceeds bounded limit'; end if;
+ if coalesce(p_facts->>'version','') not in ('MONTHLY_REVIEW_FACTS_V1','MONTHLY_REVIEW_FACTS_V2')
+  or p_facts->'period'->>'startDate' is distinct from p_month_start::text
+  or (p_facts->'period'->>'start')::timestamptz is distinct from lower_bound
+  or (p_facts->'period'->>'endExclusive')::timestamptz is distinct from upper_bound
+  or p_facts->'sample'->>'count' is distinct from cardinality(expected)::text
+  or p_facts->'sample'->'tradeIds' is distinct from to_jsonb(expected)
+  or (select jsonb_agg(t->'tradeId' order by n) from jsonb_array_elements(p_facts->'trades') with ordinality as x(t,n)) is distinct from to_jsonb(expected)
+ then raise exception 'Monthly scope or exact trade IDs mismatch; refresh'; end if;
+ if exists(select 1 from public.monthly_ai_reviews r where r.account_id=p_account_id and r.month_start=p_month_start and r.deadline_at>clock_timestamp() and not exists(select 1 from public.monthly_ai_review_results x where x.review_id=r.id)) then raise exception 'Review already running'; end if;
+ insert into public.monthly_ai_reviews(id,user_id,account_id,month_start,period_start,period_end_exclusive,trade_ids,sample_size,facts,input_hash,operation,contract)
+ values(p_id,p_user_id,p_account_id,p_month_start,lower_bound,upper_bound,expected,cardinality(expected),p_facts,p_hash,p_operation,p_contract);
+ return true;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Part 4: provably unsent AI requests release their reservation instead of holding it as UNCERTAIN.
+-- A dispatched request first counts its input (no generation, not billed) and is re-authorized immediately before
+-- the generation request (dispatch_account_ai_request with p_recheck). That recheck is the generation commit point:
+-- it now records the commit once in ai_request_generations. A dispatched request may be released for zero cost
+-- (CANCELLED with usage {"generation":"NOT_SENT"}) only while no generation was committed; a plain CANCELLED keeps
+-- its 0008 meaning (never dispatched). SETTLED and UNCERTAIN are unchanged. Bodies are the 0008 bodies plus the
+-- marked lines.
+create table public.ai_request_generations (
+ reservation_id uuid primary key, user_id uuid not null, account_id uuid not null,
+ created_at timestamptz not null default clock_timestamp(),
+ foreign key(user_id,account_id,reservation_id) references public.ai_request_reservations(user_id,account_id,id)
+);
+alter table public.ai_request_generations enable row level security;
+create policy owner_read on public.ai_request_generations for select to authenticated using (user_id=auth.uid());
+revoke all on public.ai_request_generations from public,anon,authenticated,service_role;
+grant select on public.ai_request_generations to authenticated,service_role;
+create trigger immutable before update or delete on public.ai_request_generations for each row execute function private.reject_mutation();
+
+create or replace function public.dispatch_account_ai_request(p_id uuid,p_user_id uuid,p_request_hash text,p_recheck boolean default false) returns void language plpgsql security definer set search_path='' as $$
+declare r public.ai_request_reservations; state jsonb;
+begin
+ select * into r from public.ai_request_reservations where id=p_id and user_id=p_user_id;
+ if not found then raise exception 'Reservation not found'; end if;
+ perform 1 from public.accounts where id=r.account_id for update;
+ state:=private.ai_budget_snapshot(r.account_id);
+ if r.request_hash<>p_request_hash or r.period<>(state->>'period')::date or exists(select 1 from public.ai_usage_records where reservation_id=r.id)
+ or (state->>'uncertain')::boolean or not (state->>'enabled')::boolean
+ or (state->>'usedMicros')::bigint+(state->>'heldMicros')::bigint>(state->>'budgetCents')::bigint*10000 then raise exception 'AI permission or budget changed'; end if;
+ if p_recheck then
+  if not exists(select 1 from public.ai_request_dispatches where reservation_id=r.id) then raise exception 'Request not dispatched'; end if;
+  -- Part 4: the recheck immediately precedes the generation request and commits it, once.
+  if exists(select 1 from public.ai_request_generations where reservation_id=r.id) then raise exception 'Generation already committed'; end if;
+  insert into public.ai_request_generations(reservation_id,user_id,account_id) values(r.id,r.user_id,r.account_id);
+ else
+  insert into public.ai_request_dispatches(reservation_id,user_id,account_id) values(r.id,r.user_id,r.account_id);
+ end if;
+end $$;
+
+create or replace function public.settle_account_ai_request(p_id uuid,p_user_id uuid,p_record jsonb) returns void language plpgsql security definer set search_path='' as $$
+declare r public.ai_request_reservations; dispatched boolean; generated boolean; kind text:=p_record->>'disposition'; charge bigint:=(p_record->>'chargedMicros')::bigint;
+ unsent boolean:=coalesce(jsonb_typeof(p_record->'usage')='object' and p_record->'usage'->>'generation'='NOT_SENT',false);
+begin
+ select * into r from public.ai_request_reservations where id=p_id and user_id=p_user_id;
+ if not found then raise exception 'Reservation not found'; end if;
+ perform 1 from public.accounts where id=r.account_id for update;
+ if exists(select 1 from public.ai_usage_records where reservation_id=r.id) then raise exception 'Already reconciled'; end if;
+ select exists(select 1 from public.ai_request_dispatches where reservation_id=r.id) into dispatched;
+ select exists(select 1 from public.ai_request_generations where reservation_id=r.id) into generated;
+ if kind is null or kind not in ('SETTLED','UNCERTAIN','CANCELLED') or charge is null or charge<0 then raise exception 'Invalid accounting record'; end if;
+ -- Part 4: a dispatched request is released for zero cost only when the record says no generation was sent and the
+ -- database agrees (no committed generation). Everything else keeps the 0008 rules.
+ if kind='CANCELLED' and generated then raise exception 'Committed generations cannot be refunded without usage'; end if;
+ if kind='CANCELLED' and (charge<>0 or (dispatched and not unsent)) then raise exception 'Dispatched requests cannot be refunded without usage'; end if;
+ if kind<>'CANCELLED' and not dispatched then raise exception 'Request was not dispatched'; end if;
+ if kind='SETTLED' and (charge>r.reserved_micros or p_record->'usage' is null or p_record->>'inputTokens' is null or p_record->>'outputTokens' is null) then raise exception 'Invalid settlement'; end if;
+ if kind='UNCERTAIN' and charge<r.reserved_micros then raise exception 'Uncertain requests retain full reservation'; end if;
+ insert into public.ai_usage_records(reservation_id,user_id,account_id,disposition,charged_micros,input_tokens,output_tokens,cached_tokens,cache_write_tokens,reasoning_tokens,usage,response_id,response_model,error_code)
+ values(r.id,r.user_id,r.account_id,kind,charge,(p_record->>'inputTokens')::bigint,(p_record->>'outputTokens')::bigint,(p_record->>'cachedTokens')::bigint,(p_record->>'cacheWriteTokens')::bigint,(p_record->>'reasoningTokens')::bigint,p_record->'usage',p_record->>'responseId',p_record->>'responseModel',p_record->>'errorCode');
+end $$;
+
 notify pgrst, 'reload schema';

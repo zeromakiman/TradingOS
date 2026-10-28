@@ -2,6 +2,12 @@ import { redirect } from "next/navigation";
 import { type ComponentType, createElement, type KeyboardEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// FilterChips navigates with the app router; the real module stays underneath so redirect() keeps its behaviour.
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  useRouter: () => ({ push: () => undefined, replace: () => undefined, refresh: () => undefined, prefetch: () => undefined, back: () => undefined, forward: () => undefined }),
+}));
 import { runConfirmAction, settleAction } from "@/components/ui/action-result";
 import { Badge, StatusPill, type StatusTone } from "@/components/ui/badge";
 import { Button, buttonClasses, IconButton } from "@/components/ui/button";
@@ -38,7 +44,8 @@ const view = <P extends object>(component: ComponentType<P>, props: P) => render
 describe("Button", () => {
   it("renders the label directly inside a native button with variant and size classes", () => {
     const markup = html(createElement(Button, { variant: "secondary", size: "sm" }, "Recheck risk"));
-    expect(markup).toBe('<button class="btn btn-secondary btn-sm">Recheck risk</button>');
+    // Small buttons grow to 44px only on touch screens (§13.5).
+    expect(markup).toBe('<button class="btn btn-secondary btn-sm pointer-coarse:min-h-11">Recheck risk</button>');
   });
 
   it("marks the loading state busy, disables the button and shows the loading label with a spinner", () => {
@@ -117,7 +124,7 @@ describe("Field", () => {
       error: "Choose an instrument.",
       children: (control) => createElement(Select, { ...control, name: "instrument" }, createElement("option", null, "EURUSD")),
     });
-    expect(markup).toContain('<select class="input" id="instrument" aria-describedby="instrument-error" aria-invalid="true" name="instrument">');
+    expect(markup).toContain('<select class="input pointer-coarse:min-h-11" id="instrument" aria-describedby="instrument-error" aria-invalid="true" name="instrument">');
   });
 });
 

@@ -33,12 +33,14 @@ import {
   ACCOUNT_UNAVAILABLE_NOTICE, type ContextAccount, contextAccount, getAccountContext, loadAccounts, resolveAccountContext, resolvePreferences,
 } from "@/lib/account-context";
 import { balanceCurve, loadAccountManage, loadAccountsOverview, minimumRrWarning, riskPlanTimeline } from "@/lib/accounts-data";
-import { buildPerformance, breakdownHref, closedOnHref, distributionBinHref, loadLedgerRows, shiftMonth } from "@/lib/performance-data";
+import {
+  accountHistoryDrill, accountHistoryJournalHref, accountJournalHref, buildPerformance, breakdownHref, closedOnHref, distributionBinHref, loadLedgerRows, shiftMonth,
+} from "@/lib/performance-data";
 import { checkSchema, SCHEMA_OUTDATED_MESSAGE, schemaStatusFromRpc, SchemaUnavailableError, writableSession } from "@/lib/schema-gate";
 import { loadToday, TODAY_LIVE_LIMIT, TODAY_WAITING_LIMIT } from "@/lib/today-data";
 import {
-  decodeTradeCursor, encodeTradeCursor, journalHref, loadLedgerPage, loadPaletteTrades, loadTradeDetail, loadTradeList, parseTradeFilters, tradeFilterParams,
-  type TradeFilters,
+  accountFilterLabel, countLedgerTrades, decodeTradeCursor, encodeTradeCursor, filteredScope, journalHref, loadLedgerPage, loadPaletteTrades, loadTradeDetail,
+  loadTradeList, MAX_COUNT_SCAN, parseTradeFilters, resolveAccountFilter, tradeFilterParams, type TradeFilters,
 } from "@/lib/trades-data";
 import { type AccountWorkspace, isCheckCurrent, latestInstrumentVersions, loadAccountWorkspace, parseInstrumentRows, riskContextFor } from "@/lib/workspace";
 
@@ -47,7 +49,7 @@ import { type AccountWorkspace, isCheckCurrent, latestInstrumentVersions, loadAc
 // ---------------------------------------------------------------------------------------------------------------------
 type Row = Record<string, unknown>;
 type Predicate = (row: Row) => boolean;
-interface Call { table: string; select: string; filters: string[]; orders: string[]; limit: number | null }
+interface Call { table: string; select: string; filters: string[]; orders: string[]; limit: number | null; count: "exact" | null; head: boolean }
 const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 const NUMERIC = /^-?\d+(\.\d+)?$/;
 
@@ -128,7 +130,9 @@ function condition(term: string): Predicate {
   }
 }
 
-class Query implements PromiseLike<{ data: unknown; error: { message: string } | null; count?: number }> {
+type Result = { data: unknown; error: { message: string } | null; count: number | null };
+
+class Query implements PromiseLike<Result> {
   private readonly predicates: Predicate[] = [];
   private readonly orders: [string, boolean][] = [];
   private cap: number | null = null;
@@ -137,7 +141,7 @@ class Query implements PromiseLike<{ data: unknown; error: { message: string } |
   readonly call: Call;
 
   constructor(private readonly db: FakeDb, private readonly table: string) {
-    this.call = { table, select: "*", filters: [], orders: [], limit: null };
+    this.call = { table, select: "*", filters: [], orders: [], limit: null, count: null, head: false };
     db.calls.push(this.call);
   }
 
@@ -147,7 +151,14 @@ class Query implements PromiseLike<{ data: unknown; error: { message: string } |
     return this;
   }
 
-  select(columns = "*"): this { this.columns = columns; this.call.select = columns; return this; }
+  /** PostgREST's `count=exact` counts every matching row (before `limit`); `head` returns the count without rows. */
+  select(columns = "*", options: { count?: "exact"; head?: boolean } = {}): this {
+    this.columns = columns;
+    this.call.select = columns;
+    this.call.count = options.count ?? null;
+    this.call.head = options.head ?? false;
+    return this;
+  }
   eq(column: string, value: unknown): this { return this.add(`eq:${column}:${value}`, row => compare(columnValue(row, column), value) === 0); }
   neq(column: string, value: unknown): this { return this.add(`neq:${column}:${value}`, row => compare(columnValue(row, column), value) !== 0); }
   gt(column: string, value: unknown): this { return this.add(`gt:${column}:${value}`, row => columnValue(row, column) !== null && compare(columnValue(row, column), value) > 0); }
@@ -186,9 +197,11 @@ class Query implements PromiseLike<{ data: unknown; error: { message: string } |
     return out;
   }
 
-  private run(): { data: unknown; error: { message: string } | null } {
-    if (this.db.failing.has(this.table)) return { data: null, error: { message: "permission denied for internal_relation_42" } };
+  private run(): Result {
+    if (this.db.failing.has(this.table)) return { data: null, error: { message: "permission denied for internal_relation_42" }, count: null };
     let rows = (this.db.tables[this.table] ?? []).filter(row => this.predicates.every(predicate => predicate(row)));
+    const count = this.call.count === "exact" ? rows.length : null;
+    if (this.call.head) return { data: null, error: null, count };
     rows = [...rows].sort((a, b) => {
       for (const [column, ascending] of this.orders) {
         const x = columnValue(a, column);
@@ -203,13 +216,13 @@ class Query implements PromiseLike<{ data: unknown; error: { message: string } |
     });
     if (this.cap !== null) rows = rows.slice(0, this.cap);
     const data = rows.map(row => this.project(row));
-    if (this.mode === "many") return { data, error: null };
-    if (data.length > 1) return { data: null, error: { message: "multiple rows" } };
-    return { data: data[0] ?? null, error: null };
+    if (this.mode === "many") return { data, error: null, count };
+    if (data.length > 1) return { data: null, error: { message: "multiple rows" }, count: null };
+    return { data: data[0] ?? null, error: null, count };
   }
 
   // biome-ignore lint/suspicious/noThenProperty: models the thenable PostgREST query builder of supabase-js.
-  then<A = { data: unknown; error: { message: string } | null }, B = never>(onfulfilled?: ((value: { data: unknown; error: { message: string } | null }) => A | PromiseLike<A>) | null, onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): PromiseLike<A | B> {
+  then<A = Result, B = never>(onfulfilled?: ((value: Result) => A | PromiseLike<A>) | null, onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): PromiseLike<A | B> {
     return Promise.resolve(this.run()).then(onfulfilled, onrejected);
   }
 }
@@ -565,6 +578,17 @@ describe("journal filters and cursor (§14.5)", () => {
     expect(journalHref({})).toBe("/journal");
   });
 
+  it("reads the read-only account filter as an id, writes it first, and keeps it only with All Accounts", () => {
+    expect(parseTradeFilters({ accountFilter: A2.toUpperCase(), model: "OTE" })).toEqual({ filters: { accountFilter: A2, model: "OTE" }, invalid: [] });
+    expect(parseTradeFilters({ accountFilter: "Personal 12K" })).toEqual({ filters: {}, invalid: ["accountFilter"] });
+    expect(tradeFilterParams({ model: "OTE", accountFilter: A2 }).toString()).toBe(`accountFilter=${A2}&model=OTE`);
+    expect(parseTradeFilters(tradeFilterParams({ accountFilter: A2, states: ["CLOSED"] })).filters).toEqual({ accountFilter: A2, states: ["CLOSED"] });
+    expect(journalHref({ accountFilter: A2, model: "OTE" }, { account: "all" })).toBe(`/journal?accountFilter=${A2}&model=OTE&account=all`);
+    expect(journalHref({ accountFilter: A2 })).toBe(`/journal?accountFilter=${A2}`);
+    // A link that switches to one account leaves the filter out: it combines with All Accounts only.
+    expect(journalHref({ accountFilter: A2, model: "OTE" }, { account: A1 })).toBe(`/journal?model=OTE&account=${A1}`);
+  });
+
   it("only accepts cursors it wrote", () => {
     const cursor = encodeTradeCursor({ t: "2026-10-14T09:00:00.123456+00:00", id: tradeId(1) });
     expect(decodeTradeCursor(cursor)).toEqual({ t: "2026-10-14T09:00:00.123456+00:00", id: tradeId(1) });
@@ -685,6 +709,113 @@ describe("journal list (§14.5)", () => {
     expect(page.groups[0].label).toBe("Tue, Oct 13");
   });
 
+  it("derives the state of an archived account's trades: drafts can only be discarded, open trades finish (§3.2, §9)", async () => {
+    const page = await loadTradeList({ ...deps(db()), accounts: [account(A1, { status: "ARCHIVED" }), account(A2, { currency: "EUR" })] }, {}, null);
+    const byId = new Map(page.rows.map(row => [row.id, row]));
+    expect(byId.get(tradeId(2))?.account.status).toBe("ARCHIVED");
+    expect(byId.get(tradeId(2))?.state).toMatchObject({ lifecycle: "DRAFT", draftCheck: "UNCHECKED", label: "Account archived", nextAction: null, canDuplicate: false });
+    expect(byId.get(tradeId(2))?.state.secondaryActions.map(action => action.kind)).toEqual(["DISCARD"]);
+    expect(byId.get(tradeId(3))?.state).toMatchObject({ lifecycle: "LOCKED", nextAction: { kind: "RECORD_ENTRY" }, canDuplicate: false });
+    // A trade of an active account is unaffected.
+    expect(byId.get(tradeId(4))?.state.canDuplicate).toBe(true);
+  });
+
+  it("narrows All Accounts to the read-only account filter in every read, and never broadens one", async () => {
+    // One account of All Accounts: the page, the search behind it and the performance rows.
+    expect((await loadLedgerPage(asDb(db()), USER, { mode: "all" }, { accountFilter: A2 }, null, 50)).rows.map(row => row.id)).toEqual([tradeId(4)]);
+    const filtered = db();
+    expect((await loadLedgerRows(asDb(filtered), USER, { mode: "all" }, { accountFilter: A2 })).rows.map(row => row.id)).toEqual([tradeId(4)]);
+    expect(filtered.ledgerCalls().every(call => call.filters.includes(`eq:account_id:${A2}`))).toBe(true);
+    const search = db();
+    expect((await loadLedgerPage(asDb(search), USER, { mode: "all" }, { accountFilter: A1, q: "fomc" }, null, 50)).rows.map(row => row.id)).toEqual([tradeId(5)]);
+    expect(search.calls.find(call => call.table === "trade_journal_entries")?.filters).toContain(`eq:account_id:${A1}`);
+    expect((await loadLedgerPage(asDb(db()), USER, { mode: "all" }, { accountFilter: A2, q: "fomc" }, null, 50)).rows).toEqual([]);
+    // An id that is not one of the user's accounts matches nothing (RLS bounds the read; the filter only narrows it).
+    expect((await loadLedgerPage(asDb(db()), USER, { mode: "all" }, { accountFilter: A3 }, null, 50)).rows).toEqual([]);
+    // An account context already names one account: the filter has no effect there.
+    expect((await loadLedgerPage(asDb(db()), USER, { mode: "account", accountId: A1 }, { accountFilter: A2 }, null, 50)).rows.map(row => row.id))
+      .toEqual([2, 1, 5, 3, 6, 7].map(tradeId));
+    expect(filteredScope({ mode: "all" }, { accountFilter: A2 })).toEqual({ mode: "account", accountId: A2 });
+    expect(filteredScope({ mode: "account", accountId: A1 }, { accountFilter: A2 })).toEqual({ mode: "account", accountId: A1 });
+    expect(filteredScope({ mode: "all" }, {})).toEqual({ mode: "all" });
+  });
+
+  it("resolves the account filter against the user's accounts: names it in words, drops it in an account context", () => {
+    const old = account(A3, { name: "Old challenge", status: "ARCHIVED" });
+    const all = resolveAccountContext({ accounts: [account(A1), old], stored: "all", lastAccount: undefined, proxyNotice: false });
+    const archived = resolveAccountFilter({ accountFilter: A3, model: "OTE" }, all);
+    expect(archived).toEqual({ filters: { accountFilter: A3, model: "OTE" }, state: { kind: "account", account: old } });
+    expect(accountFilterLabel(archived.state)).toBe("Account: Old challenge · archived");
+    expect(accountFilterLabel(resolveAccountFilter({ accountFilter: A1 }, all).state)).toBe("Account: Account 1");
+    // Not one of the user's accounts: still applied (it matches nothing) and shown as unavailable, never as an id.
+    const foreign = resolveAccountFilter({ accountFilter: A2 }, all);
+    expect(foreign).toEqual({ filters: { accountFilter: A2 }, state: { kind: "unavailable" } });
+    expect(accountFilterLabel(foreign.state)).toBe("Account: not available");
+    const one = resolveAccountContext({ accounts: [account(A1), old], stored: A1, lastAccount: undefined, proxyNotice: false });
+    expect(resolveAccountFilter({ accountFilter: A3, model: "OTE" }, one)).toEqual({ filters: { model: "OTE" }, state: { kind: "none" } });
+    expect(accountFilterLabel({ kind: "none" })).toBeNull();
+  });
+
+  // Every trade the list holds, counted the way the list reads them: the count equals the rows of all pages.
+  async function everyPage(filters: TradeFilters, scope: { mode: "all" } | { mode: "account"; accountId: string } = { mode: "all" }): Promise<string[]> {
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 20; page++) {
+      const result = await loadLedgerPage(asDb(db()), USER, scope, filters, cursor, 2);
+      ids.push(...result.rows.map(row => row.id));
+      cursor = result.nextCursor;
+      if (!cursor) break;
+    }
+    return ids;
+  }
+  it.each([...cases, ["no filter", {}, expectedOrder.map(id => Number(id.slice(-4)))] as [string, TradeFilters, number[]],
+    ["account filter", { accountFilter: A2 }, [4]] as [string, TradeFilters, number[]], ["date range and account filter", { from: "2026-10-12", to: "2026-10-13", accountFilter: A1 }, [2, 1, 5, 3]] as [string, TradeFilters, number[]]])(
+    "counts exactly the trades the list pages through: %s", async (_label, filters, expected) => {
+      const counts = await countLedgerTrades(asDb(db()), USER, { mode: "all" }, filters);
+      expect(counts?.total).toBe(expected.length);
+      expect(await everyPage(filters)).toHaveLength(expected.length);
+    },
+  );
+
+  it("counts in the database where it can and reads light rows only for session, weekday and R bounds", async () => {
+    const plain = db();
+    expect(await countLedgerTrades(asDb(plain), USER, { mode: "all" }, { model: "OB_FIRST_TOUCH" })).toEqual({ total: 6, days: new Map() });
+    expect(plain.ledgerCalls()).toEqual([expect.objectContaining({ select: "id", count: "exact", head: true })]);
+    // A trade-date range filters each stream's own column: one count per stream, still without rows.
+    const dated = db();
+    expect((await countLedgerTrades(asDb(dated), USER, { mode: "all" }, { from: "2026-10-12", to: "2026-10-12" }))?.total).toBe(3);
+    expect(dated.ledgerCalls()).toHaveLength(3);
+    expect(dated.ledgerCalls().every(call => call.head && call.count === "exact")).toBe(true);
+    const checked = db();
+    expect((await countLedgerTrades(asDb(checked), USER, { mode: "all" }, { session: "ACTIVE_KILL_ZONE" }))?.total).toBe(3);
+    expect(checked.ledgerCalls().map(call => call.select)).toEqual(["id,entered_at,realized_r"]);
+    // A search that can match nothing needs no count at all.
+    const nothing = db();
+    expect(await countLedgerTrades(asDb(nothing), USER, { mode: "all" }, { q: "%%%" })).toEqual({ total: 0, days: new Map() });
+    expect(nothing.ledgerCalls().filter(call => call.count !== null)).toEqual([]);
+    // The scope narrows the count like the list: an account context, or the account filter of All Accounts.
+    expect((await countLedgerTrades(asDb(db()), USER, { mode: "account", accountId: A2 }, {}))?.total).toBe(1);
+    expect((await countLedgerTrades(asDb(db()), USER, { mode: "all" }, { accountFilter: A3 }))?.total).toBe(0);
+  });
+
+  it("counts each trade date a page shares with another page, within the list's own filters", async () => {
+    const counts = await countLedgerTrades(asDb(db()), USER, { mode: "all" }, {}, ["2026-10-13", "2026-10-12", "2026-10-12"]);
+    expect(counts).toEqual({ total: 7, days: new Map([["2026-10-12", 3], ["2026-10-13", 2]]) });
+    const sessions = await countLedgerTrades(asDb(db()), USER, { mode: "all" }, { session: "ACTIVE_KILL_ZONE" }, ["2026-10-12", "2026-10-11"]);
+    expect(sessions).toEqual({ total: 3, days: new Map([["2026-10-11", 1], ["2026-10-12", 1]]) });
+    // A day outside the filters' own range holds none of the list's trades.
+    expect((await countLedgerTrades(asDb(db()), USER, { mode: "all" }, { from: "2026-10-13" }, ["2026-10-12"]))?.days.get("2026-10-12")).toBe(0);
+  });
+
+  it("states no count rather than an estimate when a row check would read more than its bound", async () => {
+    const many = Array.from({ length: MAX_COUNT_SCAN + 1 }, (_, index) =>
+      ledgerRow(closed(uuid("c", index + 1), "2026-10-13T16:00:00.000Z", "1", "10", { entered_at: "2026-10-13T13:00:00.000Z" })));
+    const huge = new FakeDb({ trade_ledger: many, trade_journal_entries: [], trade_events: [], trade_plan_links: [] });
+    expect(await countLedgerTrades(asDb(huge), USER, { mode: "all" }, { session: "ACTIVE_KILL_ZONE" })).toBeNull();
+    // Counted by the database, the same rows have an exact total.
+    expect((await countLedgerTrades(asDb(huge), USER, { mode: "all" }, {}))?.total).toBe(MAX_COUNT_SCAN + 1);
+  });
+
   it("builds the palette index with pre-formatted labels", async () => {
     const result = await loadPaletteTrades(deps(db()));
     expect(result.liveTrades.map(trade => trade.id)).toEqual([tradeId(5)]);
@@ -733,7 +864,7 @@ describe("trade detail (§5.4, §7.5, §8.5, §14.4)", () => {
         { id: 1, user_id: USER, proposal_id: PROP1, risk: { id: EVAL1, result: blocked, recorded_at: "2026-10-12T12:00:00.000Z", risk_plan_version_id: R1, instrument_version_id: I1, strategy_version_id: S1 } },
         { id: 2, user_id: USER, proposal_id: PROP2, risk: { id: EVAL2, result: report, recorded_at: "2026-10-12T13:00:00.000Z", risk_plan_version_id: R1, instrument_version_id: I1, strategy_version_id: S1 } },
       ],
-      trade_plans: [{ id: PLAN, user_id: USER, proposal: PROPOSAL, risk_result: report, nominal_risk: "50.0000", locked_at: "2026-10-12T13:05:00.000Z", trading_day: "2026-10-12", account_observation_id: O1, risk_plan_version_id: R1, strategy_version_id: S1, instrument_version_id: I1 }],
+      trade_plans: [{ id: PLAN, user_id: USER, proposal: PROPOSAL, risk_result: report, nominal_risk: "50.0000", locked_at: "2026-10-12T13:05:00.000Z", trading_day: "2026-10-12", account_observation_id: O1, risk_plan_version_id: R1, strategy_version_id: S1, instrument_version_id: I1, risk_evaluation_id: EVAL2 }],
       trade_events: [
         { id: uuid("b", 1), plan_id: PLAN, user_id: USER, sequence: 1, event_type: "PLAN_LOCKED", payload: {}, occurred_at: "2026-10-12T13:05:00.000Z", recorded_at: "2026-10-12T13:05:00.000Z" },
         { id: uuid("b", 2), plan_id: PLAN, user_id: USER, sequence: 2, event_type: "NOTE_ADDED", payload: { note: "Waiting for London open" }, occurred_at: "2026-10-12T13:30:00.000Z", recorded_at: "2026-10-12T13:30:00.000Z" },
@@ -852,6 +983,95 @@ describe("trade detail (§5.4, §7.5, §8.5, §14.4)", () => {
     ]);
     expect(detail?.close).toMatchObject({ basisLabel: "R based on risk recorded after entry", riskBasisSource: "USER_REPORTED", pnlSource: "USER_REPORTED" });
     expect(detail?.timeline.some(item => item.timing === "BEFORE_ENTRY")).toBe(false);
+  });
+
+  it("dates the end of a skipped plan and classifies what was recorded after it as After close (§5.3)", async () => {
+    const SKIPPED = tradeId(40);
+    const PLAN_S = uuid("8", 40);
+    const PROP_S = uuid("7", 40);
+    const EVAL_SAVE = uuid("9", 41);
+    const EVAL_LOCK = uuid("9", 42);
+    const [NOTE_BEFORE, NOTE_AFTER, NOTE_STALE] = [uuid("c", 41), uuid("c", 42), uuid("c", 43)];
+    const [EV_AFTER, EV_STALE, SHOT_AFTER] = [uuid("e", 41), uuid("e", 42), uuid("e", 43)];
+    const evidence = (id: string, phase: string, recordedAt: string) => ({
+      id, trade_id: SKIPPED, user_id: USER, storage_path: `${USER}/${SKIPPED}/${id}`, label: "OTHER", timeframe: "M15", caption: null, original_filename: "late.png",
+      mime_type: "image/png", byte_size: 100, sha256: SHA, width: 800, height: 600, phase, state_at_creation: "SKIPPED", capture_method: "PASTE", copied_from: null, recorded_at: recordedAt,
+    });
+    const tables = {
+      ...accountTables(A1),
+      trades: [{ id: SKIPPED, user_id: USER, account_id: A1 }],
+      trade_ledger: [ledgerRow(ledger(SKIPPED, {
+        lifecycle: "SKIPPED", draft_check: null, plan_id: PLAN_S, locked_at: "2026-10-13T13:05:00.008000Z", plan_trading_day: "2026-10-13", latest_proposal_id: PROP_S,
+        latest_check_decision: "APPROVED", latest_check_at: "2026-10-13T13:05:00.025000Z", latest_check_evaluation_id: EVAL_LOCK, created_at: "2026-10-13T13:00:00.010000Z",
+        disposition: "SKIPPED", disposition_reason: "No retest",
+      }))],
+      // The save wrote its check ~10 ms before the revision row; the lock stamped locked_at ~17 ms before its evaluation row.
+      trade_revisions: [{ proposal_id: PROP_S, trade_id: SKIPPED, user_id: USER, revision: 1, created_at: "2026-10-13T13:00:00.010000Z" }],
+      setup_proposals: [{ id: PROP_S, user_id: USER, proposal: PROPOSAL, created_at: "2026-10-13T13:00:00.005000Z", instrument_version_id: I1 }],
+      setup_risk_checks: [
+        { id: 1, user_id: USER, proposal_id: PROP_S, risk: { id: EVAL_SAVE, result: { decision: "APPROVED" }, recorded_at: "2026-10-13T13:00:00.000000Z", risk_plan_version_id: R1, instrument_version_id: I1, strategy_version_id: S1 } },
+        { id: 2, user_id: USER, proposal_id: PROP_S, risk: { id: EVAL_LOCK, result: { decision: "APPROVED" }, recorded_at: "2026-10-13T13:05:00.025000Z", risk_plan_version_id: R1, instrument_version_id: I1, strategy_version_id: S1 } },
+      ],
+      trade_plans: [{ id: PLAN_S, user_id: USER, proposal: PROPOSAL, risk_result: { decision: "APPROVED" }, nominal_risk: "50", locked_at: "2026-10-13T13:05:00.008000Z", trading_day: "2026-10-13", account_observation_id: O1, risk_plan_version_id: R1, strategy_version_id: S1, instrument_version_id: I1, risk_evaluation_id: EVAL_LOCK }],
+      trade_events: [],
+      trade_dispositions: [{ plan_id: PLAN_S, user_id: USER, status: "SKIPPED", reason: "No retest", recorded_at: "2026-10-13T14:00:00.000000Z" }],
+      trade_journal_entries: [
+        { id: NOTE_BEFORE, trade_id: SKIPPED, user_id: USER, kind: "NOTE", body: "Waiting for the retest.", details: {}, phase: "PRE_ENTRY", state_at_creation: "LOCKED", source: "USER", recorded_at: "2026-10-13T13:30:00.000000Z" },
+        { id: NOTE_AFTER, trade_id: SKIPPED, user_id: USER, kind: "LESSON", body: "The skip cost a winner.", details: {}, phase: "POST_TRADE", state_at_creation: "SKIPPED", source: "USER", recorded_at: "2026-10-13T15:00:00.000000Z" },
+        { id: NOTE_STALE, trade_id: SKIPPED, user_id: USER, kind: "NOTE", body: "Where price went.", details: {}, phase: "PRE_ENTRY", state_at_creation: "SKIPPED", source: "USER", recorded_at: "2026-10-13T15:10:00.000000Z" },
+      ],
+      trade_evidence: [evidence(EV_AFTER, "POST_TRADE", "2026-10-13T15:01:00.000000Z"), evidence(EV_STALE, "PRE_ENTRY", "2026-10-13T15:02:00.000000Z")],
+      trade_evidence_labels: [], trade_evidence_removals: [],
+      setup_screenshots: [{ id: SHOT_AFTER, proposal_id: PROP_S, user_id: USER, role: "M15", storage_path: `${USER}/${PROP_S}/${SHOT_AFTER}`, original_filename: "m15.png", mime_type: "image/png", byte_size: 100, sha256: SHA, width: 640, height: 480, uploaded_at: "2026-10-13T15:03:00.000000Z" }],
+      setup_screenshot_removals: [], trade_tag_sets: [], trade_tag_revisions: [], trade_lifecycle_events: [], trade_ai_activity: [], risk_evaluations: [], setup_human_decisions: [],
+    };
+    const db = new FakeDb(tables);
+    const detail = await loadTradeDetail(detailDeps(db), SKIPPED);
+    if (!detail) throw new Error("detail expected");
+    expect(detail.planEndedAt).toBe("2026-10-13T14:00:00.000000Z");
+    // No V1 decision to date: the ledger names none, so none is read.
+    expect(db.calls.some(call => call.table === "setup_human_decisions")).toBe(false);
+    const timing = (id: string) => {
+      const item = detail.timeline.find(entry => entry.id === id);
+      return item ? [item.timing, item.flags] : null;
+    };
+    expect(timing(`journal:${NOTE_BEFORE}`)).toEqual(["BEFORE_ENTRY", []]);
+    expect(timing(`disposition:${SKIPPED}`)).toEqual(["BEFORE_ENTRY", []]);
+    expect(timing(`journal:${NOTE_AFTER}`)).toEqual(["AFTER_CLOSE", []]);
+    expect(timing(`journal:${NOTE_STALE}`)).toEqual(["AFTER_CLOSE", ["RECORDED_AFTER_PLAN_ENDED"]]);
+    expect(timing(`evidence-added:${SHOT_AFTER}`)).toEqual(["AFTER_CLOSE", []]);
+    const items = new Map(detail.evidence.items.map(item => [item.id, item]));
+    expect(items.get(EV_AFTER)).toMatchObject({ timing: "AFTER_CLOSE", timingLabel: "After close", flags: [] });
+    expect(items.get(EV_STALE)).toMatchObject({ timing: "AFTER_CLOSE", flags: ["Recorded after the plan ended"] });
+    expect(items.get(SHOT_AFTER)).toMatchObject({ timing: "AFTER_CLOSE", flags: [] });
+    expect(detail.evidence.groups.map(group => group.items.length)).toEqual([0, 0, 3]);
+    // The decision history reads causally: the revision, its check, the lock's evaluation, the lock.
+    expect(detail.timeline.slice(0, 4).map(item => item.id)).toEqual([`revision:${PROP_S}`, `check:${EVAL_SAVE}`, `check:${EVAL_LOCK}`, `plan:${PLAN_S}`]);
+    expect(db.calls.find(call => call.table === "trade_plans")?.select).toContain("risk_evaluation_id");
+  });
+
+  it("dates a skip recorded in V1 by its decision (the latest decision of the trade's revisions)", async () => {
+    const V1 = tradeId(41);
+    const PROP_V1 = uuid("7", 41);
+    const db = new FakeDb({
+      ...accountTables(A1),
+      trades: [{ id: V1, user_id: USER, account_id: A1 }],
+      trade_ledger: [ledgerRow(ledger(V1, { lifecycle: "SKIPPED", draft_check: null, legacy_decision: "SKIPPED", latest_proposal_id: PROP_V1, migrated_from: "V1_PROPOSAL" }))],
+      trade_revisions: [{ proposal_id: PROP_V1, trade_id: V1, user_id: USER, revision: 1, created_at: "2026-10-10T10:00:00.000Z" }],
+      setup_proposals: [{ id: PROP_V1, user_id: USER, proposal: PROPOSAL, created_at: "2026-10-10T10:00:00.000Z", instrument_version_id: I1 }],
+      setup_human_decisions: [
+        { id: uuid("f", 1), proposal_id: PROP_V1, user_id: USER, decision: "TAKEN", recorded_at: "2026-10-10T10:30:00.000Z" },
+        { id: uuid("f", 2), proposal_id: PROP_V1, user_id: USER, decision: "SKIPPED", recorded_at: "2026-10-10T11:00:00.000Z" },
+      ],
+      trade_journal_entries: [
+        { id: uuid("c", 51), trade_id: V1, user_id: USER, kind: "NOTE", body: "Later.", details: {}, phase: "POST_TRADE", state_at_creation: "SKIPPED", source: "USER", recorded_at: "2026-10-11T09:00:00.000Z" },
+      ],
+      trade_ai_activity: [],
+    });
+    const detail = await loadTradeDetail(detailDeps(db), V1);
+    expect(detail?.planEndedAt).toBe("2026-10-10T11:00:00.000Z");
+    expect(db.calls.find(call => call.table === "setup_human_decisions")).toMatchObject({ orders: ["recorded_at:desc", "id:desc"], limit: 1 });
+    expect(detail?.timeline.find(item => item.kind === "JOURNAL")).toMatchObject({ timing: "AFTER_CLOSE", flags: [] });
   });
 
   it("marks an approved draft ready to lock only while the check is current at server time", async () => {
@@ -1168,6 +1388,43 @@ describe("performance (§9.3, §13.6, §14.6)", () => {
     expect(parsed).toMatchObject({ weekday: "Tuesday", states: ["CLOSED", "REVIEWED"], origin: "PLANNED" });
     expect(shiftMonth("2026-01", -1)).toBe("2025-12");
     expect(shiftMonth("2026-12", 1)).toBe("2027-01");
+  });
+
+  it("opens an archived account's history in All Accounts with the account filter, never as a switch to it", () => {
+    expect(accountHistoryJournalHref(A3)).toBe(`/journal?accountFilter=${A3}&account=all`);
+    expect(closedOnHref("2026-10-14", accountHistoryDrill(A3)))
+      .toBe(`/journal?accountFilter=${A3}&closedFrom=2026-10-14&closedTo=2026-10-14&state=closed%2Creviewed&account=all`);
+    expect(breakdownHref({ key: "session", value: "ASIA" }, accountHistoryDrill(A3))).toBe(`/journal?accountFilter=${A3}&state=closed%2Creviewed&session=ASIA&account=all`);
+    expect(accountJournalHref({ id: A3, status: "ARCHIVED" }, { closedFrom: "2026-10-01" }))
+      .toBe(`/journal?accountFilter=${A3}&closedFrom=2026-10-01&state=closed%2Creviewed&account=all`);
+    expect(accountJournalHref({ id: A1, status: "ACTIVE" }, {})).toBe(`/journal?state=closed%2Creviewed&account=${A1}`);
+    const trades = [
+      closed(tradeId(1), "2026-10-13T10:00:00.000Z", "2", "100"),
+      closed(tradeId(2), "2026-10-14T10:00:00.000Z", "-1", "-20", { account_id: A3 }),
+    ];
+    const all = resolveAccountContext({ accounts: [account(A1), account(A3, { status: "ARCHIVED" })], stored: "all", lastAccount: undefined, proxyNotice: false });
+    const contribution = buildPerformance(all, { rows: trades, truncated: false }, {}, NOW).contribution ?? [];
+    expect(contribution.find(entry => entry.accountId === A1)?.href).toBe(`/journal?state=closed%2Creviewed&account=${A1}`);
+    expect(contribution.find(entry => entry.accountId === A3)?.href).toBe(`/journal?accountFilter=${A3}&state=closed%2Creviewed&account=all`);
+    // EDGE filtered to the archived account: every drill-down keeps the filter.
+    const filtered = buildPerformance(all, { rows: [trades[1]], truncated: false }, { accountFilter: A3 }, NOW, { month: "2026-10" });
+    expect(filtered.calendar.days.find(day => day.day === "2026-10-14")?.href).toBe(`/journal?accountFilter=${A3}&closedFrom=2026-10-14&closedTo=2026-10-14&state=closed%2Creviewed`);
+    expect(filtered.daily.map(point => point.href)).toEqual([`/journal?accountFilter=${A3}&closedFrom=2026-10-14&closedTo=2026-10-14&state=closed%2Creviewed`]);
+    // One account of All Accounts: like an account context, nothing to compare in an account contribution.
+    expect(filtered.contribution).toBeNull();
+    // An account context ignores a filter left in the URL by a context switch: its read did (`filteredScope`), and its
+    // view and drill-down links drop it, so it never travels on into the Journal.
+    const one = resolveAccountContext({ accounts: [account(A1), account(A3, { status: "ARCHIVED" })], stored: A1, lastAccount: undefined, proxyNotice: false });
+    const stale = buildPerformance(one, { rows: [trades[0]], truncated: false }, { accountFilter: A3, model: "OB_FIRST_TOUCH" }, NOW, { month: "2026-10" });
+    expect(stale.filters).toEqual({ model: "OB_FIRST_TOUCH" });
+    const bins: readonly { href: string }[] = stale.distribution.bins;
+    const links = [
+      ...stale.daily.map(point => point.href), ...bins.map(bin => bin.href),
+      ...stale.calendar.days.flatMap(day => (day.href ? [day.href] : [])), ...Object.values(stale.breakdowns).flat().flatMap(group => (group?.href ? [group.href] : [])),
+    ];
+    expect(links.length).toBeGreaterThan(3);
+    expect(links.filter(href => href.includes("accountFilter"))).toEqual([]);
+    expect(stale.daily.map(point => point.href)).toEqual(["/journal?closedFrom=2026-10-13&closedTo=2026-10-13&state=closed%2Creviewed&model=OB_FIRST_TOUCH"]);
   });
 
   it("aggregates R across accounts, money per currency, and adds account contribution only in All Accounts", () => {

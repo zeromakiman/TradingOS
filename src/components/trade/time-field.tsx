@@ -2,15 +2,17 @@
 
 import { SegmentedControl } from "@/components/ui/choice";
 import { Field } from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
 import type { TimeDisplay } from "@/domain/time-display";
 import type { TimeChoice } from "./form-model";
-import { wallClockOf, zoneHint } from "./time-input";
+import { wallClockOf, wallClockZone } from "./time-input";
+import { ZonedTimeInput } from "./zoned-time-input";
 
 /**
  * "Now / Earlier" time of an entry or exit (docs/V2_ARCHITECTURE.md §5.1, §14.3). Now is resolved by the server when
  * the form is sent, never from the browser clock; Earlier reveals a date-time field in the person's time display
- * (strategy UTC−5 by default) and the form sends an instant with an explicit zone.
+ * (strategy UTC−5 by default) whose zone is shown beside the value and named in its label, and the form sends an
+ * instant with an explicit zone. A local zone is named at the typed date (`wallClockZone`), with the offset the value
+ * is converted with, also across a daylight-saving change.
  */
 
 const OPTIONS = [
@@ -33,7 +35,7 @@ export interface TimeFieldProps {
 }
 
 export function TimeField({ id, legend, choice, onChange, display, nowIso, error, hint, disabled = false }: TimeFieldProps) {
-  const zone = zoneHint(display, nowIso);
+  const { tag, hint: zone } = wallClockZone(choice.mode === "earlier" ? choice.wall : "", display, nowIso);
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <SegmentedControl
@@ -47,8 +49,8 @@ export function TimeField({ id, legend, choice, onChange, display, nowIso, error
         onValueChange={value => onChange(value === "earlier" ? { mode: "earlier", wall: choice.mode === "earlier" ? choice.wall : wallClockOf(nowIso, display) } : { mode: "now" })}
       />
       {choice.mode === "earlier" ? (
-        <Field label={`${legend}, date and time`} labelHidden id={id} hint={[`Time in ${zone}`, hint].filter(Boolean).join(" · ")} error={error}>
-          <Input type="datetime-local" step={60} value={choice.wall} readOnly={disabled} onChange={event => onChange({ mode: "earlier", wall: event.target.value })} />
+        <Field label={`${legend}, date and time (${tag})`} labelHidden id={id} hint={[`Time in ${zone}`, hint].filter(Boolean).join(" · ")} error={error}>
+          <ZonedTimeInput zone={tag} value={choice.wall} readOnly={disabled} onChange={event => onChange({ mode: "earlier", wall: event.target.value })} />
         </Field>
       ) : error ? (
         <p id={id} role="alert" className="field-error">

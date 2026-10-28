@@ -7,11 +7,29 @@ import { runConfirmAction } from "./action-result";
 import { Button, IconButton } from "./button";
 import { Callout } from "./callout";
 import { cx } from "./cx";
+import { restoreFocusWhenLost } from "./focus";
+import { slotChildren } from "./slot";
 
 /** Modal dialog (Radix): traps focus, closes on Escape and restores focus to the trigger. */
 export const Dialog = RadixDialog.Root;
-export const DialogTrigger = RadixDialog.Trigger;
-export const DialogClose = RadixDialog.Close;
+
+/** Opens the dialog; with `asChild` a server-rendered element (lazy RSC chunk) is resolved first (./slot.ts). */
+export function DialogTrigger({ asChild, children, ...props }: ComponentProps<typeof RadixDialog.Trigger>) {
+  return (
+    <RadixDialog.Trigger asChild={asChild} {...props}>
+      {slotChildren(asChild, children)}
+    </RadixDialog.Trigger>
+  );
+}
+
+/** Closes the dialog; `asChild` children are resolved like DialogTrigger's. */
+export function DialogClose({ asChild, children, ...props }: ComponentProps<typeof RadixDialog.Close>) {
+  return (
+    <RadixDialog.Close asChild={asChild} {...props}>
+      {slotChildren(asChild, children)}
+    </RadixDialog.Close>
+  );
+}
 
 type DialogFrameProps = Omit<ComponentProps<typeof RadixDialog.Content>, "title"> & {
   /** Accessible name of the dialog. Required even when visually hidden. */
@@ -61,8 +79,9 @@ export function DialogFooter({ className, ...props }: ComponentProps<"div">) {
 
 /** Side panel ("View full analysis") or bottom sheet (mobile actions); same focus handling as Dialog. */
 export const Sheet = RadixDialog.Root;
-export const SheetTrigger = RadixDialog.Trigger;
-export const SheetClose = RadixDialog.Close;
+/** Opens the sheet (for example FullAnalysisSheet's server-rendered "View full analysis" button). */
+export const SheetTrigger = DialogTrigger;
+export const SheetClose = DialogClose;
 
 export type SheetContentProps = DialogFrameProps & { side?: "right" | "bottom" };
 
@@ -102,6 +121,12 @@ export type ConfirmDialogProps = {
   onConfirm: () => unknown;
   /** Shown in the dialog when `onConfirm` throws. */
   errorMessage?: string;
+  /**
+   * Where focus goes when the trigger is gone after a successful action, for example a "Remove" button whose row the
+   * page update removes: a stable element of the same section (its heading or list). Evaluated after the update, so it
+   * sees the new page. While the trigger stays, focus returns to it as usual.
+   */
+  returnFocus?: () => HTMLElement | null | undefined;
 };
 
 export const CONFIRM_FAILED_MESSAGE = "This could not be completed. Check your connection and try again.";
@@ -121,6 +146,7 @@ export function ConfirmDialog({
   confirmDisabled = false,
   onConfirm,
   errorMessage = CONFIRM_FAILED_MESSAGE,
+  returnFocus,
 }: ConfirmDialogProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -140,15 +166,17 @@ export function ConfirmDialog({
       // A failure keeps the dialog open with its message instead of reaching an error boundary.
       const outcome = await runConfirmAction(onConfirm, errorMessage);
       startTransition(() => {
-        if (outcome.close) setOpen(false);
-        else setError(outcome.error);
+        if (outcome.close) {
+          setOpen(false);
+          if (returnFocus) restoreFocusWhenLost(returnFocus);
+        } else setError(outcome.error);
       });
     });
   };
 
   return (
     <AlertDialog.Root open={isOpen} onOpenChange={(next) => !pending && setOpen(next)}>
-      {trigger && <AlertDialog.Trigger asChild>{trigger}</AlertDialog.Trigger>}
+      {trigger && <AlertDialog.Trigger asChild>{slotChildren(true, trigger)}</AlertDialog.Trigger>}
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="overlay" />
         <AlertDialog.Content className="dialog dialog-sm" {...(description ? {} : noDescription)}>

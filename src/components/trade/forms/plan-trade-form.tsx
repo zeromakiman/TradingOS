@@ -515,7 +515,7 @@ export function PlanTradeForm({ now: serverNow, accounts, initial, mode, evidenc
         aria-busy={busy}
         onSubmit={onSubmit}
         onKeyDown={formKeyDown}
-        className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,25rem)] xl:gap-6"
+        className="grid grid-cols-[minmax(0,1fr)] items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,25rem)] xl:gap-6"
       >
         <div className="card min-w-0">
           <FormSection step={1} title="Setup" id="plan-setup">

@@ -2,14 +2,17 @@ import type { EntryModel, TradeOrigin } from "@/domain/ledger";
 import type { CalendarMode } from "@/domain/performance";
 import type { Session } from "@/domain/session";
 import { addDays, daysInMonth, isCalendarDay, strategyDay } from "@/domain/time-display";
+import { ALL_ACCOUNTS_VALUE, type AccountContext } from "@/lib/account-context";
 import { CALENDAR_MODES, parseMonth, shiftMonth } from "@/lib/performance-data";
-import { type FilterParams, parseTradeFilters, type TradeFilters } from "@/lib/trades-data";
-import { CALENDAR_VIEW_PARAM, edgeParams, RANGE_PRESETS, type RangePreset } from "./params";
+import { accountFilterLabel, type FilterParams, parseTradeFilters, resolveAccountFilter, type TradeFilters } from "@/lib/trades-data";
+import { CALENDAR_VIEW_PARAM, EDGE_PATH, edgeParams, RANGE_PRESETS, type RangePreset, withParams } from "./params";
 
 /**
  * EDGE state from the page's search parameters (docs/V2_ARCHITECTURE.md §14.6). The filter row is a date range
  * (presets relative to the server's strategy day, or a custom range of exit days) plus model, session, origin and
- * instrument; the account comes from the shell's context. Server only: it uses the Journal's filter parser.
+ * instrument; the account comes from the shell's context, and in All Accounts a read-only account filter
+ * (`accountFilter`, the Journal's) can narrow it to one account, archived ones included. Server only: it uses the
+ * Journal's filter parser.
  */
 
 export { RANGE_LABELS } from "./params";
@@ -30,11 +33,13 @@ export interface EdgeQuery {
   calendar: CalendarMode;
   /** Currency of the money calendar modes when trades span several currencies. */
   currency?: string;
+  /** Read-only account filter of All Accounts (an account id; shown by name, see `accountFilterChip`). */
+  accountFilter?: string;
   /** Parameters that could not be read (named, never shown raw). */
   invalid: string[];
 }
 
-const DIMENSION_KEYS = ["closedFrom", "closedTo", "model", "session", "origin", "instrument"];
+const DIMENSION_KEYS = ["closedFrom", "closedTo", "model", "session", "origin", "instrument", "accountFilter"];
 
 function readOne(params: FilterParams, key: string): string | undefined {
   const values = params instanceof URLSearchParams ? params.getAll(key) : [params[key]].flat();
@@ -59,9 +64,15 @@ export function presetBounds(range: RangePreset, today: string): { closedFrom?: 
   }
 }
 
-/** EDGE state from the page's search parameters; `now` is the server time the presets are relative to. */
-export function parseEdgeQuery(params: FilterParams, now: string): EdgeQuery {
-  const { filters, invalid: filterInvalid } = parseTradeFilters(params);
+/**
+ * EDGE state from the page's search parameters; `now` is the server time the presets are relative to. With the
+ * request's account `context`, the read-only account filter is resolved as the Journal resolves it
+ * (`resolveAccountFilter`): it combines with All Accounts only, so in an account context a filter left in the URL (the
+ * header selector keeps the other parameters) is dropped, and the counts, links and files of the page ignore it.
+ */
+export function parseEdgeQuery(params: FilterParams, now: string, context?: Pick<AccountContext, "accounts" | "selected">): EdgeQuery {
+  const { filters: parsed, invalid: filterInvalid } = parseTradeFilters(params);
+  const filters = context ? resolveAccountFilter(parsed, context).filters : parsed;
   const invalid = filterInvalid.filter(key => DIMENSION_KEYS.includes(key));
   const rawRange = readOne(params, "range")?.toLowerCase();
   const presetRange = RANGE_PRESETS.find(preset => preset === rawRange);
@@ -101,11 +112,15 @@ export function parseEdgeQuery(params: FilterParams, now: string): EdgeQuery {
     ...(day ? { day } : {}),
     calendar: calendar ?? "NET_R",
     ...(currency ? { currency } : {}),
+    ...(filters.accountFilter ? { accountFilter: filters.accountFilter } : {}),
     invalid: [...new Set(invalid)],
   };
 }
 
-/** The ledger filters the statistics use: exit-day range plus the dimensions (closed trades only). */
+/**
+ * The ledger filters the statistics use: exit-day range plus the dimensions (closed trades only), and the read-only
+ * account filter, which narrows an All Accounts read and leaves an account context as it is (`filteredScope`).
+ */
 export function edgeFilters(query: EdgeQuery): TradeFilters {
   return {
     ...(query.closedFrom ? { closedFrom: query.closedFrom } : {}),
@@ -114,17 +129,47 @@ export function edgeFilters(query: EdgeQuery): TradeFilters {
     ...(query.session ? { session: query.session } : {}),
     ...(query.origin ? { origin: query.origin } : {}),
     ...(query.instrument ? { instrument: query.instrument } : {}),
+    ...(query.accountFilter ? { accountFilter: query.accountFilter } : {}),
   };
 }
 
 /** Filters the user set (the date range counts when it is not "All time"). */
 export function activeFilterCount(query: EdgeQuery): number {
-  return [query.range !== "all", query.model, query.session, query.origin, query.instrument].filter(Boolean).length;
+  return [query.range !== "all", query.model, query.session, query.origin, query.instrument, query.accountFilter].filter(Boolean).length;
 }
 
 /** The filters without calendar navigation: the parameters the calendar's month and mode links extend. */
 export function filterQuery(query: EdgeQuery): string {
-  return edgeParams({ ...query, month: undefined, calendar: "NET_R", currency: undefined }).toString();
+  const params = edgeParams({ ...query, month: undefined, calendar: "NET_R", currency: undefined });
+  if (query.accountFilter) params.set("accountFilter", query.accountFilter);
+  return params.toString();
+}
+
+/** The read-only account filter as the filter row shows it: the account in words, the page without it, and its id for links. */
+export interface AccountFilterChip {
+  id: string;
+  /** "Account: Personal 12K · archived" ("Account: not available" for an account the user cannot read). */
+  label: string;
+  /** This page without the account filter (the context stays All Accounts). */
+  removeHref: string;
+}
+
+/**
+ * The read-only account filter of All Accounts for the filter row, resolved against the user's accounts; null without
+ * one, and in an account context, where it does not apply.
+ */
+export function accountFilterChip(query: EdgeQuery, context: Pick<AccountContext, "accounts" | "selected">): AccountFilterChip | null {
+  const { state } = resolveAccountFilter({ accountFilter: query.accountFilter }, context);
+  const label = accountFilterLabel(state);
+  if (!query.accountFilter || label === null) return null;
+  // Removed by name, so the way back never keeps the filter, whichever parameters `edgeParams` writes.
+  const removeHref = withParams(edgeParams({ ...query, month: undefined }).toString(), { accountFilter: undefined });
+  return { id: query.accountFilter, label, removeHref };
+}
+
+/** EDGE of one account's history from All Accounts (an archived account can't be the context, §9.2). */
+export function edgeAccountHistoryHref(accountId: string): string {
+  return `${EDGE_PATH}?${new URLSearchParams({ accountFilter: accountId, account: ALL_ACCOUNTS_VALUE }).toString()}`;
 }
 
 /**

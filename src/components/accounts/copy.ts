@@ -22,7 +22,7 @@ export const IMMEDIATE_OPTION_COPY = "Applies from now on, today included, until
 export const NEXT_DAY_OPTION_COPY = "From 00:00 UTC−5. Today's checks keep the current version.";
 export const ARCHIVED_VALUES_COPY = "Archived accounts don't need daily values. Restore the account to record values.";
 export const ARCHIVED_DASHBOARD_COPY =
-  "It takes no new trades. Its history stays on this dashboard and on each trade; restore it to filter the Journal and EDGE by this account.";
+  "It takes no new trades. Its history stays readable here, on each trade, and in the Journal and EDGE of All Accounts, filtered to this account. Restore it to trade on it again.";
 export const R_UNITS_NOTE = "R is per-trade risk units, not money.";
 export const MANUAL_CONNECTION_COPY = "Trades are recorded by you in Trading OS. No trading platform is contacted.";
 

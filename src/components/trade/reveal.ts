@@ -18,20 +18,79 @@ export const TRADE_TARGETS = Object.freeze({
   technical: "technical-details",
 });
 
+export type TradeTarget = (typeof TRADE_TARGETS)[keyof typeof TRADE_TARGETS];
+
+const TARGET_IDS: ReadonlySet<string> = new Set(Object.values(TRADE_TARGETS));
+
+/** The trade-page target a location hash names (`#close-trade` → `close-trade`), or null for any other hash. */
+export function tradeTargetOf(hash: string): TradeTarget | null {
+  const id = hash.startsWith("#") ? hash.slice(1) : hash;
+  return TARGET_IDS.has(id) ? (id as TradeTarget) : null;
+}
+
 const FOCUSABLE = "input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])";
+const CLOSED_PANEL = "details:not([open])";
 
 function scrollBehavior(): ScrollBehavior {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 }
 
-/** Scrolls to `#id` and focuses its first control (or the element matching `focusSelector`); false when absent. */
+/**
+ * The first control of `target` that no collapsed `<details>` hides. When every control is collapsed (the "Edit tags"
+ * disclosure of an open trade), the panels holding the first one are opened, so focus reaches a control people can see.
+ */
+function firstControl(target: HTMLElement, focusSelector: string): HTMLElement | null {
+  const controls = Array.from(target.querySelectorAll<HTMLElement>(focusSelector));
+  const shown = controls.find(control => control.closest(CLOSED_PANEL) === null);
+  if (shown) return shown;
+  const [first] = controls;
+  if (!first) return null;
+  for (let panel = first.closest<HTMLDetailsElement>(CLOSED_PANEL); panel && target.contains(panel); panel = first.closest<HTMLDetailsElement>(CLOSED_PANEL)) {
+    panel.open = true;
+  }
+  return first;
+}
+
+/** A target this close to the top of its section scrolls with the section, so the section's heading stays in view. */
+const SECTION_HEAD_ROOM = 160;
+
+/** What to scroll into view: the enclosing section when the target opens it (the close form under "Close trade"). */
+function scrollAnchor(target: HTMLElement): HTMLElement {
+  const section = target.parentElement?.closest<HTMLElement>("section[id]");
+  if (!section) return target;
+  return target.getBoundingClientRect().top - section.getBoundingClientRect().top <= SECTION_HEAD_ROOM ? section : target;
+}
+
+/**
+ * Scrolls to `#id` (with its section's heading when it opens the section) and focuses its first control (or the first
+ * element matching `focusSelector`), opening a collapsed panel to reach it; false when the target is not on the page.
+ */
 export function reveal(id: string, focusSelector: string = FOCUSABLE): boolean {
   const target = document.getElementById(id);
   if (!target) return false;
-  target.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
-  const control = target.querySelector<HTMLElement>(focusSelector);
+  const control = firstControl(target, focusSelector);
+  scrollAnchor(target).scrollIntoView({ behavior: scrollBehavior(), block: "start" });
   (control ?? target).focus({ preventScroll: true });
   return true;
+}
+
+/**
+ * Brings a trade-page target into view the way the page's own actions do: `#journal` focuses the composer, `#technical-
+ * details` opens the disclosure, every other target scrolls into view with its first control focused. A trade with a
+ * position attaches screenshots in the journal composer, so `#add-screenshots` falls back to it when the Evidence stager
+ * is not on the page. False when nothing could be shown (the target belongs to another state of the trade).
+ */
+export function revealTradeTarget(target: TradeTarget): boolean {
+  switch (target) {
+    case TRADE_TARGETS.journal:
+      return focusComposer();
+    case TRADE_TARGETS.technical:
+      return revealTechnicalDetails();
+    case TRADE_TARGETS.addScreenshots:
+      return reveal(target) || focusComposer();
+    default:
+      return reveal(target);
+  }
 }
 
 /**

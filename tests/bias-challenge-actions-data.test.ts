@@ -1,10 +1,13 @@
 import {beforeEach,describe,it,expect,vi} from 'vitest';
+// V1 setup-page loaders of the pre-trade AI panels (history readable with AI off, locked state, degraded storage, evidence
+// labels). The V1 server action these tests also covered was deleted with the V1 setup page; its intents (ids only,
+// terminal outcomes, refusals, malformed input, hidden internal errors) are asserted on the V2 actions in
+// tests/v2-ai-actions.test.ts and tests/v2-v1-replacements-ai-actions.test.ts.
 import {source,ids,challengeOutput} from './fixtures/bias-challenge';
 import {biasChallengeContext} from '@/ai/bias-challenge-context';
 import type {loadSetup} from '@/lib/setup-data';
 const m=vi.hoisted(()=>({challenge:vi.fn(),refresh:vi.fn(),availability:vi.fn(),queries:[] as {table:string;filters:[string,unknown][]}[],values:{} as Record<string,unknown>,errors:new Set<string>()}));
 vi.mock('server-only',()=>({}));vi.mock('next/cache',()=>({revalidatePath:m.refresh}));vi.mock('next/navigation',()=>({unstable_rethrow:()=>{}}));vi.mock('@/lib/bias-challenge',()=>({challengeBias:m.challenge}));vi.mock('@/lib/ai-budget',()=>({accountAiAvailability:m.availability}));
-import {requestBiasChallenge} from '@/app/bias-challenge-actions';
 import {loadBiasChallengePanel} from '@/lib/bias-challenge-data';
 let setup:Awaited<ReturnType<typeof loadSetup>>;
 beforeEach(()=>{
@@ -13,13 +16,7 @@ beforeEach(()=>{
  const db={from:(table:string)=>{const q={table,filters:[] as [string,unknown][]};m.queries.push(q);const result=()=>({data:m.values[table],error:m.errors.has(table)?{}:null,count:11});const chain={select:()=>chain,eq:(k:string,v:unknown)=>{q.filters.push([k,v]);return chain;},in:(k:string,v:unknown)=>{q.filters.push([k,v]);return chain;},order:()=>chain,range:()=>chain,then:(resolve:(v:unknown)=>void)=>resolve(result())};return chain;}};
  setup={...source,user:{id:ids.user},db,screenshots:[],removals:[],lock:null,risks:[],evaluations:[],decisions:[]} as unknown as typeof setup;
 });
-const form=()=>{const f=new FormData();f.set('proposalId',ids.plan);f.set('requestKey',ids.review);return f;};
 describe('bias challenge action and history panel',()=>{
- it('server action accepts only ids/evidence; client permission, cost and proposal mutations are ignored',async()=>{const f=form();f.set('riskStatus','APPROVED');f.set('proposal','changed');f.set('budgetCost','0');f.append('evidence',ids.image);expect(await requestBiasChallenge({},f)).toEqual({success:'Saved'});expect(m.challenge).toHaveBeenCalledWith(ids.plan,ids.review,[ids.image]);expect(m.refresh.mock.calls).toEqual([[`/analyze/${ids.plan}`],['/settings']]);});
- it.each(['COMPLETED','FAILED','RECORDED'])('%s returns terminal status so the next explicit run gets a new key',async status=>{m.challenge.mockResolvedValue({status,message:'Recorded'});expect(await requestBiasChallenge({},form())).toEqual({success:'Recorded'});});
- it('insufficient budget surfaces as an error without a false completed state',async()=>{m.challenge.mockResolvedValue({status:'BUDGET_REACHED',message:'Insufficient budget'});expect(await requestBiasChallenge({},form())).toEqual({error:'Insufficient budget'});});
- it('malformed ids and excessive selected evidence do not call the service',async()=>{const f=form();f.set('requestKey','bad');expect(await requestBiasChallenge({},f)).toHaveProperty('error');const more=form();for(let i=0;i<4;i++)more.append('evidence',ids.image);expect(await requestBiasChallenge({},more)).toHaveProperty('error');expect(m.challenge).not.toHaveBeenCalled();});
- it('internal ownership errors are not exposed',async()=>{m.challenge.mockRejectedValue(new Error('private database detail'));const result=await requestBiasChallenge({},form());expect(result.error).toContain('ownership');expect(result.error).not.toContain('private database detail');});
  it('OFF permits reading preserved facts/output/accounting scoped to this owner and proposal',async()=>{m.values.bias_challenges=[{id:ids.review,facts:biasChallengeContext(source,[]),operation:{provider:'openai',model:'gpt-6-astra',version:'CHALLENGE_BIAS_V1'},created_at:'2026-09-23T12:00Z',deadline_at:'2026-09-23T12:10Z'}];m.values.bias_challenge_results=[{challenge_id:ids.review,status:'COMPLETED',interpretation:challengeOutput,error_code:null,reservation_id:ids.image,created_at:'2026-09-23T12:01Z'}];m.values.ai_request_reservations=[{id:ids.image,operation_id:ids.review,reserved_micros:528000}];m.values.ai_usage_records=[{reservation_id:ids.image,charged_micros:21000,disposition:'SETTLED'}];const result=await loadBiasChallengePanel(setup);expect(result).toMatchObject({amount:39600,riskStatus:'TRADE_BLOCKED',availability:{status:'DISABLED'},hasOlder:true,error:null});expect(result.history[0].result?.interpretation).toEqual(challengeOutput);expect(m.queries[0]).toEqual({table:'bias_challenges',filters:[['operation->>id','CHALLENGE_BIAS'],['proposal_id',ids.plan],['user_id',ids.user]]});expect(m.availability).toHaveBeenCalledWith(ids.account,'CHALLENGE_BIAS');expect(m.challenge).not.toHaveBeenCalled();});
  it('locked pages retain history but expose the locked state and unchanged risk decision',async()=>{setup.lock={plan_id:ids.event,created_at:'2026-09-23T13:00Z'};const result=await loadBiasChallengePanel(setup);expect(result.locked).toBe(true);expect(result.riskStatus).toBe('TRADE_BLOCKED');expect(m.challenge).not.toHaveBeenCalled();});
  it('AI storage failure disables only the optional panel',async()=>{m.errors.add('bias_challenges');const result=await loadBiasChallengePanel(setup);expect(result.availability.status).toBe('CONFIGURATION_ERROR');expect(result.error).toContain('history');expect(result.riskStatus).toBe('TRADE_BLOCKED');});

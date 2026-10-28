@@ -51,7 +51,14 @@ export type HistogramBin = {
   /** Exclusive upper edge (decimal string); null for an open-ended highest bin. */
   to: string | null;
   count: number;
-  /** "3 trades"; defaults to the count. */
+  /**
+   * Trades exactly at 0R (break-even) among `count`; only the bin that starts at 0R can hold them (the domain's
+   * `distributionR` fills it, 0 elsewhere). Break-even is neither profit nor loss, so that bin is drawn in the neutral
+   * tone while it holds any, and as profit when this is 0. Required, so a consumer that maps the domain's bins cannot
+   * drop it: without it a bin of winners that starts at 0R could only be drawn neutral.
+   */
+  breakEven: number;
+  /** "3 trades"; defaults to the count, with the break-even trades named ("3 (1 at 0R)"). */
   countLabel?: string;
   href?: string;
 };

@@ -413,7 +413,7 @@ const clickLoads = (html: string, href: string) => {
 /** Rows of the facts block with their tone, as `value label · note (tone)`. */
 const factRows = (html: string) =>
   [...html.matchAll(/<li class="[^"]*" data-tone="([^"]*)">([\s\S]*?)<\/li>/g)].map(([, tone, row]) => `${visibleText(row)} (${tone})`);
-const SOURCES = "Uses their original plans, risk versions, entries and exits. Journal notes and screenshots are not included yet.";
+const SOURCES = "Uses each trade's original plan, risk version, entry and exit, plus its journal entries and tags (weekly and monthly reviews read only those recorded within the period). Long notes are shortened; screenshots are not included.";
 
 function expectCleanText(html: string) {
   const text = visibleText(html);

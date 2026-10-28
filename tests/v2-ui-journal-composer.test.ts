@@ -18,8 +18,8 @@ vi.mock("next/navigation", async importOriginal => ({
 
 import { ENTRY_UNREACHABLE_COPY, JOURNAL_COMPOSER_ID, JournalComposer, type JournalComposerProps } from "@/components/trade/journal/composer";
 import {
-  EMPTY_JOURNAL_DRAFT, isPartialPercent, isPositiveDecimal, isTickAligned, JOURNAL_COPY, JOURNAL_KIND_LABELS, JOURNAL_KINDS, JOURNAL_PLACEHOLDERS, type JournalDraft,
-  journalEntryForm, journalEntryTitle, journalServerErrors, MAX_JOURNAL_BODY, tickCopy, timingHintForLifecycle, trimJournalBody, validateJournalDraft,
+  defaultLabelForLifecycle, EMPTY_JOURNAL_DRAFT, isPartialPercent, isPositiveDecimal, isTickAligned, JOURNAL_COPY, JOURNAL_KIND_LABELS, JOURNAL_KINDS, JOURNAL_PLACEHOLDERS,
+  type JournalDraft, journalEntryForm, journalEntryTitle, journalServerErrors, MAX_JOURNAL_BODY, tickCopy, timingHintForLifecycle, trimJournalBody, validateJournalDraft,
 } from "@/components/trade/journal/composer-model";
 import { JOURNAL_COMPOSER_SELECTOR } from "@/components/shell/shortcuts";
 import { LIFECYCLES } from "@/domain/ledger";
@@ -31,9 +31,17 @@ const TICK = "0.00001";
 
 describe("timing hint", () => {
   it("maps every lifecycle to the band a new note will most likely land in", () => {
+    // A plan that ended without an entry stores what is written afterwards post-trade (§5.2): After close, never Before entry.
     expect(LIFECYCLES.map(lifecycle => [lifecycle, timingHintForLifecycle(lifecycle)])).toEqual([
       ["DRAFT", "BEFORE_ENTRY"], ["LOCKED", "BEFORE_ENTRY"], ["LIVE", "WHILE_LIVE"], ["CLOSED", "AFTER_CLOSE"], ["REVIEWED", "AFTER_CLOSE"],
-      ["SKIPPED", "BEFORE_ENTRY"], ["CANCELLED", "BEFORE_ENTRY"], ["DISCARDED", "BEFORE_ENTRY"],
+      ["SKIPPED", "AFTER_CLOSE"], ["CANCELLED", "AFTER_CLOSE"], ["DISCARDED", "AFTER_CLOSE"],
+    ]);
+  });
+
+  it("labels attached screenshots by that band, and Other on a plan that ended without an entry", () => {
+    expect(LIFECYCLES.map(lifecycle => [lifecycle, defaultLabelForLifecycle(lifecycle)])).toEqual([
+      ["DRAFT", "PRE_ENTRY"], ["LOCKED", "PRE_ENTRY"], ["LIVE", "MANAGEMENT"], ["CLOSED", "EXIT"], ["REVIEWED", "EXIT"],
+      ["SKIPPED", "OTHER"], ["CANCELLED", "OTHER"], ["DISCARDED", "OTHER"],
     ]);
   });
 });

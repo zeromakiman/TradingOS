@@ -1,4 +1,6 @@
 import Decimal from "decimal.js";
+import { defaultLabelForTiming } from "@/components/evidence/labels";
+import type { EvidenceLabel } from "@/components/evidence/types";
 import { stripZeros } from "@/domain/format";
 import type { Lifecycle } from "@/domain/ledger";
 import { buildTimeline, type JournalKind, type TimelineTrade, type Timing } from "@/domain/timeline";
@@ -34,16 +36,33 @@ export const JOURNAL_PLACEHOLDERS: Readonly<Record<JournalKind, string>> = Objec
   LESSON: "What will you do differently?",
 });
 
+const ENDED_WITHOUT_ENTRY: ReadonlySet<Lifecycle> = new Set(["SKIPPED", "CANCELLED", "DISCARDED"]);
+
+/** Skipped, cancelled, or a discarded draft: the plan ended and no entry can follow. */
+export function endedWithoutEntry(lifecycle: Lifecycle): boolean {
+  return ENDED_WITHOUT_ENTRY.has(lifecycle);
+}
+
 /**
  * The composer's `timingHint` for a trade's lifecycle: where a note written now will most likely land.
- * Drafts, locked plans and skipped, cancelled or discarded trades have no entry (Before entry); a live
- * position (planned or live-first) is While live; closed and reviewed trades are After close. The server
- * still decides the real timing from its own clock.
+ * Drafts and locked plans have no entry yet (Before entry); a live position (planned or live-first) is While
+ * live; closed and reviewed trades, and plans that ended without an entry (skipped, cancelled, discarded:
+ * what is written then is hindsight, stored post-trade, §5.2), are After close. The server still decides
+ * the real timing from its own clock.
  */
 export function timingHintForLifecycle(lifecycle: Lifecycle): Timing {
   if (lifecycle === "LIVE") return "WHILE_LIVE";
-  if (lifecycle === "CLOSED" || lifecycle === "REVIEWED") return "AFTER_CLOSE";
+  if (lifecycle === "CLOSED" || lifecycle === "REVIEWED" || endedWithoutEntry(lifecycle)) return "AFTER_CLOSE";
   return "BEFORE_ENTRY";
+}
+
+/**
+ * Default label of a screenshot attached now (§7.1): the band's default (Pre-entry, Management, Exit), except on a
+ * plan that ended without an entry, where it is Other: such a screenshot shows what happened later, and there was
+ * neither an entry nor an exit (Pre-entry is then not offered at all, `labelOptionsForDefault`).
+ */
+export function defaultLabelForLifecycle(lifecycle: Lifecycle): EvidenceLabel {
+  return endedWithoutEntry(lifecycle) ? "OTHER" : defaultLabelForTiming(timingHintForLifecycle(lifecycle));
 }
 
 export type PartialAmount = "percent" | "quantity";

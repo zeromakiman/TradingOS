@@ -15,13 +15,13 @@ import { ExportMenu } from "./export-menu";
 import { EdgeFilterBar, type FilterSelect } from "./filter-bar";
 import { EdgeHeadline } from "./headline";
 import {
-  breakdownSections, calendarModel, curveData, dailyData, distributionBins, drawdownSampleLabel, exportLinks, exportMatchesOrigin, headlineModel,
+  breakdownSections, calendarModel, curveData, dailyData, distributionBins, drawdownSampleLabel, exportLinks, exportUnavailable, headlineModel,
   isAllAccounts, MODEL_LABELS, noMatchDescription, ORIGIN_LABELS, periodLabel, resultsJournalLink, rSampleLabel, SESSION_LABELS, scopeLabel,
 } from "./model";
 import { EDGE_PATH, edgeHref, RANGE_LABELS, RANGE_PRESETS } from "./params";
 import { EdgePendingRegion, EdgeTransition, PendingLink } from "./pending";
 import { PerformanceCalendar } from "./performance-calendar";
-import { activeFilterCount, filterQuery } from "./query";
+import { accountFilterChip, activeFilterCount, filterQuery } from "./query";
 import { ResultsCharts } from "./results-charts";
 
 /**
@@ -98,12 +98,10 @@ function Notices({ data }: { data: EdgeData }) {
 
 export function EdgeScreen({ data }: { data: EdgeData }) {
   const { context, query, view } = data;
-  // The page without the origin filter (the comparison and the CSV need every origin).
+  // The page without the origin filter (the origin comparison needs every origin).
   const withoutOrigin = edgeHref({ ...query, origin: undefined, month: undefined });
-  const exportMenu = view && view.closedCount > 0
-    ? <ExportMenu links={exportLinks(data)} blockedClearHref={exportMatchesOrigin(query) ? undefined : withoutOrigin} />
-    : undefined;
-  const header = <PageHeader eyebrow={scopeLabel(context)} title="EDGE" description={EDGE_DESCRIPTION} actions={exportMenu} />;
+  const exportMenu = view && view.closedCount > 0 ? <ExportMenu links={exportLinks(data)} unavailable={exportUnavailable(data)} /> : undefined;
+  const header = <PageHeader eyebrow={scopeLabel(context, query)} title="EDGE" description={EDGE_DESCRIPTION} actions={exportMenu} />;
 
   if (!view) {
     return (
@@ -137,6 +135,7 @@ export function EdgeScreen({ data }: { data: EdgeData }) {
       }}
       rangeOptions={RANGE_PRESETS.map(preset => ({ value: preset, label: RANGE_LABELS[preset] }))}
       selects={filterSelects(data)}
+      accountFilter={accountFilterChip(query, context)}
     />
   );
 

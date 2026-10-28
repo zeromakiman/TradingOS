@@ -2,6 +2,7 @@
 
 import { type ReactNode, useId, useState } from "react";
 import { cx } from "../ui/cx";
+import { SEGMENTED_SM_TOUCH } from "../ui/choice";
 import { EmptyState } from "../ui/empty-state";
 import type { ChartEmptyCopy } from "./types";
 
@@ -44,10 +45,10 @@ export function ChartFrame({ title, question, sample, summary, table, legend, ac
           {!empty && (
             // biome-ignore lint/a11y/useSemanticElements: a pair of toggle buttons, not a form fieldset.
             <div className="segmented segmented-sm" role="group" aria-label={`${title}: view`}>
-              <button type="button" className="segmented-label" aria-pressed={view === "chart"} onClick={() => setView("chart")}>
+              <button type="button" className={cx("segmented-label", SEGMENTED_SM_TOUCH)} aria-pressed={view === "chart"} onClick={() => setView("chart")}>
                 Chart
               </button>
-              <button type="button" className="segmented-label" aria-pressed={view === "table"} onClick={() => setView("table")}>
+              <button type="button" className={cx("segmented-label", SEGMENTED_SM_TOUCH)} aria-pressed={view === "table"} onClick={() => setView("table")}>
                 Table
               </button>
             </div>

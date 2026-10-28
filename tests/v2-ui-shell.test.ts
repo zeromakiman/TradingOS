@@ -20,17 +20,19 @@ import { AppShell, type AppShellProps } from "@/components/shell/app-shell";
 import { CommandPaletteBody } from "@/components/shell/command-palette";
 import { fuzzyScore, rankByQuery } from "@/components/shell/fuzzy";
 import { MobileTabBar } from "@/components/shell/mobile-tab-bar";
-import { activeNavKey, contextLabel, withAccountParam } from "@/components/shell/navigation";
+import { activeNavKey, contextLabel, newTradeAction, withAccountParam } from "@/components/shell/navigation";
 import { clearPaletteHistory, readPaletteHistory, recentItemIds, rememberPaletteItem } from "@/components/shell/palette-history";
 import { buildPaletteItems, paletteSections } from "@/components/shell/palette-items";
 import { browserTimeZone, readCookie, SHORTCUTS_COOKIE, singleKeyShortcutsEnabled } from "@/components/shell/preferences";
 import { clockOffset, formatMinutes, minutesUntil, SESSION_LABELS } from "@/components/shell/session-labels";
 import { ShellProviders } from "@/components/shell/shell-providers";
+import { forgetSignedOutPerson, isSignOutLanding, SignOutCleanup } from "@/components/shell/sign-out-cleanup";
 import { SingleKeyShortcutsSwitch } from "@/components/shell/shortcut-help";
 import { isTypingTarget, type ShortcutKeyEvent, shortcutFor } from "@/components/shell/shortcuts";
 import { StrategyClock } from "@/components/shell/strategy-clock";
 import { TimeDisplayProvider, useTimeFormat } from "@/components/shell/time-display";
 import { TimeDisplaySwitcher } from "@/components/shell/time-display-switcher";
+import { useSignOut } from "@/components/shell/use-preference-controls";
 import type {
   PaletteIndex,
   PaletteTrade,
@@ -137,8 +139,9 @@ describe("AppShell", () => {
 
   it("offers both primary actions on every page", () => {
     const markup = render(shellProps());
-    expect(markup).toMatch(/<a id="shell-action-plan" class="btn btn-primary"[^>]*href="\/trades\/new">.*?Plan Trade<\/a>/);
-    expect(markup).toMatch(/<a id="shell-action-live" class="btn btn-secondary"[^>]*aria-label="Record Live Trade" href="\/trades\/live\/new">/);
+    expect(markup).toMatch(/<a id="shell-action-plan" class="btn btn-primary[^"]*"[^>]*href="\/trades\/new">.*?Plan Trade<\/a>/);
+    expect(markup).toMatch(/<a id="shell-action-live" class="btn btn-secondary[^"]*"[^>]*aria-label="Record Live Trade" href="\/trades\/live\/new">/);
+    expect(markup).not.toContain('aria-current="page" href="/trades/new"');
     expect(markup).toContain("Search trades, accounts and commands");
   });
 
@@ -394,7 +397,7 @@ describe("Command palette", () => {
     );
 
   it("can be closed by touch: a visible Cancel button closes the full-screen palette", () => {
-    expect(palette()).toMatch(/<button class="btn btn-ghost btn-sm palette-cancel" type="button"[^>]*>Cancel<\/button>/);
+    expect(palette()).toMatch(/<button class="btn btn-ghost btn-sm pointer-coarse:min-h-11 palette-cancel" type="button"[^>]*>Cancel<\/button>/);
   });
 
   it("switches context with links to the current page that keep its filters", () => {
@@ -558,5 +561,114 @@ describe("navigation helpers", () => {
     expect(activeNavKey("/todayish")).toBeNull();
     expect(activeNavKey(null)).toBeNull();
     expect(withAccountParam("/journal?model=OTE&account=old", "all")).toBe("/journal?model=OTE&account=all");
+  });
+});
+
+describe("navigation on the new-trade forms (§1.1, §13.3)", () => {
+  it("marks the header's primary action, not a navigation section, on Plan Trade and Record Live Trade", () => {
+    expect(activeNavKey("/trades/new")).toBeNull();
+    expect(activeNavKey("/trades/live/new")).toBeNull();
+    expect(newTradeAction("/trades/new")).toBe("plan");
+    expect(newTradeAction("/trades/live/new")).toBe("live");
+    expect(newTradeAction("/trades/abc")).toBeNull();
+    // A trade and its Edit Draft stay under Journal.
+    expect(activeNavKey("/trades/abc")).toBe("journal");
+    expect(activeNavKey("/trades/abc/edit")).toBe("journal");
+
+    navigation.pathname = "/trades/new";
+    const plan = render(shellProps());
+    expect(plan).not.toMatch(/class="nav-link" aria-current="page"/);
+    expect(plan).toMatch(/<a id="shell-action-plan" class="[^"]*" aria-keyshortcuts="P" aria-current="page" href="\/trades\/new">/);
+    expect(plan).not.toMatch(/id="shell-action-live"[^>]*aria-current/);
+    // On phones the `+` tab, which opens Plan Trade and Record Live Trade, is the current one.
+    expect(plan).toMatch(/<button type="button" class="tabbar-item" aria-haspopup="dialog" aria-current="page"[^>]*>.*?New trade/);
+
+    navigation.pathname = "/trades/live/new";
+    const live = render(shellProps());
+    expect(live).toMatch(/id="shell-action-live"[^>]*aria-current="page"/);
+    expect(live).not.toMatch(/class="nav-link" aria-current="page"/);
+  });
+});
+
+describe("sign-out hygiene (shared browsers)", () => {
+  class MemoryStorage {
+    private readonly entries = new Map<string, string>();
+    get length() {
+      return this.entries.size;
+    }
+    key(index: number) {
+      return [...this.entries.keys()][index] ?? null;
+    }
+    getItem(key: string) {
+      return this.entries.get(key) ?? null;
+    }
+    setItem(key: string, value: string) {
+      this.entries.set(key, value);
+    }
+    removeItem(key: string) {
+      this.entries.delete(key);
+    }
+    keys() {
+      return [...this.entries.keys()];
+    }
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("forgets the palette history and every unsaved trade-form entry before the sign-out action runs", () => {
+    const local = new MemoryStorage();
+    const session = new MemoryStorage();
+    vi.stubGlobal("window", { localStorage: local, sessionStorage: session });
+    rememberPaletteItem("a@example.com", "nav:edge");
+    session.setItem("tos.form.abc.plan.new", "{}");
+    session.setItem("tos.form.abc.edit-def.r2", "{}");
+    session.setItem("unrelated", "kept");
+    const signOutAction: SignOutAction = async () => undefined;
+    let signOut: (() => void) | undefined;
+    const Probe = () => {
+      signOut = useSignOut(signOutAction);
+      return null;
+    };
+    renderToStaticMarkup(createElement(Probe));
+    expect(signOut).toBeTypeOf("function");
+    // The action itself is started in a transition, which needs a browser; the storage is cleared before that.
+    expect(() => signOut?.()).toThrow(/startTransition/);
+    expect([...session.keys(), ...local.keys()]).toEqual(["unrelated"]);
+    expect(readPaletteHistory("a@example.com")).toEqual([]);
+    // Without an action there is nothing to offer.
+    let none: unknown = "unset";
+    const Empty = () => {
+      none = useSignOut(undefined);
+      return null;
+    };
+    renderToStaticMarkup(createElement(Empty));
+    expect(none).toBeUndefined();
+  });
+
+  it("recognises the sign-in page that an explicit sign-out or an account deletion lands on", () => {
+    expect(isSignOutLanding("/login", "signed_out")).toBe(true);
+    expect(isSignOutLanding("/login", "account_deleted")).toBe(true);
+    // A session that merely ended keeps the person's own unsaved entries for when they sign in again.
+    for (const reason of ["session", "password_updated", "", null, undefined, "SIGNED_OUT"]) expect(isSignOutLanding("/login", reason), String(reason)).toBe(false);
+    for (const pathname of ["/today", "/login/", "/forgot-password", null]) expect(isSignOutLanding(pathname, "signed_out"), String(pathname)).toBe(false);
+  });
+
+  it("forgets the previous person's entries on that page, whichever way they signed out (the V1 logout form included)", async () => {
+    const local = new MemoryStorage();
+    const session = new MemoryStorage();
+    vi.stubGlobal("window", { localStorage: local, sessionStorage: session });
+    rememberPaletteItem("a@example.com", "nav:journal");
+    session.setItem("tos.form.abc.live.new", "{}");
+    session.setItem("tos.form.abc.edit-def.r3", "{}");
+    local.setItem("unrelated", "kept");
+    await forgetSignedOutPerson();
+    expect([...session.keys(), ...local.keys()]).toEqual(["unrelated"]);
+    expect(readPaletteHistory("a@example.com")).toEqual([]);
+  });
+
+  it("is mounted by the root layout and renders nothing", () => {
+    navigation.pathname = "/login";
+    navigation.search = "reason=signed_out";
+    expect(renderToStaticMarkup(createElement(SignOutCleanup))).toBe("");
   });
 });

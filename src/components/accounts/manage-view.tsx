@@ -771,6 +771,7 @@ function ConnectionPanel({ manage, display, connection }: ManageViewProps) {
               </li>
             ))}
           </ul>
+          {connection?.moreLinked && <p className="t-caption mt-3">Showing the {linked.length} most recent linked executions.</p>}
         </PanelCard>
       )}
     </div>

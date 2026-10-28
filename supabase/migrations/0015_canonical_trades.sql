@@ -785,6 +785,21 @@ begin
   return a;
 end $$;
 
+-- §3.2, §9, §14.9: an archived trading account takes no new activity. It keeps its history, and the trades it already
+-- holds can still be finished: a locked plan's entry, closes, skips and cancellations, discards, journal entries,
+-- screenshots, tags and reviews. Refused while the latest profile revision is ARCHIVED: new trades (planned, live-first,
+-- duplicated, imported), draft revisions, risk checks and locks, external losses, account values and connections;
+-- restoring the account (update_account_profile) re-enables them. Callers hold the account row lock, which
+-- update_account_profile takes as well, so a check never races an archive or a restore. An account without a
+-- profile row (bootstrap_demo_account after 0015) is active.
+create function private.require_active_account(p_account_id uuid) returns void
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if (select p.status from public.account_profiles p where p.account_id = p_account_id order by p.id desc limit 1) = 'ARCHIVED' then
+    raise exception 'ACCOUNT_ARCHIVED: This trading account is archived; restore it to add new trades or records';
+  end if;
+end $$;
+
 -- The caller's trade, row-locked. Writes that affect reservations or daily usage lock the account row first,
 -- the same order every V1 RPC uses.
 create function private.lock_owned_trade(p_trade_id uuid, p_lock_account boolean) returns public.trades
@@ -819,8 +834,40 @@ language sql stable security definer set search_path = '' as $$
   select l.lifecycle from public.trade_ledger l where l.id = p_trade_id
 $$;
 
+-- §5.2 When a planned trade ended without an entry: the earliest of the facts that end a plan in trade_ledger, namely
+-- the discard of the draft, the skip or cancellation of its locked plan (trade_dispositions), and a V1 SKIPPED decision
+-- that is still the trade's latest V1 decision. Null while none exists, once the plan has a fill or an outcome (a V1
+-- skip followed by a fill), and for trades without a Trading OS plan (live-first, imported). The earliest fact counts,
+-- so a later fact never moves the end: what was hindsight once stays hindsight. From that instant on, whatever is
+-- recorded on the trade is hindsight: private.trade_phase stores it as POST_TRADE and private.copyable_evidence never
+-- copies it into a duplicate as pre-entry evidence. Mirrored by planEndedAt (src/domain/trade-state.ts).
+create function private.plan_ended_at(p_trade_id uuid) returns timestamptz
+language sql stable security definer set search_path = '' as $$
+  select case
+    when not exists (select 1 from public.trade_executions e where e.plan_id = link.plan_id)
+     and not exists (select 1 from public.trade_outcomes o where o.plan_id = link.plan_id)
+      then least(discard.at, disposition.recorded_at, case when decision.decision = 'SKIPPED' then decision.recorded_at end)
+  end
+  from public.trades t
+  left join public.trade_plan_links link on link.trade_id = t.id
+  left join public.trade_dispositions disposition on disposition.plan_id = link.plan_id
+  cross join lateral (
+    select min(e.recorded_at) as at from public.trade_lifecycle_events e where e.trade_id = t.id and e.event = 'DRAFT_DISCARDED'
+  ) discard
+  left join lateral (
+    select h.decision, h.recorded_at from public.setup_human_decisions h
+      join public.trade_revisions r on r.proposal_id = h.proposal_id
+     where r.trade_id = t.id
+     order by h.recorded_at desc, h.id desc limit 1
+  ) decision on true
+  where t.id = p_trade_id and t.origin = 'PLANNED'
+$$;
+
 -- §5.2 stored phase: a close exists → POST_TRADE; an entry exists (planned execution, or any trade without a
--- Trading OS plan, which is live from creation) → LIVE; otherwise PRE_ENTRY.
+-- Trading OS plan, which is live from creation) → LIVE; a planned trade that ended without an entry (skipped,
+-- cancelled, a discarded draft) → POST_TRADE, so a note or screenshot added after the end can never become pre-entry
+-- evidence (§5.3); otherwise PRE_ENTRY. Rows stored earlier keep their phase; the reading side marks a stored phase
+-- that contradicts the end time (classifyTiming, "Recorded after the plan ended").
 create function private.trade_phase(p_trade_id uuid) returns text
 language sql stable security definer set search_path = '' as $$
   select case
@@ -830,6 +877,7 @@ language sql stable security definer set search_path = '' as $$
     when t.origin <> 'PLANNED'
       or exists (select 1 from public.trade_plan_links l join public.trade_executions e on e.plan_id = l.plan_id where l.trade_id = t.id)
       then 'LIVE'
+    when private.plan_ended_at(t.id) is not null then 'POST_TRADE'
     else 'PRE_ENTRY'
   end
   from public.trades t where t.id = p_trade_id
@@ -1232,6 +1280,7 @@ create function public.record_account_values(p_account_id uuid, p_balance text, 
 language plpgsql security definer set search_path = '' as $$
 begin
   perform private.lock_owned_account(p_account_id);
+  perform private.require_active_account(p_account_id);
   begin
     return public.record_observation(p_account_id, p_equity, p_balance, null);
   exception when raise_exception then
@@ -1259,6 +1308,7 @@ begin
     end if;
     return private.draft_envelope(t.id, v_proposal, 1);
   end if;
+  perform private.require_active_account(a.id);
   perform private.check_draft_proposal(a.id, p_proposal);
   v_proposal := private.save_draft_proposal(a.id, p_proposal, p_request_key, p_expected_risk_id, p_expected_observation_id);
   insert into public.trades(user_id, account_id, origin, request_key)
@@ -1287,6 +1337,7 @@ begin
   if private.trade_lifecycle(t.id) <> 'DRAFT' then
     raise exception 'DRAFT_NOT_EDITABLE: Only drafts can be revised';
   end if;
+  perform private.require_active_account(t.account_id);
   latest := private.latest_revision(t.id);
   if latest.revision is distinct from p_expected_revision then
     raise exception 'DRAFT_CHANGED: The draft changed since it was loaded (latest revision %)', coalesce(latest.revision::text, 'none');
@@ -1315,6 +1366,7 @@ begin
     return jsonb_build_object('tradeId', t.id,
       'proposalId', (select r.proposal_id from public.trade_revisions r where r.trade_id = t.id and r.revision = 1));
   end if;
+  perform private.require_active_account(original.account_id);
   latest := private.latest_revision(original.id);
   if latest.proposal_id is not null then
     select s.proposal into v_source from public.setup_proposals s where s.id = latest.proposal_id;
@@ -1418,6 +1470,13 @@ language plpgsql security definer set search_path = '' as $$
 declare v_trade_id uuid; t public.trades; latest public.trade_revisions; v_result jsonb;
   v_proposal public.setup_proposals; v_wrapped uuid;
 begin
+  -- A check or a lock writes to the proposal's account, which an archived account refuses (private.require_active_account);
+  -- only the replay of an existing lock, which writes nothing, still answers. Account row first, as everywhere.
+  select * into v_proposal from public.setup_proposals where id = p_proposal_id and user_id = auth.uid();
+  if found and not (p_lock and exists (select 1 from public.setup_locks l where l.proposal_id = v_proposal.id)) then
+    perform 1 from public.accounts where id = v_proposal.account_id for update;
+    perform private.require_active_account(v_proposal.account_id);
+  end if;
   if p_lock then
     select r.trade_id into v_trade_id from public.trade_revisions r where r.proposal_id = p_proposal_id and r.user_id = auth.uid();
     if v_trade_id is not null then
@@ -1463,6 +1522,7 @@ begin
   if private.trade_lifecycle(t.id) <> 'DRAFT' then
     raise exception 'DRAFT_NOT_EDITABLE: Only drafts can be checked';
   end if;
+  perform private.require_active_account(t.account_id);
   latest := private.latest_revision(t.id);
   begin
     v_result := public.check_setup_risk(latest.proposal_id, false);
@@ -1491,6 +1551,7 @@ begin
   if private.trade_lifecycle(t.id) <> 'DRAFT' then
     raise exception 'DRAFT_NOT_EDITABLE: Only drafts can be locked';
   end if;
+  perform private.require_active_account(t.account_id);
   begin
     v_result := public.check_setup_risk(latest.proposal_id, true);
   exception when raise_exception then
@@ -1645,6 +1706,7 @@ begin
     end if;
     return t.id;
   end if;
+  perform private.require_active_account(a.id);
   if v.symbol is null or v.direction is null then
     raise exception 'INVALID_INPUT: An instrument (or symbol) and a direction are required';
   end if;
@@ -1821,25 +1883,30 @@ end $$;
 -- width, height, captureMethod, copiedFrom?}. Returns {id, tradeId, phase, stateAtCreation, recordedAt, replayed}.
 -- ---------------------------------------------------------------------------------------------------------
 -- §7.4: a duplicated draft may copy only evidence that was Before entry in its source trade: active, same content,
--- V2 evidence stored PRE_ENTRY, and (when the source has an entry) recorded before the entry time. Legacy
--- screenshots belong to the source through its revisions. Live and after-close evidence is never copyable, because
--- it would become pre-entry evidence of the copy.
+-- V2 evidence stored PRE_ENTRY, recorded before the entry time when the source has an entry, and recorded before the
+-- end when the source plan ended without one (private.plan_ended_at: what was added after a skip, a cancellation or a
+-- discard is hindsight, whatever phase an older row stored). Legacy screenshots belong to the source through its
+-- revisions. Live and after-close evidence is never copyable, because it would become pre-entry evidence of the copy.
 create function private.copyable_evidence(p_source_trade uuid, p_evidence_id uuid, p_sha256 text) returns boolean
 language sql stable security definer set search_path = '' as $$
   with source_entry as (
     select e.entered_at from public.trade_plan_links l join public.trade_executions e on e.plan_id = l.plan_id
      where l.trade_id = p_source_trade
+  ), source_end as (
+    select private.plan_ended_at(p_source_trade) as ended_at
   )
   select exists (
            select 1 from public.trade_evidence x
             where x.id = p_evidence_id and x.trade_id = p_source_trade and x.sha256 = p_sha256 and x.phase = 'PRE_ENTRY'
               and not exists (select 1 from public.trade_evidence_removals r where r.evidence_id = x.id)
-              and not exists (select 1 from source_entry s where x.recorded_at >= s.entered_at))
+              and not exists (select 1 from source_entry s where x.recorded_at >= s.entered_at)
+              and not exists (select 1 from source_end ended where x.recorded_at >= ended.ended_at))
       or exists (
            select 1 from public.setup_screenshots s join public.trade_revisions r on r.proposal_id = s.proposal_id
             where s.id = p_evidence_id and r.trade_id = p_source_trade and s.sha256 = p_sha256
               and not exists (select 1 from public.setup_screenshot_removals x where x.screenshot_id = s.id)
-              and not exists (select 1 from source_entry e where s.uploaded_at >= e.entered_at))
+              and not exists (select 1 from source_entry e where s.uploaded_at >= e.entered_at)
+              and not exists (select 1 from source_end ended where s.uploaded_at >= ended.ended_at))
 $$;
 
 create function public.register_trade_evidence(p_user_id uuid, p_record jsonb) returns jsonb
@@ -2013,6 +2080,7 @@ begin
     end if;
     return e.id;
   end if;
+  perform private.require_active_account(a.id);
   insert into public.external_loss_entries(user_id, account_id, trading_day, amount, note, request_key)
     values (a.user_id, a.id, private.strategy_day(clock_timestamp()), v_amount, v_note, p_request_key) returning id into v_id;
   return v_id;
@@ -2091,8 +2159,9 @@ revoke all on function
   private.require_object(jsonb, text[], text), private.json_text(jsonb, text), private.integer_input(jsonb, text, bigint, bigint),
   private.uuid_input(text, text), private.decimal_input(text, text), private.money_input(text, text, boolean),
   private.signed_money_input(text, text), private.instant_input(text, text), private.v1_error_message(text),
-  private.lock_owned_account(uuid), private.lock_owned_trade(uuid, boolean), private.latest_revision(uuid),
-  private.linked_plan(public.trades), private.trade_lifecycle(uuid), private.trade_phase(uuid), private.effective_position(uuid),
+  private.lock_owned_account(uuid), private.require_active_account(uuid), private.lock_owned_trade(uuid, boolean), private.latest_revision(uuid),
+  private.linked_plan(public.trades), private.trade_lifecycle(uuid), private.plan_ended_at(uuid), private.trade_phase(uuid),
+  private.effective_position(uuid),
   private.guard_position_facts(), private.trade_instrument(public.trades), private.check_draft_proposal(uuid, jsonb),
   private.save_draft_proposal(uuid, jsonb, uuid, uuid, uuid), private.draft_envelope(uuid, public.setup_proposals, integer),
   private.lifecycle_envelope(public.trade_lifecycle_events), private.position_input(public.accounts, jsonb),

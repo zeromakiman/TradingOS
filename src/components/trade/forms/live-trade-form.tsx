@@ -39,6 +39,7 @@ import { pricePlaceholder } from "./plan-model";
 import type { FormAccount, FormUsage, LiveModel } from "./types";
 import { useFormAutosave } from "./use-autosave";
 import { useServerClock } from "./use-server-clock";
+import { ZonedTimeInput } from "../zoned-time-input";
 
 /**
  * Record Live Trade (docs/V2_ARCHITECTURE.md §8.2, §14.3): one minimal, mobile-first screen — account, instrument (or
@@ -395,7 +396,7 @@ export function LiveTradeForm({ now: serverNow, accounts, initial, action = reco
                 }
                 className="sm:max-w-xs"
               >
-                <Input type="datetime-local" step={60} max={maxWall} value={draft.enteredAt} readOnly={busy} onChange={event => update({ enteredAt: event.target.value }, ["enteredAt"])} />
+                <ZonedTimeInput zone={STRATEGY_ZONE_LABEL} max={maxWall} value={draft.enteredAt} readOnly={busy} onChange={event => update({ enteredAt: event.target.value }, ["enteredAt"])} />
               </Field>
             )}
           </div>

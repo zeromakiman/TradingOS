@@ -34,7 +34,9 @@ vi.mock("@/lib/performance-data", async importOriginal => ({
 }));
 
 import EdgeLoading from "@/app/(app)/edge/loading";
+import { exportHref } from "@/app/edge/export/contract";
 import EdgePage from "@/app/(app)/edge/page";
+import { binSign, Histogram } from "@/components/charts/bar-chart";
 import { keepPartsTogether } from "@/components/edge/breakdowns";
 import { DayTrade, daySummary } from "@/components/edge/day-sheet";
 import { assembleEdge, defaultCalendarMonth, type EdgeData, loadEdge } from "@/components/edge/edge-data";
@@ -42,12 +44,12 @@ import { EDGE_DESCRIPTION } from "@/components/edge/edge-screen";
 import { EXPORT_NOTE } from "@/components/edge/export-menu";
 import { formatDrawdownR, formatProfitFactor, formatRate, formatShare } from "@/components/edge/format";
 import {
-  breakdownSections, calendarModel, contributionSection, curveData, dailyData, distributionBins, exportLinks, exportMatchesOrigin, headlineModel, noMatchDescription,
-  originSection, rCoverage,
+  breakdownSections, calendarModel, contributionSection, curveData, dailyData, distributionBins, exportLinks, headlineModel, noMatchDescription,
+  originSection, rCoverage, scopeLabel,
 } from "@/components/edge/model";
 import { edgeHref, withParams } from "@/components/edge/params";
 import { dayView, PerformanceCalendar, PHONE_DAY_LIMIT } from "@/components/edge/performance-calendar";
-import { activeFilterCount, edgeFilters, exportHref, filterQuery, parseEdgeQuery, presetBounds } from "@/components/edge/query";
+import { accountFilterChip, activeFilterCount, edgeAccountHistoryHref, edgeFilters, filterQuery, parseEdgeQuery, presetBounds } from "@/components/edge/query";
 import { formatR, formatSignedMoney } from "@/domain/format";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
 import { EARLY_SAMPLE_NOTE } from "@/domain/performance";
@@ -193,17 +195,120 @@ describe("EDGE URL state (§14.6)", () => {
     expect(parseEdgeQuery({ day: "2026-09-14" }, NOW)).toMatchObject({ month: "2026-09", day: "2026-09-14" });
   });
 
-  it("maps the filters onto the legacy CSV's parameters (one account, planned trades)", () => {
+  it("maps the page's filters onto the CSV link: every origin, effective exit days, the page's own parameter names", () => {
     const query = parseEdgeQuery({ range: "month", model: "OTE", session: "ASIA", origin: "live-first", instrument: "EURUSD" }, NOW);
-    expect(exportHref(query, FTMO)).toBe(`/edge/export?account=${FTMO}&from=2026-10-01&to=2026-10-23&model=OTE&session=ASIAN_RANGE&instrument=EURUSD`);
-    expect(exportLinks({ context: ALL, query }).map(link => link.label)).toEqual(["FTMO 100K", "Personal 12K"]);
-    expect(exportLinks({ context: ONE, query })).toHaveLength(1);
+    expect(exportHref(query, FTMO)).toBe(`/edge/export?account=${FTMO}&closedFrom=2026-10-01&closedTo=2026-10-23&origin=live-first&model=OTE&session=ASIA&instrument=EURUSD`);
+    // All Accounts: the file of the page first, then one per account with trades on the page.
+    expect(exportLinks({ context: ALL, query, rows: dataset() }).map(link => link.label)).toEqual(["All Accounts", "FTMO 100K", "Personal 12K"]);
+    expect(exportLinks({ context: ONE, query, rows: dataset() })).toHaveLength(1);
   });
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Loader.
 // ---------------------------------------------------------------------------------------------------------------------
+describe("EDGE read-only account filter (§9.2)", () => {
+  const OLD = "20000000-0000-4000-8000-000000000003";
+  const withArchived = resolveAccountContext({
+    accounts: [...ACCOUNTS, { ...account(OLD, "Old challenge", "USD"), status: "ARCHIVED" }], stored: "all", lastAccount: null, proxyNotice: false,
+  });
+
+  it("reads it with the Journal's parser, narrows the statistics' filters and keeps it in the links the page builds", () => {
+    const query = parseEdgeQuery({ accountFilter: OLD.toUpperCase(), model: "ote", month: "2026-09" }, NOW);
+    expect(query).toMatchObject({ accountFilter: OLD, model: "OTE", invalid: [] });
+    expect(edgeFilters(query)).toEqual({ model: "OTE", accountFilter: OLD });
+    expect(activeFilterCount(query)).toBe(2);
+    expect(filterQuery(query)).toBe(`model=OTE&accountFilter=${OLD}`);
+    expect(exportHref(query, "all")).toContain(`accountFilter=${OLD}`);
+    expect(parseEdgeQuery({ accountFilter: "Old challenge" }, NOW).invalid).toEqual(["accountFilter"]);
+  });
+
+  it("resolves it against the context: kept in All Accounts (an unknown id stays and matches nothing), dropped in an account context", () => {
+    const params = { accountFilter: OLD, model: "OTE", origin: "live-first" };
+    expect(parseEdgeQuery(params, NOW, withArchived)).toMatchObject({ accountFilter: OLD, model: "OTE", origin: "LIVE_FIRST" });
+    const foreign = "20000000-0000-4000-8000-000000000099";
+    expect(parseEdgeQuery({ accountFilter: foreign }, NOW, withArchived).accountFilter).toBe(foreign);
+    // A context switch keeps the other parameters: the filter left in the URL counts nowhere, links and files lose it.
+    const stale = parseEdgeQuery(params, NOW, ONE);
+    expect(stale).toEqual({ range: "all", model: "OTE", origin: "LIVE_FIRST", calendar: "NET_R", invalid: [] });
+    expect(activeFilterCount(stale)).toBe(2);
+    expect(filterQuery(stale)).toBe("model=OTE&origin=live-first");
+    expect(edgeFilters(stale)).toEqual({ model: "OTE", origin: "LIVE_FIRST" });
+    expect(accountFilterChip(stale, ONE)).toBeNull();
+  });
+
+  it("shows it in words in All Accounts only, with the page without it as the way back", () => {
+    const query = parseEdgeQuery({ accountFilter: OLD, model: "OTE", month: "2026-09", view: "pnl" }, NOW);
+    expect(accountFilterChip(query, withArchived)).toEqual({ id: OLD, label: "Account: Old challenge · archived", removeHref: "/edge?model=OTE&view=pnl" });
+    // The way back names no account, whichever filters the page has.
+    const everything = parseEdgeQuery({ accountFilter: OLD, range: "30d", origin: "planned", instrument: "EURUSD", view: "count", currency: "USD" }, NOW, withArchived);
+    const back = accountFilterChip(everything, withArchived)?.removeHref ?? "";
+    expect(new URL(back, "http://edge.test").searchParams.has("accountFilter")).toBe(false);
+    expect(back).toBe("/edge?range=30d&origin=planned&instrument=EURUSD&view=count&currency=USD");
+    expect(accountFilterChip(query, ONE)).toBeNull();
+    expect(accountFilterChip(parseEdgeQuery({}, NOW), withArchived)).toBeNull();
+    expect(accountFilterChip(parseEdgeQuery({ accountFilter: "20000000-0000-4000-8000-000000000099" }, NOW), withArchived)?.label).toBe("Account: not available");
+    expect(edgeAccountHistoryHref(OLD)).toBe(`/edge?accountFilter=${OLD}&account=all`);
+  });
+
+  it("renders one account's statistics with its chip, and every drill-down keeps the filter", async () => {
+    m.context = withArchived;
+    const archivedRows = [closed("2026-10-05", "1", { account_id: OLD }), closed("2026-10-06", "-1", { account_id: OLD })];
+    m.load.mockImplementation(async (_db: unknown, _user: unknown, _scope: unknown, filters: { accountFilter?: string }) => ({
+      rows: filters.accountFilter === OLD ? archivedRows : dataset(), truncated: false,
+    }));
+    const html = await renderPage({ accountFilter: OLD });
+    expect(m.load).toHaveBeenCalledWith(expect.anything(), expect.any(String), { mode: "all" }, { accountFilter: OLD }, { closedOnly: true });
+    const text = visibleText(html);
+    expect(text).toContain("Account: Old challenge · archived");
+    expect(text).toContain("Closed trades 2");
+    expect(text).toContain("Reset filters");
+    expect(text).not.toMatch(UUID);
+    const remove = /<a[^>]*aria-label="Remove filter: Account: Old challenge · archived"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(remove).toContain('href="/edge"');
+    const journal = [...html.matchAll(/href="(\/journal\?[^"]*)"/g)].map(match => match[1].replace(/&amp;/g, "&"));
+    expect(journal.length).toBeGreaterThan(3);
+    expect(journal.filter(href => new URL(href, "http://edge.test").searchParams.get("accountFilter") !== OLD)).toEqual([]);
+  });
+
+  it("keeps it when the origin breakdown removes the origin filter, so the page never widens to every account", async () => {
+    m.context = withArchived;
+    m.load.mockImplementation(async () => ({ rows: [closed("2026-10-05", "1", { account_id: OLD, origin: "LIVE_FIRST" })], truncated: false }));
+    const html = await renderPage({ accountFilter: OLD, account: "all", origin: "live-first", month: "2026-10" });
+    const clear = /<a[^>]*href="([^"]*)"[^>]*>Remove the origin filter<\/a>/.exec(html)?.[1]?.replace(/&amp;/g, "&");
+    expect(clear).toBe(`/edge?accountFilter=${OLD}`);
+    expect(edgeHref({ ...parseEdgeQuery({ accountFilter: OLD, model: "OTE", origin: "live-first" }, NOW), origin: undefined })).toBe(`/edge?model=OTE&accountFilter=${OLD}`);
+    // Its own chip is the only way out of it.
+    const remove = /<a[^>]*aria-label="Remove filter: Account: Old challenge · archived"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(remove).toContain('href="/edge?origin=live-first"');
+  });
+
+  it("names the one account the statistics describe, and ignores a filter left in the URL by a switch to an account context", async () => {
+    expect(scopeLabel(withArchived, { accountFilter: OLD })).toBe("Old challenge · USD · archived");
+    expect(scopeLabel(withArchived, { accountFilter: PERSONAL })).toBe("Personal 12K · EUR");
+    expect(scopeLabel(withArchived, { accountFilter: "20000000-0000-4000-8000-000000000099" })).toBe("All Accounts · 3 trading accounts");
+    expect(scopeLabel(withArchived)).toBe("All Accounts · 3 trading accounts");
+    expect(scopeLabel(ONE, { accountFilter: OLD })).toBe("FTMO 100K · USD");
+    m.context = withArchived;
+    m.load.mockImplementation(async () => ({ rows: [closed("2026-10-05", "1", { account_id: OLD })], truncated: false }));
+    const filtered = visibleText(await renderPage({ accountFilter: OLD }));
+    expect(filtered).toContain("Old challenge · USD · archived");
+    expect(filtered).not.toContain("All Accounts · 3 trading accounts");
+    // The header selector keeps the other parameters when it switches the context to one account.
+    m.context = ONE;
+    m.load.mockReset();
+    m.load.mockImplementation(async () => ({ rows: [], truncated: false }));
+    const data = await loadEdge({ accountFilter: OLD, model: "OTE" });
+    expect(data.query.accountFilter).toBeUndefined();
+    expect(data.filters).toEqual({ model: "OTE" });
+    expect(m.load).toHaveBeenCalledWith(expect.anything(), expect.any(String), { mode: "account", accountId: FTMO }, { model: "OTE" }, { closedOnly: true });
+    const stale = visibleText(await renderPage({ accountFilter: OLD }));
+    expect(stale).toContain("No closed trades yet.");
+    expect(stale).not.toContain("Reset filters");
+    expect(stale).toContain("FTMO 100K · USD");
+  });
+});
+
 describe("EDGE loader", () => {
   it("reads the context's closed trades once, without the instrument filter, and filters the instrument in TypeScript", async () => {
     m.context = ONE;
@@ -460,7 +565,7 @@ describe("EDGE page (rendered)", () => {
     expect(text).toContain(EDGE_DESCRIPTION);
     expect(EDGE_DESCRIPTION).not.toContain("Every figure");
     expect(html).toMatch(/<a[^>]*href="\/journal\?state=closed%2Creviewed"[^>]*>Open these 19 trades in the Journal/);
-    expect(text).toContain("Export planned trades (CSV)");
+    expect(text).toContain("Export closed trades (CSV)");
   });
 
   it("names the trades without risk wherever a group, an account or a day is summarised", async () => {
@@ -536,29 +641,25 @@ describe("EDGE page (rendered)", () => {
     m.context = ONE;
     const html = await renderPage({ range: "month", model: "OTE" });
     // The menu (closed on arrival) lists the account's file below the note; its link carries the page's filters.
-    expect(html).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*>.*Export planned trades \(CSV\)/);
-    expect(exportLinks({ context: ONE, query: parseEdgeQuery({ range: "month", model: "OTE" }, NOW) })).toEqual([
-      { label: "FTMO 100K", detail: "USD", href: `/edge/export?account=${FTMO}&from=2026-10-01&to=2026-10-23&model=OTE` },
+    expect(html).toMatch(/<button[^>]*aria-haspopup="menu"[^>]*>.*Export closed trades \(CSV\)/);
+    const rows = dataset().filter(row => row.account_id === FTMO && row.entry_model === "OTE");
+    expect(exportLinks({ context: ONE, query: parseEdgeQuery({ range: "month", model: "OTE" }, NOW), rows })).toEqual([
+      { label: "FTMO 100K", detail: `${rows.length} trades · USD`, href: `/edge/export?account=${FTMO}&closedFrom=2026-10-01&closedTo=2026-10-23&model=OTE` },
     ]);
-    expect(EXPORT_NOTE).toContain("Live-first and imported trades are not included.");
+    expect(EXPORT_NOTE).toContain("planned, live-first and imported");
     expect(html).toContain("FTMO 100K · USD");
     expect(visibleText(html)).not.toContain("Account contribution");
   });
 
-  it("does not offer the planned-trades CSV while the page shows live-first or imported trades only, and says how to export", async () => {
+  it("offers the CSV while the page shows live-first or imported trades only: the file holds what the page shows", async () => {
     for (const origin of ["live-first", "imported"]) {
       m.context = ONE;
       const html = await renderPage({ origin, model: "OTE" });
-      const text = visibleText(html);
-      expect(html).toMatch(/<button[^>]*disabled=""[^>]*aria-describedby="[^"]+"[^>]*>.*Export planned trades \(CSV\)/);
-      expect(text).toContain("CSV export covers planned trades only. Remove the origin filter to export.");
-      expect(html).toMatch(/href="\/edge\?model=OTE"[^>]*>Remove the origin filter</);
-      expect(html).not.toContain("/edge/export");
-      expect(html).not.toContain('aria-haspopup="menu"');
+      expect(html).toMatch(/<button(?![^>]*disabled)[^>]*aria-haspopup="menu"[^>]*>.*Export closed trades \(CSV\)/);
+      expect(visibleText(html)).not.toContain("planned trades only");
     }
-    expect(exportMatchesOrigin({ origin: "PLANNED" })).toBe(true);
-    expect(exportMatchesOrigin({})).toBe(true);
-    expect(exportMatchesOrigin({ origin: "LIVE_FIRST" })).toBe(false);
+    expect(exportLinks({ context: ONE, query: parseEdgeQuery({ origin: "imported", model: "OTE" }, NOW), rows: dataset() })[0].href)
+      .toBe(`/edge/export?account=${FTMO}&origin=imported&model=OTE`);
   });
 
   it("shows the empty state with the next actions before the first closed trade", async () => {
@@ -570,7 +671,7 @@ describe("EDGE page (rendered)", () => {
     expect(html).toContain('href="/trades/new"');
     expect(html).toContain('href="/trades/live/new"');
     expect(text).not.toContain("Cumulative R");
-    expect(text).not.toContain("Export planned trades");
+    expect(text).not.toContain("Export closed trades");
   });
 
   it("offers to reset filters when the filters match nothing, naming the date range only when one is set", async () => {
@@ -647,9 +748,23 @@ describe("EDGE page (rendered)", () => {
     const bins = distributionBins(data.view, data.rows);
     const zero = bins.find(bin => bin.from === "0");
     // Oct 9 closed at exactly 0R: it shares the 0.0R to +0.5R bin, whose words now say it is break-even.
-    expect(zero).toMatchObject({ label: "0.0R to +0.5R", count: 1, countLabel: "1 trade · 1 break-even (0R)" });
-    expect(bins.filter(bin => bin !== zero).every(bin => !bin.countLabel?.includes("break-even"))).toBe(true);
+    expect(zero).toMatchObject({ label: "0.0R to +0.5R", count: 1, breakEven: 1, countLabel: "1 trade · 1 break-even (0R)" });
+    expect(binSign(zero ?? { from: null, to: null, breakEven: 0 })).toBe("neutral");
+    expect(bins.filter(bin => bin !== zero).every(bin => !bin.countLabel?.includes("break-even") && bin.breakEven === 0)).toBe(true);
     expect(bins.every(bin => bin.href?.startsWith("/journal?"))).toBe(true);
+  });
+
+  it("draws a 0R bin that holds only winners as profit on the page", () => {
+    const data = edgeData([closed("2026-10-05", "0.3"), closed("2026-10-06", "-0.7"), closed("2026-10-07", "1.2")]);
+    if (!data.view) throw new Error("expected a view");
+    const bins = distributionBins(data.view, data.rows);
+    const zero = bins.find(bin => bin.from === "0");
+    expect(zero).toMatchObject({ count: 1, breakEven: 0, countLabel: "1 trade" });
+    const html = renderToStaticMarkup(createElement(Histogram, { title: "R distribution", question: "How are outcomes distributed?", bins }));
+    const signs = [...html.matchAll(/class="chart-bar" data-sign="([a-z]+)"/g)].map(match => match[1]);
+    expect(signs).toHaveLength(bins.length);
+    expect(signs[bins.indexOf(zero ?? bins[0])]).toBe("pos");
+    expect(signs).not.toContain("neutral");
   });
 
   it("dims the results while Reset filters loads, keeping a real link", async () => {

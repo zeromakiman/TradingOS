@@ -74,4 +74,5 @@ export const FILTER_PARAM_NAMES: Record<string, string> = {
   riskPlan: "risk plan version",
   rFrom: "R range",
   rTo: "R range",
+  accountFilter: "trading account",
 };

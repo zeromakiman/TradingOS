@@ -547,28 +547,42 @@ describe("Account dashboard", () => {
     expect(visibleText(quiet)).toContain("No live trades on this account.");
   });
 
-  it("offers no link that would switch to an archived account, which can't be the working context", () => {
+  it("never links to a switch to an archived account: its history opens in All Accounts with the read-only account filter", () => {
     const active = hrefs(view(dashboardFixture()));
     // An active account's Journal, EDGE and day drill-downs switch the context to it.
     expect(active.filter(href => href.includes(`account=${FTMO}`)).length).toBeGreaterThanOrEqual(5);
+    expect(active.some(href => href.includes("accountFilter="))).toBe(false);
     const markup = view(dashboardFixture({ target: { ...ftmo, status: "ARCHIVED" } }));
     const text = visibleText(markup);
     expectClean(markup);
     const links = hrefs(markup);
-    expect(links.filter(href => /[?&]account=/.test(href))).toEqual([]);
-    expect(links.filter(href => href.startsWith("/journal") || href.startsWith("/edge"))).toEqual([]);
+    // Every context a link names is All Accounts: the archived account is never the context.
+    const contexts = links.flatMap(href => new URL(href, "http://x").searchParams.getAll("account"));
+    expect(contexts.length).toBeGreaterThanOrEqual(5);
+    expect(new Set(contexts)).toEqual(new Set(["all"]));
+    // Journal, EDGE, day and group drill-downs all carry the account filter, combined with All Accounts.
+    const history = links.filter(href => href.startsWith("/journal") || href.startsWith("/edge"));
+    expect(history.length).toBeGreaterThanOrEqual(5);
+    for (const href of history) {
+      const params = new URL(href, "http://x").searchParams;
+      expect(params.get("accountFilter"), href).toBe(FTMO);
+      expect(params.get("account"), href).toBe("all");
+    }
+    expect(links).toContain(`/journal?accountFilter=${FTMO}&account=all`);
+    expect(links).toContain(`/edge?accountFilter=${FTMO}&account=all`);
+    expect(links).toContain(`/journal?accountFilter=${FTMO}&closedFrom=2026-10-14&closedTo=2026-10-14&state=closed%2Creviewed&account=all`);
     expect(text).toContain(ARCHIVED_DASHBOARD_COPY);
-    expect(text).not.toContain("history stays here and in the Journal");
-    expect(text).not.toContain("All in Journal");
+    expect(ARCHIVED_DASHBOARD_COPY).not.toContain("restore it to filter");
+    expect(text).toContain("All in Journal");
     expect(text).not.toContain("Update values");
-    expect(markup).not.toContain('aria-label="Account links"');
-    // Points still open their trades; days and groups show their readout only.
+    expect(markup).toContain('aria-label="Account links"');
+    // Points still open their trades; days open the account's trades of that day.
     expect(links).toContain(`/trades/${dashboardTrades[0].id}`);
-    expect(text).toContain("Click a point to open its trade.");
-    expect(text).not.toContain("a day to list its trades in the Journal");
-    // The empty state of an archived account offers no new trade either.
+    expect(text).toContain("Click a point to open its trade, or a day to list its trades in the Journal.");
+    // The empty state of an archived account offers no new trade, and no link switches to it.
     const empty = view({ ...dashboardFixture({ target: { ...ftmo, status: "ARCHIVED" } }), metrics: metricsFor(ftmo, [], null), recentTrades: [], liveTrades: [] });
-    expect(hrefs(empty).filter(href => /[?&]account=/.test(href))).toEqual([]);
+    expect(hrefs(empty).some(href => href.includes("/trades/new") || href.includes("/trades/live/new"))).toBe(false);
+    expect(hrefs(empty).flatMap(href => new URL(href, "http://x").searchParams.getAll("account")).every(value => value === "all")).toBe(true);
   });
 
   it("loads a link that switches to another trading-account context in full, so the header shows the new context", () => {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// V2 AI server actions (spec §8.3, §11, §13.10): schema gate first, zod-validated input, ids from the form only,
+// V2 AI server actions (spec §8.3, §11, §13.10): the shared schema gate first, zod-validated input, ids from the form only,
 // request-key idempotency, revalidation of the V2 routes, human copy for every outcome, and unstable_rethrow before
 // any error handling.
 
@@ -11,7 +11,8 @@ const m = vi.hoisted(() => ({
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: m.revalidate }));
 vi.mock("next/navigation", () => ({ unstable_rethrow: m.rethrow }));
-vi.mock("@/lib/supabase/server", () => ({ requireUser: async () => ({ db: { rpc: m.schema }, user: { id: "10000000-0000-4000-8000-000000000001" } }) }));
+// The shared schema gate (src/lib/schema-gate.ts) reads the marker with the verified session; only that session is mocked.
+vi.mock("@/lib/account-context", () => ({ currentSession: async () => ({ db: { rpc: m.schema }, user: { id: "10000000-0000-4000-8000-000000000001" } }) }));
 vi.mock("@/lib/analyze-setup", () => ({ analyzeTradeSetup: m.analyze }));
 vi.mock("@/lib/bias-challenge", () => ({ challengeTradeBias: m.challenge }));
 vi.mock("@/lib/trade-timeline-review", () => ({ reviewTradeTimeline: m.review }));

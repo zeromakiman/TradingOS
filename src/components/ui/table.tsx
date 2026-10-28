@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ComponentProps, ReactNode } from "react";
 import { cx } from "./cx";
+import { prefetchFor } from "./links";
 
 type Align = "start" | "center" | "end";
 
@@ -47,8 +48,9 @@ export function TableCell({ className, align = "start", label, primary = false, 
   return <td className={cx("ui-table-td", className)} data-align={align} data-label={label} data-primary={primary || undefined} {...props} />;
 }
 
-export function TableLink({ className, ...props }: ComponentProps<typeof Link>) {
-  return <Link className={cx("ui-table-link", className)} {...props} />;
+/** Link in a table cell; a link that switches the account context (`?account=`) is never prefetched. */
+export function TableLink({ className, href, prefetch, ...props }: ComponentProps<typeof Link>) {
+  return <Link className={cx("ui-table-link", className)} href={href} prefetch={prefetchFor(href, prefetch)} {...props} />;
 }
 
 export type DataTableColumn<Row> = {

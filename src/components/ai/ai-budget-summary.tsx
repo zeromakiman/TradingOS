@@ -47,14 +47,15 @@ export interface AiBudgetSummaryProps {
   timeDisplay?: TimeDisplay;
   /** Clock that decides whether AI pricing is still valid; defaults to the current time. */
   now?: Date;
+  /**
+   * Rendered inside Settings → AI, next to the account's AI controls: the copy points to those controls instead of
+   * sending the trader to Settings. Every other placement keeps the default.
+   */
+  inSettings?: boolean;
   className?: string;
 }
 
 const MICROS_PER_CENT = 10_000;
-
-function euros(micros: number, rounding: Decimal.Rounding): string {
-  return formatMoney(new Decimal(micros).div(1_000_000).toDecimalPlaces(2, rounding).toFixed(), "EUR");
-}
 
 function capEuros(cents: number): string {
   return formatMoney(new Decimal(cents).div(100).toFixed(), "EUR");
@@ -91,23 +92,22 @@ export interface AiBudgetStatusModel {
 
 const LIMIT_REACHED = "This month's budget can't cover another AI request. New requests are blocked until it resets or you raise the limit.";
 const UNAVAILABLE = "AI is unavailable right now. Other Trading OS workflows are unaffected.";
+/** A held (uncertain) reservation in plain words: what happened, what was charged and what resolves it. */
+export const HELD_RESERVATION_REASON =
+  "An earlier AI request ended without a confirmed cost, so the amount held for it stays in place. Nothing beyond that amount was charged. AI requests for this account are paused until an accounting review confirms the cost or releases the hold.";
+const OFF_REASON = "AI is off for this account. Nothing is sent until you turn it on in Settings → AI.";
+const OFF_REASON_IN_SETTINGS = "AI is off for this account. Nothing is sent until you turn it on below.";
 
 /**
  * The one status chip and its reason. Uncertainty wins over everything because it pauses requests until it is
  * resolved. "Limit reached" also covers a remainder too small for the cheapest request, and "Unavailable" expired
  * pricing, so the chip never says On while every AI button is disabled.
  */
-export function aiBudgetStatus(budget: AiBudgetModel, now: Date = new Date()): AiBudgetStatusModel {
+export function aiBudgetStatus(budget: AiBudgetModel, now: Date = new Date(), options: { inSettings?: boolean } = {}): AiBudgetStatusModel {
   const { snapshot, presentation } = budget;
   if (!snapshot || !presentation) return { label: "Unavailable", tone: "muted", reason: budget.error ?? UNAVAILABLE };
-  if (snapshot.uncertain) {
-    return {
-      label: "Paused — needs review",
-      tone: "warning",
-      reason: "The cost of an earlier request could not be confirmed, so the amount held for it stays in place. AI requests are paused until it is reviewed.",
-    };
-  }
-  if (!snapshot.enabled) return { label: "Off", tone: "neutral", reason: "AI is off for this account. Nothing is sent until you turn it on in Settings → AI." };
+  if (snapshot.uncertain) return { label: "Paused — needs review", tone: "warning", reason: HELD_RESERVATION_REASON };
+  if (!snapshot.enabled) return { label: "Off", tone: "neutral", reason: options.inSettings ? OFF_REASON_IN_SETTINGS : OFF_REASON };
   if (budget.system.status !== "ENABLED") return { label: "Unavailable", tone: "muted", reason: budget.error ?? UNAVAILABLE };
   const smallest = smallestRequestMicros(now);
   if (smallest === null) return { label: "Unavailable", tone: "muted", reason: `${PRICING_UNAVAILABLE} Other Trading OS workflows are unaffected.` };
@@ -124,12 +124,38 @@ function resetDay(snapshot: BudgetSnapshot): string | null {
   }
 }
 
+/** Whole cents of a micro-euro amount, rounded up (a cost is never understated). */
+function centsUp(micros: number): Decimal {
+  return new Decimal(Math.max(0, micros)).div(MICROS_PER_CENT).toDecimalPlaces(0, Decimal.ROUND_UP);
+}
+
 /**
- * `€0.74 of €5.00 · €4.26 left`. Amounts held for requests in progress are shown only in Details (§11.2); the
- * remainder already excludes them. Both amounts round down, so the line never overstates what is still available.
+ * The figures of `€0.14 of €10.00 · €9.86 left` and the held amount of Details, in whole cents, so they always
+ * reconcile: used and held round up (never understated), and what is left is the limit minus both (never below
+ * zero), so used + held + left equals the limit and what is left is never more than is really available.
+ * `remainingMicros` is `budgetPresentation().remainingMicros` (limit − used − held, floored at zero).
+ */
+export function aiBudgetFigures(snapshot: BudgetSnapshot, remainingMicros: number): { usedCents: Decimal; heldCents: Decimal; leftCents: Decimal } {
+  const usedCents = centsUp(snapshot.usedMicros);
+  const heldCents = centsUp(snapshot.heldMicros);
+  const reconciled = Decimal.max(0, new Decimal(snapshot.budgetCents).minus(usedCents).minus(heldCents));
+  // Never more than the exact remainder, whatever the caller passed.
+  const leftCents = Decimal.min(reconciled, new Decimal(Math.max(0, remainingMicros)).div(MICROS_PER_CENT).toDecimalPlaces(0, Decimal.ROUND_DOWN));
+  return { usedCents, heldCents, leftCents };
+}
+
+function centsText(cents: Decimal): string {
+  return formatMoney(cents.div(100).toFixed(2), "EUR");
+}
+
+/**
+ * `€0.14 of €10.00 · €9.86 left`. Amounts held for requests in progress are shown only in Details (§11.2); the
+ * remainder already excludes them. Used rounds up and left is the limit minus the rounded used and held amounts, so
+ * the figures add up and never overstate what is still available (`aiBudgetFigures`).
  */
 export function aiBudgetAmounts(snapshot: BudgetSnapshot, remainingMicros: number): string {
-  return `${euros(snapshot.usedMicros, Decimal.ROUND_DOWN)} of ${capEuros(snapshot.budgetCents)} · ${euros(remainingMicros, Decimal.ROUND_DOWN)} left`;
+  const { usedCents, leftCents } = aiBudgetFigures(snapshot, remainingMicros);
+  return `${centsText(usedCents)} of ${capEuros(snapshot.budgetCents)} · ${centsText(leftCents)} left`;
 }
 
 /** "AI usage this month · €0.74 of €5.00 · €4.26 left · resets Nov 1". */
@@ -175,7 +201,7 @@ function BudgetDetails({ budget, display }: { budget: AiBudgetModel; display: Ti
         {snapshot && presentation && (
           <dl className="grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-4 gap-y-1">
             <dt className="text-2">Reserved for requests in progress</dt>
-            <dd className="num">{euros(snapshot.heldMicros, Decimal.ROUND_UP)}</dd>
+            <dd className="num">{centsText(aiBudgetFigures(snapshot, presentation.remainingMicros).heldCents)}</dd>
             <dt className="text-2">Committed this month</dt>
             <dd className="num">{presentation.percentage}% of the limit</dd>
             <dt className="text-2">Accounting</dt>
@@ -213,8 +239,8 @@ function BudgetDetails({ budget, display }: { budget: AiBudgetModel; display: Ti
   );
 }
 
-export function AiBudgetSummary({ accountName, budget, compact = false, timeDisplay = STRATEGY_TIME, now, className }: AiBudgetSummaryProps) {
-  const status = aiBudgetStatus(budget, now);
+export function AiBudgetSummary({ accountName, budget, compact = false, timeDisplay = STRATEGY_TIME, now, inSettings = false, className }: AiBudgetSummaryProps) {
+  const status = aiBudgetStatus(budget, now, { inSettings });
   const chip = (
     <StatusPill tone={status.tone} data-budget-status={status.label}>
       {status.label}

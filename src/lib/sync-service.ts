@@ -56,6 +56,8 @@ export function platformOptions(env: Readonly<Record<string, string | undefined>
 const ERROR_COPY = {
   AUTH_REQUIRED: "Your session has ended. Sign in again to continue.",
   ACCOUNT_NOT_FOUND: "That trading account isn't available.",
+  // An archived account takes no new connection and no new imported trade (0015 private.require_active_account).
+  ACCOUNT_ARCHIVED: "This trading account is archived, so it takes no new trades or records. Restore it in Manage account to use it again.",
   PROVIDER_NOT_AVAILABLE: "This platform isn't available yet. Trades are recorded manually in this version.",
   CONNECTION_EXISTS: "This trading account already has an active connection. Disconnect it first.",
   CONNECTION_NOT_FOUND: "That connection isn't available.",
@@ -269,15 +271,44 @@ async function oneExecution(db: Db, column: "id" | "linked_trade_id", value: str
 }
 
 export const UNMATCHED_LIMIT = 100;
+/** Default page of `listLinkedExecutions`. */
+export const LINKED_LIMIT = 100;
+const MAX_EXECUTION_PAGE = 500;
 
-/** Stored executions without a linked trade (held as ambiguous, or unlinked by the trader), newest entry first. */
-export async function listUnmatchedExecutions(db: Db, options: { accountId?: string; limit?: number } = {}): Promise<ExternalExecution[]> {
-  const limit = Math.min(Math.max(Math.trunc(options.limit ?? UNMATCHED_LIMIT), 1), 500);
-  let query = db.from("external_execution_status").select(EXECUTION_COLUMNS).is("linked_trade_id", null);
+export interface ExecutionListOptions {
+  /** One trading account; every account the session can read when absent. */
+  accountId?: string;
+  /** Page size, clamped to 1..500. */
+  limit?: number;
+}
+
+/**
+ * One page of the session's executions in their effective state (`external_execution_status`, RLS scoped), by current
+ * link state, newest entry first (then by id, so pages are stable).
+ */
+async function listExecutions(db: Db, linked: boolean, options: ExecutionListOptions, defaultLimit: number): Promise<ExternalExecution[]> {
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? defaultLimit), 1), MAX_EXECUTION_PAGE);
+  const all = db.from("external_execution_status").select(EXECUTION_COLUMNS);
+  let query = linked ? all.not("linked_trade_id", "is", null) : all.is("linked_trade_id", null);
   if (options.accountId !== undefined) query = query.eq("account_id", options.accountId);
   const { data, error } = await query.order("entered_at", { ascending: false }).order("id", { ascending: true }).limit(limit);
   if (error) throw new Error("Platform executions are unavailable.");
   return z.array(executionRow).parse(data).map(toExecution);
+}
+
+/** Stored executions without a linked trade (held as ambiguous, or unlinked by the trader), newest entry first. */
+export function listUnmatchedExecutions(db: Db, options: ExecutionListOptions = {}): Promise<ExternalExecution[]> {
+  return listExecutions(db, false, options, UNMATCHED_LIMIT);
+}
+
+/**
+ * Stored executions currently linked to a trade, newest entry first: automatic matches and trader links to planned
+ * trades (`linkMethod` AUTO_MATCH / USER, which the trader may unlink) and positions imported as trades
+ * (IMPORT_CREATED, linked for good). An execution the trader unlinked is no longer here; `listUnmatchedExecutions`
+ * lists it again.
+ */
+export function listLinkedExecutions(db: Db, options: ExecutionListOptions = {}): Promise<ExternalExecution[]> {
+  return listExecutions(db, true, options, LINKED_LIMIT);
 }
 
 export function loadExecution(db: Db, executionId: string): Promise<ExternalExecution | null> {

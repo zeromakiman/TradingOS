@@ -1,6 +1,7 @@
 import Decimal from "decimal.js";
 import { CircleHelp, Info, Plus, Search } from "lucide-react";
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
@@ -44,12 +45,13 @@ import { TechnicalDetails } from "@/components/ui/technical-details";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip } from "@/components/ui/tooltip";
 import { formatMoney, formatR, formatSignedMoney } from "@/domain/format";
+import { THEME_COOKIE } from "@/lib/account-context";
 
 export const metadata: Metadata = { title: "UI gallery · Trading OS", robots: { index: false, follow: false } };
 
-/** Developer-only: available outside production builds, or when TRADING_OS_DEV_PAGES=true. */
+/** Developer-only (debug isolation): a production build answers 404, whatever the environment says. */
 function galleryEnabled() {
-  return process.env.NODE_ENV !== "production" || process.env.TRADING_OS_DEV_PAGES === "true";
+  return process.env.NODE_ENV !== "production";
 }
 
 // ── Synthetic data (no real accounts, trades or money) ───────────────────────────────
@@ -132,17 +134,21 @@ const CALENDAR_MODE_LABELS: [CalendarMode, string][] = [
 
 const isCalendarMode = (value: unknown): value is CalendarMode => CALENDAR_MODE_LABELS.some(([mode]) => mode === value);
 
+/** 0.5R bins as `distributionR` fills them: the bin that starts at 0R also counts its break-even trades (exactly 0R). */
 const HISTOGRAM_BINS: HistogramBin[] = ["-1.5", "-1", "-0.5", "0", "0.5", "1", "1.5", "2", "2.5", "3"].map((from) => {
   const to = new Decimal(from).plus("0.5").toFixed();
-  const count = R_RESULTS.filter((result) => new Decimal(result).gte(from) && new Decimal(result).lt(to)).length;
-  return { label: `${formatTickR(from)} to ${formatTickR(to)}`, from, to, count, countLabel: tradesLabel(count), href: `/journal?rFrom=${from}&rTo=${to}` };
+  const members = R_RESULTS.filter((result) => new Decimal(result).gte(from) && new Decimal(result).lt(to));
+  const count = members.length;
+  const breakEven = members.filter((result) => new Decimal(result).isZero()).length;
+  const countLabel = breakEven ? `${tradesLabel(count)} · ${breakEven} break-even (0R)` : tradesLabel(count);
+  return { label: `${formatTickR(from)} to ${formatTickR(to)}`, from, to, count, breakEven, countLabel, href: `/journal?rFrom=${from}&rTo=${to}` };
 });
 
 /** Outliers collect in open-ended edge bins, as `distributionR` returns them. */
 const OUTLIER_BINS: HistogramBin[] = [
-  { label: "Below -2.0R", from: null, to: "-2", count: 1, countLabel: tradesLabel(1) },
+  { label: "Below -2.0R", from: null, to: "-2", count: 1, breakEven: 0, countLabel: tradesLabel(1) },
   ...HISTOGRAM_BINS.filter((bin) => bin.from !== null && new Decimal(bin.from).gte("-1")),
-  { label: "+3.5R and above", from: "3.5", to: null, count: 2, countLabel: tradesLabel(2) },
+  { label: "+3.5R and above", from: "3.5", to: null, count: 2, breakEven: 0, countLabel: tradesLabel(2) },
 ];
 
 const BY_MODEL: ChartDatum[] = [
@@ -351,8 +357,12 @@ export default async function UiGalleryPage({ searchParams }: { searchParams: Pr
   const params = await searchParams;
   const requested = typeof params.account === "string" ? params.account : "all";
   const context: AccountContextSelection = ACCOUNTS.some((account) => account.id === requested) ? { mode: "account", accountId: requested } : { mode: "all" };
-  // ?theme=light|dark|system pins the theme (for screenshots); ?calendar=NET_R|NET_PNL|GROSS_LOSS|COUNT switches the calendar mode.
-  const theme: ThemePreference = typeof params.theme === "string" && isThemePreference(params.theme) ? params.theme : "system";
+  // ?theme=light|dark|system pins the theme (for screenshots); without it the stored choice applies, as on every page,
+  // so the switches render the theme the root layout already painted. ?calendar=NET_R|NET_PNL|GROSS_LOSS|COUNT switches
+  // the calendar mode.
+  const stored = (await cookies()).get(THEME_COOKIE)?.value ?? "";
+  const pinned = typeof params.theme === "string" && isThemePreference(params.theme) ? params.theme : null;
+  const theme: ThemePreference = pinned ?? (isThemePreference(stored) ? stored : "system");
   const calendarMode: CalendarMode = isCalendarMode(params.calendar) ? params.calendar : "NET_R";
 
   return (

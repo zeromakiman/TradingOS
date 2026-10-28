@@ -27,10 +27,27 @@ export function categorySummary(name: string, data: ChartDatum[]): string {
   return `${name}: ${data.length} entries. Highest ${describeEntry(data[range.maxIndex])}; lowest ${describeEntry(data[range.minIndex])}.`;
 }
 
-/** "R distribution: 24 outcomes in 8 bins; most frequent −1.0R to −0.5R (6)." */
+/** Counts are whole, non-negative numbers; anything else counts as zero. */
+export const safeCount = (count: number) => (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
+
+/**
+ * Count of a histogram bin in words, the same in the chart, its table, the tooltips and the text summary: the bin's
+ * `countLabel`, or "3", or "3 (1 at 0R)" when it holds break-even trades.
+ */
+export function binCountText(bin: Pick<HistogramBin, "count" | "countLabel" | "breakEven">): string {
+  if (bin.countLabel) return bin.countLabel;
+  const count = safeCount(bin.count);
+  const breakEven = safeCount(bin.breakEven);
+  return breakEven > 0 ? `${count} (${breakEven} at 0R)` : String(count);
+}
+
+/**
+ * "R distribution: 24 outcomes in 8 bins; most frequent −1.0R to −0.5R: 6." The count reads as in the chart and its
+ * table ("0.0R to +0.5R: 3 (2 at 0R)").
+ */
 export function histogramSummary(name: string, bins: HistogramBin[]): string {
   const total = bins.reduce((sum, bin) => sum + bin.count, 0);
   if (total === 0) return `${name}: no outcomes yet.`;
   const mode = bins.reduce((best, bin) => (bin.count > best.count ? bin : best), bins[0]);
-  return `${name}: ${total} ${total === 1 ? "outcome" : "outcomes"} in ${bins.length} bins; most frequent ${mode.label} (${mode.countLabel ?? mode.count}).`;
+  return `${name}: ${total} ${total === 1 ? "outcome" : "outcomes"} in ${bins.length} bins; most frequent ${mode.label}: ${binCountText(mode)}.`;
 }

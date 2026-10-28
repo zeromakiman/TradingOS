@@ -17,6 +17,7 @@ import { operationContract } from "./operation-contract";
 import { operationFor } from "./operations";
 import { ProviderError } from "./provider";
 import { providerKey } from "./provider-config";
+import { estimateRequest } from "./request-estimate";
 import { budgetedAiRequest } from "./request-gate";
 import { rpcErrorCode, rpcErrorMessage } from "./rpc-error";
 import { type AiEvidence, downloadEvidenceImages, EvidenceSelectionError, loadTradeEvidence, reviewEvidence, selectEvidence, type UserDb } from "./trade-evidence";
@@ -41,8 +42,12 @@ export interface PreTradeOutcome {
   message: string;
 }
 
-/** Bounded facts size of the pre-trade operations (unchanged from V1). */
+/** Bounded facts size of the pre-trade operations: 4 × the 16,000-token input limit, so the facts alone always fit. */
 export const PRE_TRADE_FACTS_BYTES = 64_000;
+/** Copy when the draft and its selected screenshots would not fit the operation's input limit as one request. */
+export const PRE_TRADE_TOO_LARGE = "This draft and the selected screenshots are too large to analyse in one request. Select fewer screenshots or shorten the thesis. Nothing was sent.";
+/** A screenshot whose pixel size is not read yet: the estimate prices it at the tile-formula maximum. */
+const UNSIZED_IMAGE = "data:image/png;base64,AA==";
 
 const STATE_COPY: Readonly<Record<Exclude<DraftState, "OPEN">, string>> = {
   NOT_PLANNED: "Pre-trade AI tools work on planned drafts. No pre-trade plan was recorded before execution.",
@@ -140,6 +145,12 @@ export async function runDraftRequest<T>(
   const facts = config.context(setup, selected.map(reviewEvidence));
   if (Buffer.byteLength(JSON.stringify(facts)) > PRE_TRADE_FACTS_BYTES) {
     return { status: "SCOPE_LIMIT", message: "This draft exceeds the bounded analysis size. Nothing was sent." };
+  }
+  // The whole request (prompt, facts, response schema and every selected screenshot at its maximum tile cost) is
+  // checked before anything is written; the gate checks it again with the downloaded screenshots before reserving.
+  const placeholders = selected.map(item => ({ sourceId: `evidence:${item.id}`, role: item.role, dataUrl: UNSIZED_IMAGE }));
+  if (estimateRequest(operation, { context: facts, images: placeholders, prior: [] }).tokens > operation.maxInputTokens) {
+    return { status: "SCOPE_LIMIT", message: PRE_TRADE_TOO_LARGE };
   }
   const admin = trustedServer();
   const start = await admin.rpc("start_bias_challenge", {

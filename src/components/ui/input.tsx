@@ -21,17 +21,20 @@ export function withAdornments(control: ReactNode, { startAdornment, endAdornmen
   );
 }
 
+/** Fields are 44px tall on touch screens (§13.5) and keep the 40px desktop density elsewhere. */
+export const INPUT_TOUCH_TARGET = "pointer-coarse:min-h-11";
+
 export type InputProps = ComponentProps<"input"> & InputAdornments;
 
 export function Input({ className, startAdornment, endAdornment, ...props }: InputProps) {
-  return withAdornments(<input className={cx("input", className)} {...props} />, { startAdornment, endAdornment });
+  return withAdornments(<input className={cx("input", INPUT_TOUCH_TARGET, className)} {...props} />, { startAdornment, endAdornment });
 }
 
 /** Native select (works without JavaScript and inside forms) with the design-system chrome. */
 export function Select({ className, children, ...props }: ComponentProps<"select">) {
   return (
     <div className="select-wrap">
-      <select className={cx("input", className)} {...props}>
+      <select className={cx("input", INPUT_TOUCH_TARGET, className)} {...props}>
         {children}
       </select>
       <ChevronDown aria-hidden="true" className="select-chevron" />

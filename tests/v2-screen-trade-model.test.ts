@@ -64,13 +64,13 @@ import {
   validateEntry, validateEntryDetails,
 } from "@/components/trade/form-model";
 import {
-  addedLater, blockedOnEarlierDay, blockingCheckOf, checkedRevisionOf, closeMode, copiedAfterPlanEnded, duplicateNotes, entryDefaults, entryLine, evidenceMode, headerActions,
-  headerFacts, inCausalOrder, lastRevisionSource, lessonsOf, lessonTiming, listInWords, lockBlockedReason, lockedLine, lockSummary, missingEntryFields,
-  newEntriesLabel, nextStepHint, outcomeView, planChecks, planEndedAt, planFacts, positionFacts, positionRecordedLine, resultSummary, reviewMode,
-  riskBasisPreview, skipSlotNote, whenLabel, withPlanEndTiming, workspaceDetail, workspaceLayout,
+  ARCHIVED_DRAFT_HINT, addedLater, blockedOnEarlierDay, blockingCheckOf, closeMode, duplicateNotes, entryDefaults, entryLine, evidenceMode, headerActions, headerFacts,
+  lastRevisionSource, lessonsOf, lessonTiming, listInWords, lockBlockedReason, lockedLine, lockSummary, missingEntryFields, newEntriesLabel, nextStepHint,
+  outcomeView, planChecks, planFacts, positionFacts, positionRecordedLine, resultSummary, reviewMode, riskBasisPreview, skipSlotNote, whenLabel,
+  workspaceLayout,
 } from "@/components/trade/model";
 import { RecordEntryForm } from "@/components/trade/record-entry-form";
-import { returnFocusTo } from "@/components/trade/reveal";
+import { returnFocusTo, reveal, revealTradeTarget, TRADE_TARGETS, tradeTargetOf } from "@/components/trade/reveal";
 import { TagsForm } from "@/components/trade/tags-form";
 import { instantOfWallClock, wallClockOf, zoneHint } from "@/components/trade/time-input";
 import { TradeProgress } from "@/components/trade/trade-progress";
@@ -79,7 +79,7 @@ import { LEDGER_COLUMNS, LIFECYCLES, type LedgerTrade, type Lifecycle } from "@/
 import { planVsReality } from "@/domain/plan-vs-reality";
 import { STRATEGY_TIME } from "@/domain/time-display";
 import type { TimelineItem, TimelineKind, Timing } from "@/domain/timeline";
-import { deriveTradeState } from "@/domain/trade-state";
+import { deriveTradeState, planEndedAt } from "@/domain/trade-state";
 import type { CheckView, EvidenceItemView, ProposalView, TradeDetail } from "@/lib/trades-data";
 
 const NOW = "2026-10-23T19:00:00.000Z"; // Fri Oct 23, 14:00 UTC−5
@@ -120,6 +120,8 @@ interface DetailOptions {
   evidenceActive?: number;
   evidenceItems?: EvidenceItemView[];
   disposition?: TradeDetail["disposition"];
+  /** The trade's account is archived (§3.2, §9). */
+  archived?: boolean;
 }
 
 function detail(trade: LedgerTrade, options: DetailOptions = {}): TradeDetail {
@@ -127,11 +129,12 @@ function detail(trade: LedgerTrade, options: DetailOptions = {}): TradeDetail {
   const check = options.check ?? null;
   const state = deriveTradeState(trade, {
     now: NOW, checkCurrent: options.checkCurrent ?? false, aiAvailable: options.aiAvailable ?? false,
-    blockingReason: check?.decision === "BLOCKED" ? check.explained.blocking[0]?.detail : undefined,
+    blockingReason: check?.decision === "BLOCKED" ? check.explained.blocking[0]?.detail : undefined, accountArchived: options.archived === true,
   });
   const planned = trade.origin === "PLANNED";
   return {
-    tradeId: trade.id, href: `/trades/${trade.id}`, account: { id: ACCOUNT, name: "FTMO 100K", currency: trade.currency, status: "ACTIVE" }, origin: trade.origin,
+    tradeId: trade.id, href: `/trades/${trade.id}`, account: { id: ACCOUNT, name: "FTMO 100K", currency: trade.currency, status: options.archived ? "ARCHIVED" : "ACTIVE" },
+    origin: trade.origin,
     title: "EURUSD · Long", symbol: trade.symbol, direction: trade.direction, model: trade.entry_model, createdAt: trade.created_at, duplicatedFromHref: null, state,
     revisionCount: trade.revision_count,
     draft: state.lifecycle === "DRAFT" ? { revision: 2, expectedRevision: 2, createdAt: "2026-10-23T18:30:00Z", proposal: PROPOSAL, latestCheck: check, checkCurrent: state.checkCurrent } : null,
@@ -149,7 +152,8 @@ function detail(trade: LedgerTrade, options: DetailOptions = {}): TradeDetail {
         ...options.close,
       }
       : null,
-    disposition: options.disposition ?? null, planVsReality: planVsReality(trade, instrument), positionFacts: [], instrument,
+    disposition: options.disposition ?? null, planEndedAt: planEndedAt(trade, { dispositionAt: options.disposition?.recordedAt ?? null }),
+    planVsReality: planVsReality(trade, instrument), positionFacts: [], instrument,
     tags: { grade: null, liquidity: null, mss: null, tags: [], source: null }, checks: check ? [check] : [], timeline: options.timeline ?? [], timelineGroups: [], timelineTruncated: false,
     evidence: {
       items: options.evidenceItems ?? [], groups: [], limit: 24,
@@ -234,6 +238,28 @@ describe("header actions (§2.4)", () => {
     expect(reviewed.secondary.map(action => action.label)).toEqual(["Reopen review"]);
     expect(reviewed.menu.map(entry => entry.kind)).toEqual(["DUPLICATE", "TECHNICAL"]);
     expect(headerActions(detail(ledger({ ...LIVE_FIRST, entry_model: null })).state).menu.map(entry => entry.kind)).toEqual(["ADD_ENTRY_DETAILS", "CLOSE_TRADE", "TECHNICAL"]);
+  });
+
+  it("offers nothing on an archived account's draft but Discard, says why, and never Duplicate on its trades (§3.2, §9)", () => {
+    const approved = ledger({ latest_check_decision: "APPROVED", latest_check_at: "2026-10-23T18:58:00Z", draft_check: "APPROVED" });
+    const frozen = detail(approved, { checkCurrent: true, aiAvailable: true, archived: true });
+    expect(frozen.state).toMatchObject({ label: "Account archived", tone: "muted", nextAction: null, checkCurrent: false });
+    expect(headerActions(frozen.state)).toEqual({
+      primary: null, secondary: [], menu: [{ kind: "DISCARD", label: "Discard draft", destructive: true }, { kind: "TECHNICAL", label: "Technical details" }],
+    });
+    expect(nextStepHint(frozen, NOW, STRATEGY_TIME)).toEqual({ tone: "warning", text: ARCHIVED_DRAFT_HINT });
+    // No pre-trade AI selection either (the AI review of a closed trade stays).
+    expect(evidenceMode(frozen)).toMatchObject({ selectable: false, max: 0 });
+    expect(evidenceMode(detail(ledger(CLOSED), { aiAvailable: true, archived: true })).selectable).toBe(true);
+    expect(ARCHIVED_DRAFT_HINT).toBe("This trading account is archived, so this draft can't be edited, checked or locked. Restore the account in Manage account to continue it.");
+    // Trades the account already holds are finished as usual; none can be duplicated into the archived account.
+    expect(headerActions(detail(ledger({ ...LOCKED, lifecycle: "LOCKED" }), { archived: true }).state)).toMatchObject({
+      primary: { kind: "RECORD_ENTRY" }, menu: [{ kind: "SKIP" }, { kind: "TECHNICAL" }],
+    });
+    expect(headerActions(detail(ledger(LIVE), { archived: true }).state).menu.map(entry => entry.kind)).toEqual(["CLOSE_TRADE", "TECHNICAL"]);
+    expect(nextStepHint(detail(ledger({ ...LOCKED, lifecycle: "LOCKED" }), { archived: true }), NOW, STRATEGY_TIME)?.text).toBe(
+      "Record the entry when you take the trade, or skip it with a reason.",
+    );
   });
 
   it("says why the next action is next, with the exact first blocking reason", () => {
@@ -349,7 +375,7 @@ describe("evidence capture and AI selection (§7.1, §7.5)", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Hindsight after a plan ended, and the decision history in causal order
+// Records added after a plan ended: the trade detail classifies them (§5.3); the workspace words them
 // ---------------------------------------------------------------------------------------------------------------------
 function record(id: string, kind: TimelineKind, recordedAt: string, timing: Timing = "BEFORE_ENTRY", changes: Partial<TimelineItem> = {}): TimelineItem {
   return { id, kind, at: recordedAt, recordedAt, timing, flags: [], title: id, source: id, timeLabel: "", ...changes };
@@ -364,8 +390,9 @@ function screenshot(n: number, recordedAt: string, changes: Partial<EvidenceItem
 }
 
 const SKIPPED_AT = "2026-10-23T09:55:00.000000+00:00";
+const AFTER_CLOSE = { timing: "AFTER_CLOSE" as const, timingLabel: "After close" };
 
-/** A plan skipped at 04:55 UTC−5, with a lesson, a screenshot and a removal recorded after the skip. */
+/** A plan skipped at 04:55 UTC−5 with a lesson, a screenshot and a removed screenshot recorded after the skip, as loaded. */
 function skippedWithHindsight(status: "SKIPPED" | "CANCELLED" = "SKIPPED"): TradeDetail {
   return detail(ledger({ ...LOCKED, lifecycle: status, disposition: status, disposition_reason: "No retest." }), {
     disposition: { status, reason: "No retest.", recordedAt: SKIPPED_AT },
@@ -374,144 +401,52 @@ function skippedWithHindsight(status: "SKIPPED" | "CANCELLED" = "SKIPPED"): Trad
       record("plan", "PLAN_LOCKED", "2026-10-23T07:52:00Z"),
       record("evidence-added:early", "EVIDENCE_ADDED", "2026-10-23T07:55:00Z", "BEFORE_ENTRY", { evidenceId: uuid(41) }),
       record("disposition", "DISPOSITION", SKIPPED_AT),
-      record("journal:lesson", "JOURNAL", "2026-10-23T10:16:00Z", "BEFORE_ENTRY", { journalKind: "LESSON", body: "Price ran to target without me." }),
-      record("evidence-added:late", "EVIDENCE_ADDED", "2026-10-23T10:16:30Z", "BEFORE_ENTRY", { evidenceId: uuid(42) }),
-      record("evidence-removed:late2", "EVIDENCE_REMOVED", "2026-10-23T10:30:00Z", "BEFORE_ENTRY", { evidenceId: uuid(43) }),
+      record("journal:lesson", "JOURNAL", "2026-10-23T10:16:00Z", "AFTER_CLOSE", { journalKind: "LESSON", body: "Price ran to target without me." }),
+      record("evidence-added:late", "EVIDENCE_ADDED", "2026-10-23T10:16:30Z", "AFTER_CLOSE", { evidenceId: uuid(42) }),
     ],
     evidenceItems: [
       screenshot(41, "2026-10-23T07:55:00Z"),
-      screenshot(42, "2026-10-23T10:16:30Z"),
-      screenshot(43, "2026-10-23T10:20:00Z", { removedAt: "2026-10-23T10:30:00Z" }),
+      screenshot(42, "2026-10-23T10:16:30Z", { ...AFTER_CLOSE, label: "OTHER" }),
+      screenshot(43, "2026-10-23T10:20:00Z", { ...AFTER_CLOSE, removedAt: "2026-10-23T10:30:00Z" }),
     ],
   });
 }
 
 describe("records added after a plan ended (§5.3)", () => {
-  it("knows when a plan ended without an entry, and only then", () => {
-    expect(planEndedAt(skippedWithHindsight())).toBe(SKIPPED_AT);
-    expect(planEndedAt(detail(ledger({ lifecycle: "DISCARDED", draft_check: null, discarded_at: "2026-10-23T18:44:00Z" })))).toBe("2026-10-23T18:44:00Z");
-    // A V1 skip carries no time; open, live and closed trades never ended without an entry.
-    expect(planEndedAt(detail(ledger({ ...LOCKED, lifecycle: "SKIPPED", legacy_decision: "SKIPPED" })))).toBeNull();
-    for (const trade of [ledger(), ledger({ ...LOCKED, lifecycle: "LOCKED" }), ledger(LIVE), ledger(CLOSED)]) expect(planEndedAt(detail(trade))).toBeNull();
-  });
-
-  it("moves what was recorded after the skip from Before entry to After close; the skip itself keeps its place", () => {
-    const loaded = skippedWithHindsight();
-    const view = withPlanEndTiming(loaded);
-    expect(view.timeline.map(item => [item.id, item.timing])).toEqual([
-      ["revision", "BEFORE_ENTRY"], ["plan", "BEFORE_ENTRY"], ["evidence-added:early", "BEFORE_ENTRY"], ["disposition", "BEFORE_ENTRY"],
-      ["journal:lesson", "AFTER_CLOSE"], ["evidence-added:late", "AFTER_CLOSE"], ["evidence-removed:late2", "AFTER_CLOSE"],
-    ]);
-    expect(view.timelineGroups.map(group => [group.label, group.items.length])).toEqual([["Before entry", 4], ["While live", 0], ["After close", 3]]);
-    // The gallery and the viewer read the same timing: the late screenshot is After close, and Pre-entry isn't offered for it.
-    expect(view.evidence.items.map(item => [item.id, item.timing, item.timingLabel])).toEqual([
-      [uuid(41), "BEFORE_ENTRY", "Before entry"], [uuid(42), "AFTER_CLOSE", "After close"], [uuid(43), "AFTER_CLOSE", "After close"],
-    ]);
-    expect(view.evidence.groups.map(group => [group.timing, group.items.map(item => item.id)])).toEqual([
-      ["BEFORE_ENTRY", [uuid(41)]], ["WHILE_LIVE", []], ["AFTER_CLOSE", [uuid(42)]],
-    ]);
-    // Only downgrades, never twice, and the loaded detail is left as it was.
-    expect(withPlanEndTiming(view)).toBe(view);
-    expect(loaded.timeline.every(item => item.timing === "BEFORE_ENTRY")).toBe(true);
-    const draft = detail(ledger(), { timeline: [record("revision", "DRAFT_REVISION", "2026-10-23T18:00:00Z")] });
-    expect(withPlanEndTiming(draft)).toBe(draft);
-  });
-
-  it("downgrades what followed a discard, and keeps the discard in its place", () => {
-    const discarded = detail(ledger({ lifecycle: "DISCARDED", draft_check: null, discarded_at: "2026-10-23T18:44:00Z" }), {
-      timeline: [
-        record("revision", "DRAFT_REVISION", "2026-10-23T18:00:00Z"),
-        record("lifecycle:discard", "DRAFT_DISCARDED", "2026-10-23T18:44:00Z"),
-        record("journal:note", "JOURNAL", "2026-10-23T18:50:00Z", "BEFORE_ENTRY", { journalKind: "NOTE" }),
-      ],
-    });
-    expect(withPlanEndTiming(discarded).timeline.map(item => item.timing)).toEqual(["BEFORE_ENTRY", "BEFORE_ENTRY", "AFTER_CLOSE"]);
+  it("dates the end of a plan that ended without an entry, and only then", () => {
+    expect(skippedWithHindsight().planEndedAt).toBe(SKIPPED_AT);
+    expect(detail(ledger({ lifecycle: "DISCARDED", draft_check: null, discarded_at: "2026-10-23T18:44:00Z" })).planEndedAt).toBe("2026-10-23T18:44:00Z");
+    for (const trade of [ledger(), ledger({ ...LOCKED, lifecycle: "LOCKED" }), ledger(LIVE), ledger(CLOSED)]) expect(detail(trade).planEndedAt).toBeNull();
   });
 
   it("labels lessons and new entries of a plan that ended as written after it", () => {
-    const view = withPlanEndTiming(skippedWithHindsight());
+    const view = skippedWithHindsight();
     const [lesson] = lessonsOf(view.timeline);
     expect(lessonTiming(lesson, "SKIPPED")).toBe("After the skip");
     expect(lessonTiming(lesson, "CANCELLED")).toBe("After the cancellation");
     expect(lessonTiming(lesson, "CLOSED")).toBe("After close");
     expect(lessonTiming({ timing: "BEFORE_ENTRY" }, "SKIPPED")).toBe("Before entry");
     const mode = evidenceMode(view);
+    expect(mode).toMatchObject({ timingHint: "AFTER_CLOSE", defaultLabel: "OTHER" });
     expect(newEntriesLabel(view, mode)).toBe("after the skip");
     expect(newEntriesLabel(detail(ledger({ lifecycle: "DISCARDED", draft_check: null, discarded_at: NOW })), mode)).toBe("after the discard");
     expect(newEntriesLabel(detail(ledger()), evidenceMode(detail(ledger())))).toBe("Before entry");
     expect(newEntriesLabel(detail(ledger(LIVE)), evidenceMode(detail(ledger(LIVE))))).toBe("While live");
   });
 
-  it("says that duplicating copies screenshots added after the plan ended, while they are still classified Before entry", () => {
-    const loaded = skippedWithHindsight();
-    // The removed screenshot is never copied; the early one is genuine pre-entry evidence.
-    expect(copiedAfterPlanEnded(loaded)).toBe(1);
-    expect(duplicateNotes(loaded)).toEqual([
+  it("says what duplicating copies: screenshots added after the plan ended stay with the trade (§7.4)", () => {
+    const base = [
       "Economic news is reset to “Not checked”: verify it again for the new trade.",
       "Screenshots recorded before entry are copied; live and after-close screenshots are not.",
-      "1 screenshot added after the plan was skipped is copied too, as pre-entry evidence of the new draft. Remove it there if it shows what happened later.",
-    ]);
-    // Once the stored timing knows the skip (or on any other trade), nothing extra is said.
-    expect(copiedAfterPlanEnded(withPlanEndTiming(loaded))).toBe(0);
-    expect(duplicateNotes(detail(ledger(CLOSED)))).toHaveLength(2);
+    ];
+    // The removed screenshot counts for nothing; the early one is genuine pre-entry evidence and is copied.
+    expect(duplicateNotes(skippedWithHindsight())).toEqual([...base, "1 screenshot added after the skip stays with this trade."]);
     const cancelled = skippedWithHindsight("CANCELLED");
-    const twoLate: TradeDetail = { ...cancelled, evidence: { ...cancelled.evidence, items: [...cancelled.evidence.items, screenshot(44, "2026-10-23T11:00:00Z")] } };
-    expect(duplicateNotes(twoLate)[2]).toBe(
-      "2 screenshots added after the plan was cancelled are copied too, as pre-entry evidence of the new draft. Remove them there if they show what happened later.",
-    );
-  });
-});
-
-describe("decision history in causal order (§5.4)", () => {
-  const revisionRecord = (n: number, recordedAt: string) => record(`revision:${n}`, "DRAFT_REVISION", recordedAt, "BEFORE_ENTRY", { details: { revision: n } });
-  const checkOf = (n: number, recordedAt: string): Pick<CheckView, "recordedAt" | "revision"> => ({ recordedAt, revision: n });
-
-  it("shows a saved revision before the check of it, and the check that authorised a lock before the lock", () => {
-    // Real gaps from the database: the save's check 9.8 ms before the revision row, the lock's check 17 ms after locked_at.
-    const checks = [checkOf(1, "2026-10-24T15:02:46.051594+00:00"), checkOf(1, "2026-10-24T15:02:54.626000+00:00")];
-    const items = [
-      record("check:a", "RISK_CHECK", checks[0].recordedAt),
-      revisionRecord(1, "2026-10-24T15:02:46.061371+00:00"),
-      record("plan:1", "PLAN_LOCKED", "2026-10-24T15:02:54.608822+00:00"),
-      record("check:lock", "RISK_CHECK", checks[1].recordedAt),
-    ];
-    expect(inCausalOrder(items, checkedRevisionOf(checks)).map(item => item.id)).toEqual(["revision:1", "check:a", "check:lock", "plan:1"]);
-    // Seeded data writes both at the same instant (the id then puts the check first).
-    const seeded = [record("check:b", "RISK_CHECK", "2026-10-23T07:24:00Z"), revisionRecord(2, "2026-10-23T07:24:00Z")];
-    expect(inCausalOrder(seeded, checkedRevisionOf([checkOf(2, "2026-10-23T07:24:00Z")])).map(item => item.id)).toEqual(["revision:2", "check:b"]);
-    // A check whose revision is unknown stays where its time puts it.
-    expect(inCausalOrder(seeded, checkedRevisionOf([])).map(item => item.id)).toEqual(["check:b", "revision:2"]);
-  });
-
-  it("keeps every check with the revision it evaluated, never reorders twice, and leaves records further apart alone", () => {
-    const checks = [checkOf(1, "2026-10-23T18:44:32.350128Z"), checkOf(1, "2026-10-23T18:44:32.400000Z"), checkOf(2, "2026-10-23T18:44:32.566225Z")];
-    const revisions = [
-      record("check:save1", "RISK_CHECK", checks[0].recordedAt),
-      revisionRecord(1, "2026-10-23T18:44:32.354112Z"),
-      record("check:manual", "RISK_CHECK", checks[1].recordedAt),
-      record("check:save2", "RISK_CHECK", checks[2].recordedAt),
-      revisionRecord(2, "2026-10-23T18:44:32.568811Z"),
-    ];
-    const ordered = inCausalOrder(revisions, checkedRevisionOf(checks));
-    expect(ordered.map(item => item.id)).toEqual(["revision:1", "check:save1", "check:manual", "revision:2", "check:save2"]);
-    // Already causal (as it will be once the history is ordered at the source): nothing moves, although the check of
-    // revision 1 is now right before revision 2 and less than a second apart.
-    expect(inCausalOrder(ordered, checkedRevisionOf(checks))).toEqual(ordered);
-    const apart = [record("check:old", "RISK_CHECK", "2026-10-23T10:00:00Z"), revisionRecord(3, "2026-10-23T10:00:01.5Z")];
-    expect(inCausalOrder(apart, checkedRevisionOf([checkOf(3, "2026-10-23T10:00:00Z")])).map(item => item.id)).toEqual(["check:old", "revision:3"]);
-    // Two checks recorded at the same instant can't be told apart: neither moves.
-    const shared = [checkOf(1, "2026-10-23T07:24:00Z"), checkOf(2, "2026-10-23T07:24:00Z")];
-    expect(checkedRevisionOf(shared)(record("check:x", "RISK_CHECK", "2026-10-23T07:24:00Z"))).toBeNull();
-  });
-
-  it("presents the trade with its history in causal order, and the same object when nothing moves", () => {
-    const save = checkView("APPROVED");
-    const causal = detail(ledger(), { check: save, timeline: [revisionRecord(1, "2026-10-23T18:57:59.990Z"), record("check:c", "RISK_CHECK", save.recordedAt)] });
-    expect(workspaceDetail(causal)).toBe(causal);
-    const saved = detail(ledger(), { check: save, timeline: [record("check:c", "RISK_CHECK", save.recordedAt), revisionRecord(1, "2026-10-23T18:58:00.009Z")] });
-    const view = workspaceDetail(saved);
-    expect(view.timeline.map(item => item.id)).toEqual(["revision:1", "check:c"]);
-    expect(view.timelineGroups[0].items.map(item => item.id)).toEqual(["revision:1", "check:c"]);
+    const twoLater: TradeDetail = { ...cancelled, evidence: { ...cancelled.evidence, items: [...cancelled.evidence.items, screenshot(44, "2026-10-23T11:00:00Z", AFTER_CLOSE)] } };
+    expect(duplicateNotes(twoLater)[2]).toBe("2 screenshots added after the cancellation stay with this trade.");
+    // A closed trade's after-close screenshots are covered by the general sentence.
+    expect(duplicateNotes(detail(ledger(CLOSED), { evidenceItems: [screenshot(45, "2026-10-23T18:50:00Z", AFTER_CLOSE)] }))).toEqual(base);
+    expect(duplicateNotes(detail(ledger({ ...LOCKED, lifecycle: "SKIPPED", disposition: "SKIPPED" }), { disposition: { status: "SKIPPED", reason: "x", recordedAt: SKIPPED_AT } }))).toEqual(base);
   });
 });
 
@@ -523,25 +458,28 @@ describe("a block recorded on an earlier trading day (§2.4, §6.3)", () => {
     return detail(ledger({ latest_check_decision: "BLOCKED", latest_check_at: recordedAt, draft_check: "BLOCKED" }), { check });
   };
 
-  it("leads with the free recheck and says when the block was recorded", () => {
+  it("leads with the free recheck the trade's state chose, and says when the block was recorded", () => {
     const stale = blockedAt(YESTERDAY);
-    expect(blockedOnEarlierDay(stale, NOW)).toBe(true);
+    expect(blockedOnEarlierDay(stale)).toBe(true);
     expect(nextStepHint(stale, NOW, STRATEGY_TIME)).toEqual({
       tone: "warning",
       text: "Blocked when checked Oct 22, 13:44: Daily trade limit reached: 2 of 2 trades already used today (1 planned, 1 recorded live). Today's limits and session can differ, so recheck risk before you edit the draft.",
     });
-    const actions = headerActions(stale.state, { recheckFirst: blockedOnEarlierDay(stale, NOW) });
+    // The header reads deriveTradeState's next action, the one Today, the Journal and the command palette read too.
+    expect(stale.state.nextAction).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
+    const actions = headerActions(stale.state);
     expect(actions.primary).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
     expect(actions.secondary.map(action => action.label)).toEqual(["Edit draft"]);
     expect(actions.menu.map(entry => [entry.kind, entry.compactOnly ?? false])).toEqual([["EDIT_DRAFT", true], ["DUPLICATE", false], ["DISCARD", false], ["TECHNICAL", false]]);
     // A block from today keeps Edit draft as the next action with the exact reason (§2.4).
     const today = blockedAt("2026-10-23T18:44:00Z");
-    expect(blockedOnEarlierDay(today, NOW)).toBe(false);
-    expect(headerActions(today.state, { recheckFirst: blockedOnEarlierDay(today, NOW) }).primary?.label).toBe("Edit draft");
+    expect(blockedOnEarlierDay(today)).toBe(false);
+    expect(headerActions(today.state).primary).toEqual({ kind: "EDIT_DRAFT", label: "Edit draft", detail: MAX_TRADES.detail });
     expect(nextStepHint(today, NOW, STRATEGY_TIME)?.text).toBe(`Blocked: ${MAX_TRADES.detail}`);
-    // Only a blocked draft can be led by a recheck.
+    // Only a blocked draft is led by a recheck for its day: a current approval keeps Lock plan.
     const ready = detail(ledger({ latest_check_decision: "APPROVED", latest_check_at: "2026-10-23T18:58:00Z", draft_check: "APPROVED" }), { checkCurrent: true });
-    expect(headerActions(ready.state, { recheckFirst: true }).primary?.label).toBe("Lock plan");
+    expect(blockedOnEarlierDay(ready)).toBe(false);
+    expect(headerActions(ready.state).primary?.label).toBe("Lock plan");
   });
 
   it("says what resolves a block: a recheck for an earlier day or reasons bound to the session or the day, an edit otherwise", () => {
@@ -567,6 +505,13 @@ describe("skip confirmation (§2.4, §6.2)", () => {
     const plan = lockedToday.plan as NonNullable<TradeDetail["plan"]>;
     expect(skipSlotNote({ ...lockedToday, plan: { ...plan, tradingDay: "2026-10-22" } }, NOW)).toBe("It still counts as one of Oct 22's planned trades.");
     expect(skipSlotNote({ ...lockedToday, plan: { ...plan, tradingDay: "2025-12-31" } }, NOW)).toBe("It still counts as one of Dec 31, 2025's planned trades.");
+    // Without the plan row the ledger still names the lock's strategy day (or its lock time does): never "today" by default.
+    const withLedger = (changes: Partial<LedgerTrade>) => detail(ledger({ ...LOCKED, lifecycle: "LOCKED", plan_id: null, locked_at: null, ...changes }));
+    expect(skipSlotNote(withLedger({ plan_trading_day: "2026-10-21" }), NOW)).toBe("It still counts as one of Oct 21's planned trades.");
+    // 23:30 UTC on Oct 22 is 18:30 UTC−5, still Oct 22's strategy day.
+    expect(skipSlotNote(withLedger({ locked_at: "2026-10-22T23:30:00Z" }), NOW)).toBe("It still counts as one of Oct 22's planned trades.");
+    expect(skipSlotNote(withLedger({ locked_at: "2026-10-23T07:52:00Z" }), NOW)).toBe("It still counts as one of today's planned trades.");
+    expect(skipSlotNote(withLedger({}), NOW)).toBe("It still counts as one of the planned trades of the day it was locked.");
   });
 
   it("titles the confirmation by the choice and never labels the way out “Cancel”", () => {
@@ -621,6 +566,142 @@ describe("returning focus after a dialog opened from a menu (§13.5)", () => {
     vi.advanceTimersByTime(3000);
     expect(gone.focus).not.toHaveBeenCalled();
     expect(() => returnFocusTo(null)).not.toThrow();
+  });
+});
+
+describe("links into the trade page (§14.4, §13.5)", () => {
+  /** A minimal DOM: elements with ids, children, `<details>` panels, focus and scrolling. */
+  class FakeNode {
+    open = false;
+    parent: FakeNode | null = null;
+    /** Distance from the top of the page. */
+    top = 0;
+    readonly children: FakeNode[] = [];
+    readonly focus = vi.fn();
+    readonly scrollIntoView = vi.fn();
+    constructor(readonly tag: string, readonly id = "", readonly attributes: Record<string, string> = {}) {}
+    get parentElement(): FakeNode | null {
+      return this.parent;
+    }
+    getBoundingClientRect() {
+      return { top: this.top };
+    }
+    at(top: number): this {
+      this.top = top;
+      return this;
+    }
+    add(...children: FakeNode[]): this {
+      for (const child of children) {
+        child.parent = this;
+        this.children.push(child);
+      }
+      return this;
+    }
+    all(): FakeNode[] {
+      return this.children.flatMap(child => [child, ...child.all()]);
+    }
+    /** The selectors the page uses: its controls, `details`, the composer and its chips. */
+    matches(selector: string): boolean {
+      if (selector.includes("data-journal-composer")) return this.attributes.composer === "true";
+      if (selector.startsWith("input[name=\"kind\"]")) return this.tag === "input" && this.attributes.name === "kind";
+      if (selector === "details") return this.tag === "details";
+      if (selector === "details:not([open])") return this.tag === "details" && !this.open;
+      if (selector === "section[id]") return this.tag === "section" && this.id !== "";
+      if (selector === "summary") return this.tag === "summary";
+      if (selector === "form") return this.tag === "form";
+      return ["input", "select", "textarea", "button"].includes(this.tag);
+    }
+    querySelectorAll(selector: string): FakeNode[] {
+      return this.all().filter(node => node.matches(selector));
+    }
+    querySelector(selector: string): FakeNode | null {
+      return this.querySelectorAll(selector)[0] ?? null;
+    }
+    closest(selector: string): FakeNode | null {
+      for (let node: FakeNode | null = this; node; node = node.parent) if (node.matches(selector)) return node;
+      return null;
+    }
+    contains(other: FakeNode): boolean {
+      for (let node: FakeNode | null = other; node; node = node.parent) if (node === this) return true;
+      return false;
+    }
+  }
+
+  function stubPage(...nodes: FakeNode[]) {
+    const root = new FakeNode("body").add(...nodes);
+    vi.stubGlobal("window", { matchMedia: () => ({ matches: true }) });
+    vi.stubGlobal("document", {
+      getElementById: (id: string) => root.all().find(node => node.id === id) ?? null,
+      querySelector: (selector: string) => root.querySelector(selector),
+    });
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("knows every target a link can name, and nothing else", () => {
+    const targets = Object.values(TRADE_TARGETS);
+    expect(targets.map(target => tradeTargetOf(`#${target}`))).toEqual(targets);
+    expect(tradeTargetOf("close-trade")).toBe("close-trade");
+    for (const hash of ["", "#", "#Close-trade", "#journal-composer", "#review-heading", "#close-trade?x"]) expect(tradeTargetOf(hash), hash).toBeNull();
+  });
+
+  it("scrolls to a target and focuses its first control, without motion when reduced motion is asked for", () => {
+    const price = new FakeNode("input");
+    // The close form opens the "Close trade" section: the section scrolls into view, so its heading stays visible.
+    const target = new FakeNode("div", TRADE_TARGETS.closeTrade).at(1288).add(new FakeNode("form").add(price, new FakeNode("button")));
+    const section = new FakeNode("section", "result").at(1200).add(target);
+    stubPage(section);
+    expect(revealTradeTarget("close-trade")).toBe(true);
+    expect(section.scrollIntoView).toHaveBeenCalledWith({ behavior: "auto", block: "start" });
+    expect(target.scrollIntoView).not.toHaveBeenCalled();
+    expect(price.focus).toHaveBeenCalledWith({ preventScroll: true });
+    // A form further down its section (entry details under the recorded facts) scrolls itself.
+    const detailsInput = new FakeNode("input");
+    const details = new FakeNode("div", TRADE_TARGETS.entryDetails).at(1500).add(detailsInput);
+    stubPage(new FakeNode("section", "execution").at(1200).add(new FakeNode("dl"), details));
+    expect(revealTradeTarget("entry-details")).toBe(true);
+    expect(details.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(detailsInput.focus).toHaveBeenCalledTimes(1);
+    // A target of another state of the trade (the trade was closed meanwhile) is left alone.
+    expect(revealTradeTarget("record-entry")).toBe(false);
+  });
+
+  it("opens a collapsed panel to reach the first control, and skips controls hidden in one when a visible one exists", () => {
+    const grade = new FakeNode("input");
+    const panel = new FakeNode("details").add(new FakeNode("summary"), new FakeNode("form").add(grade));
+    const review = new FakeNode("section", TRADE_TARGETS.review).add(panel);
+    stubPage(review);
+    expect(revealTradeTarget("review")).toBe(true);
+    expect(panel.open).toBe(true);
+    expect(grade.focus).toHaveBeenCalledTimes(1);
+
+    const hidden = new FakeNode("input");
+    const shown = new FakeNode("button");
+    const evidence = new FakeNode("section", TRADE_TARGETS.evidence).add(new FakeNode("details").add(hidden), shown);
+    stubPage(evidence);
+    expect(reveal("evidence")).toBe(true);
+    expect(hidden.focus).not.toHaveBeenCalled();
+    expect(shown.focus).toHaveBeenCalledTimes(1);
+  });
+
+  it("focuses the composer for #journal, and for #add-screenshots once screenshots go through it; opens Technical details", () => {
+    const composer = new FakeNode("textarea", "journal-composer", { composer: "true" });
+    stubPage(new FakeNode("section", TRADE_TARGETS.journal).add(new FakeNode("form").add(new FakeNode("input", "", { name: "kind" }), composer)));
+    expect(revealTradeTarget("journal")).toBe(true);
+    expect(revealTradeTarget("add-screenshots")).toBe(true);
+    expect(composer.focus).toHaveBeenCalledTimes(2);
+
+    const stagerInput = new FakeNode("input");
+    stubPage(new FakeNode("div", TRADE_TARGETS.addScreenshots).add(stagerInput), new FakeNode("section", TRADE_TARGETS.journal).add(new FakeNode("form").add(composer)));
+    expect(revealTradeTarget("add-screenshots")).toBe(true);
+    expect(stagerInput.focus).toHaveBeenCalledTimes(1);
+
+    const summary = new FakeNode("summary");
+    const disclosure = new FakeNode("details").add(summary);
+    stubPage(new FakeNode("section", TRADE_TARGETS.technical).add(disclosure));
+    expect(revealTradeTarget("technical-details")).toBe(true);
+    expect(disclosure.open).toBe(true);
+    expect(summary.focus).toHaveBeenCalledTimes(1);
   });
 });
 

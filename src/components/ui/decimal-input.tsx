@@ -3,7 +3,7 @@
 import { type ChangeEvent, type ComponentProps, type FocusEvent, useState } from "react";
 import { cx } from "./cx";
 import { normalizeDecimalInput } from "./decimal";
-import { type InputAdornments, withAdornments } from "./input";
+import { INPUT_TOUCH_TARGET, type InputAdornments, withAdornments } from "./input";
 
 export type DecimalInputProps = Omit<ComponentProps<"input">, "type" | "inputMode" | "value" | "defaultValue"> &
   InputAdornments & {
@@ -69,7 +69,7 @@ export function DecimalInput({
           inputMode="decimal"
           autoComplete="off"
           spellCheck={false}
-          className={cx("input input-numeric", className)}
+          className={cx("input input-numeric", INPUT_TOUCH_TARGET, className)}
           value={text}
           form={form}
           disabled={disabled}

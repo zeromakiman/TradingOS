@@ -48,13 +48,18 @@ export interface RiskCheckViewProps {
   label: string;
   /** An approval that is no longer current ("Recheck needed"). */
   stale?: boolean;
+  /**
+   * Whether a stale approval can be rechecked now; false on an archived account's draft, which takes no check until the
+   * account is restored (its toolbar says so), so the note names no recheck. Default true.
+   */
+  recheckable?: boolean;
   /** Collapse warnings and notes (a locked plan's report is history, not a to-do list). */
   compact?: boolean;
   /** Words after the collapsed count: " at lock" for a locked plan's report. */
   findingsSuffix?: string;
 }
 
-export function RiskCheckView({ check, now, display, label, stale = false, compact = false, findingsSuffix = " at lock" }: RiskCheckViewProps) {
+export function RiskCheckView({ check, now, display, label, stale = false, recheckable = true, compact = false, findingsSuffix = " at lock" }: RiskCheckViewProps) {
   const { blocking, warnings, notes } = check.explained;
   const approved = check.decision === "APPROVED";
   const time = whenLabel(check.recordedAt, now, display);
@@ -76,7 +81,10 @@ export function RiskCheckView({ check, now, display, label, stale = false, compa
       {stale && (
         <p className="flex items-start gap-2 text-warn">
           <TriangleAlert aria-hidden="true" className="mt-0.5 size-4 flex-none" />
-          <span>This approval is no longer current: the session, account values, risk plan or today's usage changed since {time}. Recheck risk before locking.</span>
+          <span>
+            This approval is no longer current: the session, account values, risk plan or today's usage changed since {time}.
+            {recheckable && " Recheck risk before locking."}
+          </span>
         </p>
       )}
       {blocking.length > 0 && <IssueList issues={blocking} tone="negative" />}

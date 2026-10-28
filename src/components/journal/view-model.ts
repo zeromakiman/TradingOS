@@ -5,8 +5,8 @@ import {
   addDays, displayDay, formatDateTime, formatDay, formatTime, STRATEGY_ZONE_LABEL, strategyDay, type TimeDisplay, zoneLabel,
 } from "@/domain/time-display";
 import {
-  JOURNAL_PAGE_SIZE, journalHref, SESSIONS, TRADE_DATE_DEFINITION, TRADE_RESULTS, type TradeFilters, type TradeListPage, type TradeListRow,
-  tradeFilterParams,
+  type AccountFilterState, accountFilterLabel, decodeTradeCursor, JOURNAL_PAGE_SIZE, journalHref, SESSIONS, TRADE_DATE_DEFINITION, TRADE_RESULTS,
+  type TradeCounts, type TradeFilters, type TradeListPage, type TradeListRow, tradeFilterParams,
 } from "@/lib/trades-data";
 import {
   DIRECTION_LABELS, dateSourceVerb, FILTER_PARAM_NAMES, MODEL_LABELS, ORIGIN_LABELS, pillTone, RESULT_LABELS, SESSION_LABELS, STATE_LABELS,
@@ -45,6 +45,8 @@ export interface JournalInput {
   /** URL keys `parseTradeFilters` could not read. */
   invalid: readonly string[];
   context: JournalContext;
+  /** The read-only account filter of All Accounts, resolved against the user's accounts (`resolveAccountFilter`). */
+  accountFilter?: AccountFilterState;
   display: TimeDisplay;
   /** Server time of the request. */
   now: string;
@@ -52,6 +54,11 @@ export interface JournalInput {
   page: TradeListPage | null;
   /** The first trade of the next page has the same trade date as the last trade of this one (see `trimToPage`). */
   lastDayContinues: boolean;
+  /**
+   * Exact counts of a list that spans pages: every trade it holds, and each trade day the page shares with another page
+   * (`journalCounts`); null for a single page, or when the counts could not be read (the copy then states no total).
+   */
+  counts?: TradeCounts | null;
   /** Validated cursor of this page (null on the first page). */
   cursor: string | null;
   /** Validated cursors of the previous pages, oldest first (`FIRST_PAGE_TOKEN` for page 1). */
@@ -61,6 +68,8 @@ export interface JournalInput {
 }
 
 type FilterKey = keyof TradeFilters;
+
+const NO_ACCOUNT_FILTER: AccountFilterState = Object.freeze({ kind: "none" });
 
 function omit(filters: TradeFilters, ...keys: FilterKey[]): TradeFilters {
   const copy: TradeFilters = { ...filters };
@@ -269,8 +278,11 @@ export function buildMenus(filters: TradeFilters, today: string, rows: readonly 
 // ---------------------------------------------------------------------------------------------------------
 // Drill-down chips (filters that arrive from EDGE, the calendar or Accounts and have no menu).
 // ---------------------------------------------------------------------------------------------------------
-export function extraChips(filters: TradeFilters, today: string, names: JournalInput["versionNames"]): ChipView[] {
+export function extraChips(filters: TradeFilters, today: string, names: JournalInput["versionNames"], accountFilter: AccountFilterState = NO_ACCOUNT_FILTER): ChipView[] {
   const chips: ChipView[] = [];
+  // The read-only account filter (All Accounts only): the account's name in words, never its id.
+  const account = filters.accountFilter ? accountFilterLabel(accountFilter.kind === "none" ? { kind: "unavailable" } : accountFilter) : null;
+  if (account) chips.push({ key: "account", label: account, removeHref: href(omit(filters, "accountFilter")) });
   const closed = rangeText(filters.closedFrom, filters.closedTo, today);
   if (closed) {
     const text = filters.closedFrom && filters.closedTo ? `Closed ${closed}` : `Closed ${closed.charAt(0).toLowerCase()}${closed.slice(1)}`;
@@ -299,7 +311,9 @@ export function extraChips(filters: TradeFilters, today: string, names: JournalI
 // Mobile filter sheet.
 // ---------------------------------------------------------------------------------------------------------
 /** Filters the sheet does not edit; kept as hidden fields so applying the sheet never drops them. */
-const SHEET_KEPT: FilterKey[] = ["q", "closedFrom", "closedTo", "weekday", "direction", "riskPercent", "strategyVersionId", "riskPlanVersionId", "rFrom", "rTo"];
+const SHEET_KEPT: FilterKey[] = [
+  "q", "closedFrom", "closedTo", "weekday", "direction", "riskPercent", "strategyVersionId", "riskPlanVersionId", "rFrom", "rTo", "accountFilter",
+];
 
 function sheetView(filters: TradeFilters, today: string, activeCount: number): SheetView {
   const kept: TradeFilters = {};
@@ -340,9 +354,11 @@ function sheetView(filters: TradeFilters, today: string, activeCount: number): S
 /** Less frequent filters, grouped under "More filters" so the filter row stays one line. */
 const MORE_KEYS: ReadonlySet<FilterMenuView["key"]> = new Set(["origin", "session", "review", "ai"]);
 
-export function buildFilters(filters: TradeFilters, today: string, rows: readonly TradeListRow[], names: JournalInput["versionNames"]): FiltersView {
+export function buildFilters(
+  filters: TradeFilters, today: string, rows: readonly TradeListRow[], names: JournalInput["versionNames"], accountFilter: AccountFilterState = NO_ACCOUNT_FILTER,
+): FiltersView {
   const menus = buildMenus(filters, today, rows);
-  const extras = extraChips(filters, today, names);
+  const extras = extraChips(filters, today, names, accountFilter);
   const allChips: ChipView[] = [];
   for (const menu of menus) {
     if (menu.activeLabel === null || menu.removeHref === null) continue;
@@ -428,22 +444,57 @@ export function rowView(row: TradeListRow, context: JournalContext, display: Tim
   };
 }
 
+/** The days a page shares with the previous or the next page, whose trades the group header counts in full. */
+export interface SplitDays {
+  /** The first day of the page when the previous page ended on it (the cursor is the previous page's last trade). */
+  first: string | null;
+  /** The last day of the page when the next page starts on it (see `trimToPage`). */
+  last: string | null;
+}
+
+export function splitDays(page: TradeListPage, cursor: string | null, lastDayContinues: boolean): SplitDays {
+  const previous = decodeTradeCursor(cursor);
+  const first = page.groups[0]?.day ?? null;
+  return {
+    first: previous !== null && first !== null && strategyDay(previous.t) === first ? first : null,
+    last: lastDayContinues ? (page.groups[page.groups.length - 1]?.day ?? null) : null,
+  };
+}
+
+/**
+ * "12 trades", or for a day shared with another page "12 of 14 trades · more on the next page" when its exact count is
+ * known; without the count only what the page itself proves ("12 trades · more on the next page").
+ */
+export function dayCountLabel(shown: number, total: number | undefined, before: boolean, after: boolean): string {
+  if (total === undefined || total <= shown) return `${plural(shown, "trade")}${after ? " · more on the next page" : ""}`;
+  const where = before && after ? "the previous and next pages" : after ? "the next page" : before ? "the previous page" : "other pages";
+  return `${shown} of ${plural(total, "trade")} · more on ${where}`;
+}
+
 function groupViews(page: TradeListPage, input: JournalInput, today: string): TradeGroupView[] {
   const { context, display } = input;
   const yesterday = addDays(today, -1);
+  const split = splitDays(page, input.cursor, input.lastDayContinues);
   // Days are always strategy days; when times show in another zone, each header names the zone of its day.
   const zone = display.mode === "strategy" ? null : STRATEGY_ZONE_LABEL;
   return page.groups.map((group, index) => {
-    const continues = index === page.groups.length - 1 && input.lastDayContinues;
+    const after = index === page.groups.length - 1 && split.last === group.day;
+    const before = index === 0 && split.first === group.day;
     return {
       day: group.day,
       relative: group.day === today ? "Today" : group.day === yesterday ? "Yesterday" : null,
       label: group.label,
       zone,
-      countLabel: `${plural(group.rows.length, "trade")}${continues ? " · more on the next page" : ""}`,
+      countLabel: dayCountLabel(group.rows.length, before || after ? input.counts?.days.get(group.day) : undefined, before, after),
       rows: group.rows.map(row => rowView(row, context, display)),
     };
   });
+}
+
+/** "4 trades"; across pages "Showing 50 of 93 trades" with the exact total, else "50 trades on this page". */
+export function resultSummary(shown: number, noun: string, paged: boolean, total: number | null | undefined): string {
+  if (!paged) return plural(shown, noun);
+  return total !== null && total !== undefined && total >= shown ? `Showing ${shown} of ${plural(total, noun)}` : `${plural(shown, noun)} on this page`;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -537,21 +588,32 @@ function invalidNotice(invalid: readonly string[]): string | null {
   return `Some filters couldn't be read and were ignored (${names.join(", ")}).`;
 }
 
+/** What the list covers: the selected account, one account of All Accounts (read-only account filter), or All Accounts. */
+function contextLabel(context: JournalContext, accountFilter: AccountFilterState): string {
+  if (context.mode === "account" && context.accountName) return context.accountName;
+  if (accountFilter.kind === "account") return `${accountFilter.account.name}${accountFilter.account.status === "ARCHIVED" ? " (archived)" : ""}`;
+  return "All Accounts";
+}
+
 export function buildJournalView(input: JournalInput): JournalView {
   const { filters, context, display, now, page, cursor, trail } = input;
+  const accountFilter = input.accountFilter ?? NO_ACCOUNT_FILTER;
   const today = strategyDay(now);
   const rows = page?.rows ?? [];
-  const filterView = buildFilters(filters, today, rows, input.versionNames);
+  const filterView = buildFilters(filters, today, rows, input.versionNames, accountFilter);
   const notices: JournalView["notices"] = [];
   const invalid = invalidNotice(input.invalid);
   if (invalid) notices.push({ tone: "warning", text: invalid });
+  if (filters.accountFilter && accountFilter.kind !== "account") {
+    notices.push({ tone: "warning", text: "That trading account isn't available, so no trade matches the account filter. Remove it to see every account." });
+  }
   for (const error of rangeErrors(filters, today)) notices.push({ tone: "negative", text: error });
   const groups = page ? groupViews(page, input, today) : [];
   const filtersActive = filterView.activeCount > 0;
   const searchOnly = !filtersActive && Boolean(filters.q);
   const more = page?.nextCursor !== null && page?.nextCursor !== undefined;
   return {
-    contextLabel: context.mode === "account" && context.accountName ? context.accountName : "All Accounts",
+    contextLabel: contextLabel(context, accountFilter),
     zoneLabel: zoneLabel(display),
     dateDefinition: page?.dateDefinition ?? TRADE_DATE_DEFINITION,
     dateNote: display.mode === "strategy" ? null : `Times are shown in ${zoneLabel(display)}. A time that falls on a different day there shows its date.`,
@@ -559,7 +621,7 @@ export function buildJournalView(input: JournalInput): JournalView {
     notices,
     groups,
     resultSummary: rows.length
-      ? `${plural(rows.length, filtersActive || filters.q ? "matching trade" : "trade")}${more || cursor ? " on this page" : ""}`
+      ? resultSummary(rows.length, filtersActive || filters.q ? "matching trade" : "trade", more || cursor !== null, input.counts?.total)
       : null,
     pagination: rows.length ? paginationView(filters, page, cursor, trail) : null,
     empty: rows.length ? null : emptyView(input, filtersActive, searchOnly),

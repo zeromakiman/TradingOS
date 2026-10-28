@@ -10,7 +10,7 @@ import { challengeTradeBias } from "@/lib/bias-challenge";
 import { reviewMonth } from "@/lib/monthly-review";
 import { operationalFailure } from "@/lib/operational-log";
 import { analyzeRecentTrades } from "@/lib/recent-trades";
-import { requireUser } from "@/lib/supabase/server";
+import { SCHEMA_OUTDATED_MESSAGE, writableSession } from "@/lib/schema-gate";
 import { reviewTradeTimeline } from "@/lib/trade-timeline-review";
 import { reviewWeek } from "@/lib/weekly-review";
 
@@ -19,7 +19,8 @@ import { reviewWeek } from "@/lib/weekly-review";
  * request id: replaying it returns RECORDED without another provider call, so the form rotates the key only after a
  * terminal result (`status` COMPLETED, FAILED or RECORDED). The user always comes from the verified session inside
  * the lib functions; nothing here accepts a user id, a revision proposal or a price from the client. Every action
- * first checks the schema gate (spec §13.10), so nothing is written or sent against an older database.
+ * first passes the shared schema gate (`writableSession`, src/lib/schema-gate.ts, spec §13.10) like every other action
+ * module, so nothing is written or sent against an older database; an unreadable marker is an unexpected failure.
  */
 
 export interface AiActionState {
@@ -30,20 +31,10 @@ export interface AiActionState {
 }
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "RECORDED"]);
-const SCHEMA_OUTDATED = "Database update required — this deployment expects Trading OS database version 2.0. No changes were made.";
-/** PostgREST and PostgreSQL codes for an unknown function: the database predates the schema marker. */
-const MISSING_FUNCTION = new Set(["PGRST202", "42883"]);
 
-/** True when `trading_os_schema()` is missing or reports a version older than 2.0. */
+/** True when the database is missing the schema marker or older than 2.0; throws when the marker cannot be read. */
 async function schemaOutdated(): Promise<boolean> {
-  const { db } = await requireUser();
-  const { data, error } = await db.rpc("trading_os_schema");
-  if (error) {
-    if (MISSING_FUNCTION.has(error.code)) return true;
-    throw new Error("Schema version unavailable");
-  }
-  const major = typeof data === "string" ? /^(\d+)\.\d+$/.exec(data)?.[1] : undefined;
-  return major === undefined || Number.parseInt(major, 10) < 2;
+  return (await writableSession()) === null;
 }
 
 function text(form: FormData, key: string): string | undefined {
@@ -88,7 +79,7 @@ function preTradeFields(form: FormData) {
 
 export async function requestTradeAnalyzeSetup(_state: AiActionState, form: FormData): Promise<AiActionState> {
   try {
-    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED };
+    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED_MESSAGE };
     const input = preTradeFields(form);
     if (!input.success) return { error: "Select up to three screenshots from this draft." };
     const result = await analyzeTradeSetup(input.data.tradeId, input.data.requestKey, input.data.evidence, input.data.revision);
@@ -101,7 +92,7 @@ export async function requestTradeAnalyzeSetup(_state: AiActionState, form: Form
 
 export async function requestTradeBiasChallenge(_state: AiActionState, form: FormData): Promise<AiActionState> {
   try {
-    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED };
+    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED_MESSAGE };
     const input = preTradeFields(form);
     if (!input.success) return { error: "Select up to three screenshots from this draft." };
     const result = await challengeTradeBias(input.data.tradeId, input.data.requestKey, input.data.evidence, input.data.revision);
@@ -114,7 +105,7 @@ export async function requestTradeBiasChallenge(_state: AiActionState, form: For
 
 export async function requestTradeTimelineReview(_state: AiActionState, form: FormData): Promise<AiActionState> {
   try {
-    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED };
+    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED_MESSAGE };
     const input = reviewInput.safeParse({ tradeId: text(form, "tradeId"), requestKey: text(form, "requestKey"), evidence: evidenceIds(form) });
     if (!input.success) return { error: "Select up to four screenshots from this trade." };
     const result = await reviewTradeTimeline(input.data.tradeId, input.data.requestKey, input.data.evidence);
@@ -136,7 +127,7 @@ function revalidateReview(page: "weekly" | "recent" | "monthly"): void {
 
 export async function requestWeeklyAiReview(_state: AiActionState, form: FormData): Promise<AiActionState> {
   try {
-    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED };
+    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED_MESSAGE };
     const input = accountInput.safeParse({ accountId: text(form, "accountId"), requestKey: text(form, "requestKey") });
     let week: string;
     try {
@@ -155,7 +146,7 @@ export async function requestWeeklyAiReview(_state: AiActionState, form: FormDat
 
 export async function requestRecentTradesAiReview(_state: AiActionState, form: FormData): Promise<AiActionState> {
   try {
-    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED };
+    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED_MESSAGE };
     const input = accountInput.safeParse({ accountId: text(form, "accountId"), requestKey: text(form, "requestKey") });
     let sample: ReturnType<typeof recentSample>;
     try {
@@ -174,7 +165,7 @@ export async function requestRecentTradesAiReview(_state: AiActionState, form: F
 
 export async function requestMonthlyAiReview(_state: AiActionState, form: FormData): Promise<AiActionState> {
   try {
-    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED };
+    if (await schemaOutdated()) return { error: SCHEMA_OUTDATED_MESSAGE };
     const input = accountInput.safeParse({ accountId: text(form, "accountId"), requestKey: text(form, "requestKey") });
     let month: string;
     try {

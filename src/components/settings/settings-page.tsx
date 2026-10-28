@@ -84,7 +84,7 @@ function AiAccountCard({ entry, data }: { entry: SettingsAiAccount; data: Settin
   const { account, budget } = entry;
   return (
     <Card as="article" aria-label={`AI · ${account.name}`}>
-      <AiBudgetSummary accountName={account.name} budget={budget} timeDisplay={data.preferences.timeDisplay} now={new Date(data.nowIso)} className="border-0 bg-transparent" />
+      <AiBudgetSummary accountName={account.name} budget={budget} timeDisplay={data.preferences.timeDisplay} now={new Date(data.nowIso)} inSettings className="border-0 bg-transparent" />
       {budget.snapshot && (
         <div className="border-t border-border p-4 md:p-5">
           <AiAccountControls
@@ -274,7 +274,7 @@ function SecuritySection({ data }: { data: SettingsPageData }) {
               <KeyRound aria-hidden="true" className="size-4 text-3" />
               Change password
             </CardTitle>
-            <CardDescription>Enter your current password first. Your other devices are signed out after the change.</CardDescription>
+            <CardDescription>Enter your current password first. You stay signed in on this browser; every other device and browser is signed out.</CardDescription>
           </div>
         </CardHeader>
         <CardBody>

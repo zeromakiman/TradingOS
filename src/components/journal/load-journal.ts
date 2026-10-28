@@ -1,18 +1,22 @@
 import "server-only";
+import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { strategyDay, type TimeDisplay } from "@/domain/time-display";
 import { currentSession, getAccountContext, getPreferences } from "@/lib/account-context";
+import { operationalFailure } from "@/lib/operational-log";
 import {
-  decodeTradeCursor, encodeTradeCursor, groupByTradeDay, JOURNAL_PAGE_SIZE, listTrades, parseTradeFilters, type TradeFilters, type TradeListPage,
+  countTrades, decodeTradeCursor, encodeTradeCursor, groupByTradeDay, JOURNAL_PAGE_SIZE, listTrades, parseTradeFilters, resolveAccountFilter,
+  type TradeCounts, type TradeFilters, type TradeListPage,
 } from "@/lib/trades-data";
 import type { JournalView } from "./types";
-import { buildJournalView, FIRST_PAGE_TOKEN, type JournalInput, MAX_TRAIL, rangeErrors } from "./view-model";
+import { buildJournalView, FIRST_PAGE_TOKEN, type JournalInput, MAX_TRAIL, rangeErrors, splitDays } from "./view-model";
 
 /**
  * Loads the Journal (docs/V2_ARCHITECTURE.md §14.5) for one request: URL filters (`parseTradeFilters`, so EDGE,
- * calendar and Accounts drill-downs keep working), the account context of the shell (§9.2), the display preferences,
- * one keyset page of `listTrades` (read one trade past the page, see `trimToPage`), and the names of version filters
- * that drill-down links carry as ids.
+ * calendar and Accounts drill-downs keep working), the account context of the shell (§9.2) and the read-only account
+ * filter it may combine with, the display preferences, one keyset page of `listTrades` (read one trade past the page,
+ * see `trimToPage`), the exact counts its paging copy states (`journalCounts`), and the names of version filters that
+ * drill-down links carry as ids.
  */
 
 export type SearchParams = Record<string, string | string[] | undefined>;
@@ -78,9 +82,28 @@ async function versionNames(filters: TradeFilters, page: TradeListPage | null): 
   return { strategy, riskPlan };
 }
 
+/**
+ * Exact counts for the paging copy of a list that spans pages: the total, and each trade day the page shares with the
+ * previous or next page. A single page needs no count (it shows every trade). Counts only improve the wording, so a
+ * count that cannot be read leaves the page as it is, without one.
+ */
+export async function journalCounts(filters: TradeFilters, page: TradeListPage, cursor: string | null, lastDayContinues: boolean): Promise<TradeCounts | null> {
+  if (cursor === null && page.nextCursor === null) return null;
+  const split = splitDays(page, cursor, lastDayContinues);
+  try {
+    return await countTrades(filters, [split.first, split.last].filter((day): day is string => day !== null));
+  } catch (error) {
+    unstable_rethrow(error);
+    operationalFailure("data_read_failed");
+    return null;
+  }
+}
+
 export async function loadJournal(params: SearchParams): Promise<JournalView> {
-  const { filters, invalid } = parseTradeFilters(params);
+  const parsed = parseTradeFilters(params);
   const [context, preferences] = await Promise.all([getAccountContext(), getPreferences()]);
+  const { filters, state: accountFilter } = resolveAccountFilter(parsed.filters, context);
+  const invalid = parsed.invalid;
   const now = new Date().toISOString();
   const cursor = readCursor(params);
   const trail = cursor ? readTrail(params) : [];
@@ -89,6 +112,8 @@ export async function loadJournal(params: SearchParams): Promise<JournalView> {
   const display = preferences.timeDisplay;
   const loaded = hasAccounts && !impossible ? trimToPage(await listTrades(filters, cursor, JOURNAL_PAGE_SIZE + 1), now, display) : null;
   const page = loaded?.page ?? null;
+  const lastDayContinues = loaded?.lastDayContinues ?? false;
+  const [counts, names] = await Promise.all([page ? journalCounts(filters, page, cursor, lastDayContinues) : null, versionNames(filters, page)]);
   return buildJournalView({
     filters,
     invalid,
@@ -97,12 +122,14 @@ export async function loadJournal(params: SearchParams): Promise<JournalView> {
       accountName: context.selected.mode === "account" ? context.selected.account.name : null,
       hasAccounts,
     },
+    accountFilter,
     display,
     now,
     page,
-    lastDayContinues: loaded?.lastDayContinues ?? false,
+    lastDayContinues,
+    counts,
     cursor,
     trail,
-    versionNames: await versionNames(filters, page),
+    versionNames: names,
   });
 }

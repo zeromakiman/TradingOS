@@ -12,7 +12,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
-import { clearPaletteHistory } from "./palette-history";
 import { THEME_OPTIONS, TIME_DISPLAY_OPTIONS } from "./preference-options";
 import { useShellState } from "./shell-state";
 import type { SignOutAction } from "./types";
@@ -69,13 +68,7 @@ export function UserMenu({ email, signOutAction, ...preferences }: UserMenuProps
           </Link>
         </DropdownMenuItem>
         {signOut && (
-          <DropdownMenuItem
-            icon={<LogOut aria-hidden="true" />}
-            onSelect={() => {
-              clearPaletteHistory();
-              signOut();
-            }}
-          >
+          <DropdownMenuItem icon={<LogOut aria-hidden="true" />} onSelect={signOut}>
             Sign out
           </DropdownMenuItem>
         )}

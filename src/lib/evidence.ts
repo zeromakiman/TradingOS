@@ -5,6 +5,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { type LedgerTrade, ledgerRow, LEDGER_COLUMNS } from "@/domain/ledger";
 import { classifyTiming, type EvidenceLabel, inferStoredPhase, legacyEvidenceLabel, type StoredPhase } from "@/domain/timeline";
+import { planEndedAt } from "@/domain/trade-state";
 import { currentSession, type Db } from "./account-context";
 import { operationalFailure } from "./operational-log";
 import { MAX_SCREENSHOT_BYTES, SCREENSHOT_BUCKET } from "./screenshots";
@@ -243,13 +244,18 @@ interface CopyCandidate {
   recordedAt: string;
 }
 
-/** Active evidence of the source whose timing there was Before entry (all active evidence of a draft). */
+/**
+ * Active evidence of the source whose timing there was Before entry (all active evidence of a draft). What was recorded
+ * after a plan ended without an entry (its skip, cancellation or discard, or a V1 skip) is After close and never copied,
+ * whatever phase an older row stored (`planEndedAt`, the same rule as `private.copyable_evidence`).
+ */
 export async function copyableEvidence(db: Db, userId: string, source: LedgerTrade): Promise<CopyCandidate[]> {
   const revisions = await db.from("trade_revisions").select("proposal_id").eq("trade_id", source.id).eq("user_id", userId);
   if (revisions.error) throw new Error("Evidence unavailable");
   const proposalIds = z.array(z.object({ proposal_id: z.uuid() })).parse(revisions.data ?? []).map(row => row.proposal_id);
   const none = Promise.resolve({ data: [], error: null });
-  const [items, labels, removals, screenshots, screenshotRemovals] = await Promise.all([
+  const nothing = Promise.resolve({ data: null, error: null });
+  const [items, labels, removals, screenshots, screenshotRemovals, disposition, legacyDecision] = await Promise.all([
     db.from("trade_evidence").select("id,storage_path,label,timeframe,caption,original_filename,mime_type,byte_size,sha256,width,height,phase,recorded_at")
       .eq("trade_id", source.id).eq("user_id", userId).order("recorded_at", { ascending: true }).order("id", { ascending: true }),
     db.from("trade_evidence_labels").select("id,evidence_id,label,timeframe,caption").eq("trade_id", source.id).eq("user_id", userId).order("id", { ascending: true }),
@@ -259,17 +265,30 @@ export async function copyableEvidence(db: Db, userId: string, source: LedgerTra
         .in("proposal_id", proposalIds).order("uploaded_at", { ascending: true }).order("id", { ascending: true })
       : none,
     proposalIds.length ? db.from("setup_screenshot_removals").select("screenshot_id").eq("user_id", userId).in("proposal_id", proposalIds) : none,
+    // When the plan ended: the ledger names a skip or cancellation and a V1 skip, these rows date them.
+    source.disposition !== null && source.plan_id !== null
+      ? db.from("trade_dispositions").select("recorded_at").eq("plan_id", source.plan_id).eq("user_id", userId).maybeSingle()
+      : nothing,
+    source.legacy_decision === "SKIPPED" && proposalIds.length
+      ? db.from("setup_human_decisions").select("decision,recorded_at").eq("user_id", userId).in("proposal_id", proposalIds)
+        .order("recorded_at", { ascending: false }).order("id", { ascending: false }).limit(1).maybeSingle()
+      : nothing,
   ]);
-  if (items.error || labels.error || removals.error || screenshots.error || screenshotRemovals.error) throw new Error("Evidence unavailable");
+  if (items.error || labels.error || removals.error || screenshots.error || screenshotRemovals.error || disposition.error || legacyDecision.error) {
+    throw new Error("Evidence unavailable");
+  }
   const removed = new Set([
     ...z.array(z.object({ evidence_id: z.uuid() })).parse(removals.data ?? []).map(row => row.evidence_id),
     ...z.array(z.object({ screenshot_id: z.uuid() })).parse(screenshotRemovals.data ?? []).map(row => row.screenshot_id),
   ]);
   const latestLabel = new Map(z.array(labelRow).parse(labels.data ?? []).map(row => [row.evidence_id, row] as const));
+  const dispositionAt = disposition.data ? z.object({ recorded_at: z.string() }).parse(disposition.data).recorded_at : null;
+  const decision = legacyDecision.data ? z.object({ decision: z.enum(["TAKEN", "SKIPPED"]), recorded_at: z.string() }).parse(legacyDecision.data) : null;
+  const endedAt = planEndedAt(source, { dispositionAt, legacySkipAt: decision?.decision === "SKIPPED" ? decision.recorded_at : null });
   const entryRecordedAt = source.entry_recorded_at ?? (source.origin === "PLANNED" ? null : source.created_at);
   const beforeEntry = (recordedAt: string, storedPhase: StoredPhase | null) => classifyTiming({
-    recordedAt, storedPhase: storedPhase ?? inferStoredPhase(recordedAt, entryRecordedAt, source.close_recorded_at), origin: source.origin,
-    entryAt: source.entered_at, entryRecordedAt, exitAt: source.exited_at, tradeCreatedAt: source.created_at,
+    recordedAt, storedPhase: storedPhase ?? inferStoredPhase(recordedAt, entryRecordedAt, source.close_recorded_at, endedAt), origin: source.origin,
+    entryAt: source.entered_at, entryRecordedAt, exitAt: source.exited_at, tradeCreatedAt: source.created_at, endedAt,
   }).timing === "BEFORE_ENTRY";
   const v2 = z.array(v2Row).parse(items.data ?? []).filter(row => !removed.has(row.id) && beforeEntry(row.recorded_at, row.phase)).map(row => {
     const label = latestLabel.get(row.id) ?? row;

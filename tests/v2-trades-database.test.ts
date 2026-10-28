@@ -683,24 +683,25 @@ describe("trade journal", () => {
     expectations.push([await journal(draft.tradeId, "NOTE", "Reviewed later"), "POST_TRADE/REVIEWED"]);
     expect((await ledger(draft.tradeId)).journal_count).toBe(6);
 
-    // Trades that ended before any entry keep PRE_ENTRY and record the terminal state they were in.
+    // Trades that ended before any entry: what is written afterwards is hindsight, stored POST_TRADE with the terminal
+    // state they were in (§5.2), never pre-entry evidence.
     const discarded = await createDraft(a, SECOND_PRICES);
     await db.query("select public.discard_trade_draft($1, null, null)", [discarded.tradeId]);
-    expectations.push([await journal(discarded.tradeId, "NOTE", "Dropped: no displacement"), "PRE_ENTRY/DISCARDED"]);
+    expectations.push([await journal(discarded.tradeId, "NOTE", "Dropped: no displacement"), "POST_TRADE/DISCARDED"]);
     const skippedDraft = await createDraft(a, THIRD_PRICES);
     await legacyDecision(skippedDraft.proposalId, "SKIPPED", "Not my setup");
-    expectations.push([await journal(skippedDraft.tradeId, "LESSON", "Skipped before locking"), "PRE_ENTRY/SKIPPED"]);
+    expectations.push([await journal(skippedDraft.tradeId, "LESSON", "Skipped before locking"), "POST_TRADE/SKIPPED"]);
     const b = await db.bootstrapAccount(OWNER);
     const skipped = await lockedTrade(b);
     await db.query("select public.set_planned_disposition($1, 'SKIPPED', 'No displacement')", [skipped.tradeId]);
-    expectations.push([await journal(skipped.tradeId, "LESSON", "Waiting was right"), "PRE_ENTRY/SKIPPED"]);
+    expectations.push([await journal(skipped.tradeId, "LESSON", "Waiting was right"), "POST_TRADE/SKIPPED"]);
     const cancelled = await lockedTrade(b, SECOND_PRICES);
     await db.query("select public.set_planned_disposition($1, 'CANCELLED', 'News release')", [cancelled.tradeId]);
-    expectations.push([await journal(cancelled.tradeId, "NOTE", "Cancelled for the release"), "PRE_ENTRY/CANCELLED"]);
+    expectations.push([await journal(cancelled.tradeId, "NOTE", "Cancelled for the release"), "POST_TRADE/CANCELLED"]);
     const skippedAfterLock = await createDraft(await db.bootstrapAccount(OWNER));
     await lock(skippedAfterLock.tradeId);
     await legacyDecision(skippedAfterLock.proposalId, "SKIPPED", "Changed my mind after the lock");
-    expectations.push([await journal(skippedAfterLock.tradeId, "NOTE", "Legacy skip"), "PRE_ENTRY/SKIPPED"]);
+    expectations.push([await journal(skippedAfterLock.tradeId, "NOTE", "Legacy skip"), "POST_TRADE/SKIPPED"]);
 
     // Imported trades, like live-first ones, are live from creation.
     const imported = await importedTrade(a, "XAUUSD", "LONG");
@@ -714,7 +715,7 @@ describe("trade journal", () => {
     }
     // Reflection stays possible after a trade ends without an entry: evidence and tags as well as notes.
     for (const [tradeId, state] of [[discarded.tradeId, "DISCARDED"], [skipped.tradeId, "SKIPPED"], [cancelled.tradeId, "CANCELLED"]]) {
-      expect(await registerEvidence(evidenceRecord(tradeId)), state).toMatchObject({ phase: "PRE_ENTRY", stateAtCreation: state });
+      expect(await registerEvidence(evidenceRecord(tradeId)), state).toMatchObject({ phase: "POST_TRADE", stateAtCreation: state });
       await db.actor(OWNER);
       expect(await value<number>("select public.set_trade_tags($1, 'C', null, null, '{late}'::text[]) as value", [tradeId]), state).toBeGreaterThan(0);
     }

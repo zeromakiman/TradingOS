@@ -7,7 +7,7 @@ import { ChartInteraction } from "./interaction";
 import { ChartMark } from "./marks";
 import { axisLabelSlots, bandLayout, cssVars, type Dec, extremes, LABEL_HEADROOM, labelAlign, niceScale, round, signOf, toDecimal, topPercent, ZERO } from "./scale";
 import { CategoryTable } from "./category-table";
-import { categorySummary, histogramSummary } from "./summary";
+import { binCountText, categorySummary, histogramSummary, safeCount } from "./summary";
 import type { ChartAnchor, ChartDatum, ChartEmptyCopy, ChartFigureProps, ChartTip, HistogramBin, TickFormatter } from "./types";
 
 const DEFAULT_EMPTY: ChartEmptyCopy = {
@@ -151,9 +151,6 @@ export type HistogramProps = ChartFigureProps & {
   size?: "md" | "lg";
 };
 
-/** Counts are whole, non-negative numbers; anything else plots as zero. */
-const safeCount = (count: number) => (Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
-
 const binKey = (bin: HistogramBin) => bin.key ?? `${bin.from ?? "open"}:${bin.to ?? "open"}`;
 
 /** Narrowest width among the closed bins (the spacing of the edge labels); undefined when no bin is closed. */
@@ -169,14 +166,21 @@ function binWidth(bins: HistogramBin[]): string | undefined {
   return narrowest?.toFixed();
 }
 
-/** Bins entirely below zero are losses, entirely at or above zero profits; a bin spanning zero is neutral. */
-function binSign(bin: HistogramBin): BarSign {
+/**
+ * Bins entirely below zero are losses and bins entirely above zero profits. A bin spanning zero is neutral, and so is
+ * the bin that starts at 0R (`[0, 0.5)`) while it holds break-even trades: exactly 0R is neither profit nor loss. With
+ * none (`breakEven: 0`) it holds only winners and is profit; an unreadable count stays neutral.
+ */
+export function binSign(bin: Pick<HistogramBin, "from" | "to" | "breakEven">): BarSign {
   const from = toDecimal(bin.from);
   const to = toDecimal(bin.to);
   if (to?.lte(0)) return "neg";
-  if (from?.gte(0)) return "pos";
+  if (from?.gt(0)) return "pos";
+  if (from?.isZero()) return bin.breakEven === 0 ? "pos" : "neutral";
   return "neutral";
 }
+
+export { binCountText };
 
 /** Distribution of outcomes per bin (for R: "How are outcomes distributed?"). */
 export function Histogram({
@@ -211,7 +215,7 @@ export function Histogram({
   const { band, centers } = bandLayout(bins.length);
   const bars = bins.map((bin, index) => barGeometry(counts[index], centers[index], binKey(bin), zero, scale, counts[index].isZero() ? "zero" : binSign(bin)));
   const mode = extremes(counts)?.maxIndex ?? 0;
-  const countText = (bin: HistogramBin) => bin.countLabel ?? String(safeCount(bin.count));
+  const countText = binCountText;
   const tips: ChartTip[] = bins.map((bin) => ({ title: bin.label, rows: [{ value: countText(bin), label: countName }] }));
   const anchors: ChartAnchor[] = bars.map((bar) => ({ x: bar.x, y: bar.top }));
   // Bin edges along the axis. An open-ended bin has no number at its outer edge, so labels are

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { STRATEGY_TIME } from "@/domain/time-display";
 import { Callout } from "../ui/callout";
+import { AccountContextSync } from "./account-context-sync";
 import { CommandPalette } from "./command-palette";
 import { GlobalShortcuts } from "./global-shortcuts";
 import { MobileTabBar } from "./mobile-tab-bar";
@@ -80,25 +81,28 @@ export function AppShell({
     <ShellProviders developerMode={developerMode} timeDisplay={timeDisplay} sidebarCollapsed={sidebarCollapsed} singleKeyShortcuts={singleKeyShortcuts}>
       <ThemeSync theme={theme} />
       <LocalTimeZoneSync timeDisplay={timeDisplay} setTimeDisplayAction={setTimeDisplayAction} />
-      <ShellFrame>
-        <a className="skip-link" href="#main-content">
-          Skip to main content
-        </a>
-        <Sidebar {...preferences} />
-        <div className="app-main">
-          <TopBar accounts={accounts} context={context} nowIso={clock.nowIso} selectAccountAction={selectAccountAction} />
-          <main id="main-content" tabIndex={-1} className="app-content">
-            {notice && (
-              <Callout tone="info" role="status" className="app-notice">
-                {notice}
-              </Callout>
-            )}
-            {children}
-          </main>
-        </div>
-        <MobileTabBar {...preferences} />
-      </ShellFrame>
-      <CommandPalette index={paletteIndex} context={context} userEmail={user.email} selectAccountAction={selectAccountAction} />
+      {/* The header and the palette show the context of the page on screen, also after client-side navigations. */}
+      <AccountContextSync accounts={accounts} context={context} selectAccountAction={selectAccountAction}>
+        <ShellFrame>
+          <a className="skip-link" href="#main-content">
+            Skip to main content
+          </a>
+          <Sidebar {...preferences} />
+          <div className="app-main">
+            <TopBar accounts={accounts} context={context} nowIso={clock.nowIso} selectAccountAction={selectAccountAction} />
+            <main id="main-content" tabIndex={-1} className="app-content">
+              {notice && (
+                <Callout tone="info" role="status" className="app-notice">
+                  {notice}
+                </Callout>
+              )}
+              {children}
+            </main>
+          </div>
+          <MobileTabBar {...preferences} />
+        </ShellFrame>
+        <CommandPalette index={paletteIndex} context={context} userEmail={user.email} selectAccountAction={selectAccountAction} />
+      </AccountContextSync>
       <ShortcutHelp />
       <GlobalShortcuts />
     </ShellProviders>

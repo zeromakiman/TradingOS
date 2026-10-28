@@ -9,16 +9,17 @@ import { Button } from "@/components/ui/button";
 import { SegmentedControl } from "@/components/ui/choice";
 import { DecimalInput } from "@/components/ui/decimal-input";
 import { Field } from "@/components/ui/field";
-import { Input, Select } from "@/components/ui/input";
+import { Select } from "@/components/ui/input";
 import { submitOnModifierEnter } from "@/components/ui/keyboard";
 import type { TimeDisplay } from "@/domain/time-display";
 import { ActionMessage, useNotify } from "./action-message";
 import { TRADE_COPY } from "./copy";
 import { type DetailField, type DetailsDraft, EMPTY_DETAILS, validateEntryDetails } from "./form-model";
 import { keepFocusOnTrade } from "./reveal";
-import { wallClockOf, zoneHint } from "./time-input";
+import { wallClockOf, wallClockZone } from "./time-input";
 import { useFieldErrors } from "./use-field-errors";
 import { formOf, useTradeAction } from "./use-trade-action";
+import { ZonedTimeInput } from "./zoned-time-input";
 
 /**
  * "Add entry details" of a live-first or imported position (docs/V2_ARCHITECTURE.md §3.5, §8.2): only the details that
@@ -63,6 +64,8 @@ export function EntryDetailsForm({ tradeId, requestKey: firstKey, fields, instru
   const { errorOf, touch } = useFieldErrors(state, attempt);
   const offered = new Set(fields);
   const unit = contract.unit;
+  // The entry time's zone, named at the typed date (the offset it is converted with); at the recording time until then.
+  const entryZone = wallClockZone(draft.enteredAt, display, recorded.at);
 
   const update = (field: DetailField, value: string) => {
     setDraft(current => ({ ...current, [field]: value }));
@@ -129,10 +132,9 @@ export function EntryDetailsForm({ tradeId, requestKey: firstKey, fields, instru
           </Field>
         )}
         {offered.has("enteredAt") && (
-          <Field label="Entry time" id="entry-details-time" hint={`Time in ${zoneHint(display, recorded.at)} · at or before ${recorded.label}`} error={errorOf("enteredAt")}>
-            <Input
-              type="datetime-local"
-              step={60}
+          <Field label={`Entry time (${entryZone.tag})`} id="entry-details-time" hint={`Time in ${entryZone.hint} · at or before ${recorded.label}`} error={errorOf("enteredAt")}>
+            <ZonedTimeInput
+              zone={entryZone.tag}
               max={wallClockOf(recorded.at, display)}
               value={draft.enteredAt}
               readOnly={pending}

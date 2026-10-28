@@ -13,11 +13,19 @@ import { compareInstants, differsByMoreThan, displayDay, formatDateTime, formatT
 
 export type Timing = "BEFORE_ENTRY" | "WHILE_LIVE" | "AFTER_CLOSE";
 export type StoredPhase = "PRE_ENTRY" | "LIVE" | "POST_TRADE";
-export type TimingFlag = "RECORDED_AFTER_EXECUTION_BEGAN";
+/**
+ * `RECORDED_AFTER_EXECUTION_BEGAN`: stored before entry but recorded at or after the reported entry time.
+ * `RECORDED_AFTER_PLAN_ENDED`: stored as if the plan were still open, but recorded at or after the skip, the
+ * cancellation or the discard that ended it (rows written before the database stored such records post-trade).
+ */
+export type TimingFlag = "RECORDED_AFTER_EXECUTION_BEGAN" | "RECORDED_AFTER_PLAN_ENDED";
 
 export const TIMING_ORDER: readonly Timing[] = Object.freeze(["BEFORE_ENTRY", "WHILE_LIVE", "AFTER_CLOSE"]);
 export const TIMING_LABELS: Readonly<Record<Timing, string>> = Object.freeze({ BEFORE_ENTRY: "Before entry", WHILE_LIVE: "While live", AFTER_CLOSE: "After close" });
-export const TIMING_FLAG_COPY: Readonly<Record<TimingFlag, string>> = Object.freeze({ RECORDED_AFTER_EXECUTION_BEGAN: "Recorded after execution began" });
+export const TIMING_FLAG_COPY: Readonly<Record<TimingFlag, string>> = Object.freeze({
+  RECORDED_AFTER_EXECUTION_BEGAN: "Recorded after execution began",
+  RECORDED_AFTER_PLAN_ENDED: "Recorded after the plan ended",
+});
 
 export interface TimingInput {
   recordedAt: Instant;
@@ -31,6 +39,11 @@ export interface TimingInput {
   exitAt: Instant | null;
   /** `trades.created_at`: the entry time of a live-first/imported trade whose entry time is unknown. */
   tradeCreatedAt?: Instant | null;
+  /**
+   * When a planned trade ended without an entry (`planEndedAt`, `private.plan_ended_at`): the skip or cancellation
+   * of its plan, or the discard of the draft. Null for every other trade.
+   */
+  endedAt?: Instant | null;
 }
 
 export interface TimingResult {
@@ -38,9 +51,16 @@ export interface TimingResult {
   flags: TimingFlag[];
 }
 
-/** `classifyTiming` exactly as spec §5.3, with microsecond-exact instant comparison. */
+/**
+ * `classifyTiming` as spec §5.3, with microsecond-exact instant comparison. A record made at or after the end of a
+ * plan that never had an entry is hindsight, like one made after a close: After close, whatever phase it stored
+ * (the database stores such records post-trade; an older row that says otherwise is marked).
+ */
 export function classifyTiming(input: TimingInput): TimingResult {
   if (input.exitAt !== null && compareInstants(input.recordedAt, input.exitAt) >= 0) return { timing: "AFTER_CLOSE", flags: [] };
+  if (input.endedAt != null && compareInstants(input.recordedAt, input.endedAt) >= 0) {
+    return { timing: "AFTER_CLOSE", flags: input.storedPhase === "POST_TRADE" ? [] : ["RECORDED_AFTER_PLAN_ENDED"] };
+  }
   if (input.storedPhase === "POST_TRADE") return { timing: "AFTER_CLOSE", flags: [] };
   if (input.storedPhase === "PRE_ENTRY") {
     const entryAt = input.entryAt ?? (input.origin === "PLANNED" ? null : input.tradeCreatedAt ?? null);
@@ -54,10 +74,14 @@ export function classifyTiming(input: TimingInput): TimingResult {
 /**
  * Phase a record would have been stored with at creation (`private.trade_phase`), for records
  * that predate stored phases (V1 notes, legacy screenshots, checks): compares server times only.
+ * `endedAt`: when a planned trade ended without an entry (`planEndedAt`); records from then on are post-trade.
  */
-export function inferStoredPhase(recordedAt: Instant, entryRecordedAt: Instant | null | undefined, closeRecordedAt: Instant | null | undefined): StoredPhase {
+export function inferStoredPhase(
+  recordedAt: Instant, entryRecordedAt: Instant | null | undefined, closeRecordedAt: Instant | null | undefined, endedAt?: Instant | null,
+): StoredPhase {
   if (closeRecordedAt != null && compareInstants(recordedAt, closeRecordedAt) >= 0) return "POST_TRADE";
   if (entryRecordedAt != null && compareInstants(recordedAt, entryRecordedAt) >= 0) return "LIVE";
+  if (endedAt != null && compareInstants(recordedAt, endedAt) >= 0) return "POST_TRADE";
   return "PRE_ENTRY";
 }
 
@@ -134,6 +158,13 @@ export interface TimelineInputs {
   disposition?: TimelineDisposition | null;
   aiAnalyses?: readonly TimelineAiAnalysis[];
   lifecycleEvents?: readonly TimelineLifecycleEvent[];
+  /**
+   * When the planned trade ended without an entry (`planEndedAt`): the skip or cancellation of its plan, the discard
+   * of the draft, or a V1 skip. Everything recorded from then on is After close; the record that ended it is not.
+   */
+  planEndedAt?: string | null;
+  /** The risk evaluation that authorised the lock (`trade_plans.risk_evaluation_id`): shown with the lock, before it. */
+  lockEvaluationId?: string | null;
   /** Rows to explain the first blocking reason of 1.1 and legacy risk checks, resolved per check. */
   explainLookup?: CheckExplainLookup;
 }
@@ -223,7 +254,19 @@ function aiTitle(analysis: TimelineAiAnalysis): string {
   return `${aiOperationLabel(analysis.operation)} · ${aiStatusLabel(analysis.status)}`;
 }
 
-/** Assembles every timeline source into items sorted by (at, recordedAt, id). */
+/** Where an item sits in the history: at `orderAt` (default `at`), then by `rank` among items of the same instant. */
+interface Placement {
+  orderAt?: string;
+  rank?: number;
+}
+
+/**
+ * Assembles every timeline source into items sorted by (at, recordedAt, id), in causal order where the database
+ * writes the records of one action a few milliseconds out of order: saving a draft stores its free check just before
+ * the revision row, so a check is never placed before the revision it evaluated; locking stores the plan just before
+ * the evaluation that authorised it (`lockEvaluationId`), so that evaluation is placed right before "Plan locked".
+ * Displayed times never change.
+ */
 export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STRATEGY_TIME): TimelineItem[] {
   const trade = inputs.trade;
   const tick = inputs.instrument?.tickSize ?? null;
@@ -231,20 +274,22 @@ export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STR
   const entryRecordedAt = trade.entry_recorded_at ?? (trade.origin === "PLANNED" ? null : trade.created_at);
   const hasEntry = trade.origin !== "PLANNED" || trade.entry_recorded_at !== null || trade.entered_at !== null;
   const hasClose = trade.exited_at !== null;
-  const items: TimelineItem[] = [];
+  const endedAt = trade.origin === "PLANNED" ? inputs.planEndedAt ?? null : null;
+  const placed: { item: TimelineItem; orderAt: string; rank: number }[] = [];
 
   const timingOf = (recordedAt: string, storedPhase?: StoredPhase | null): TimingResult => classifyTiming({
     recordedAt,
-    storedPhase: storedPhase ?? inferStoredPhase(recordedAt, entryRecordedAt, trade.close_recorded_at),
+    storedPhase: storedPhase ?? inferStoredPhase(recordedAt, entryRecordedAt, trade.close_recorded_at, endedAt),
     origin: trade.origin,
     entryAt: trade.entered_at,
     entryRecordedAt,
     exitAt: trade.exited_at,
     tradeCreatedAt: trade.created_at,
+    endedAt,
   });
-  const push = (item: Omit<TimelineItem, "timeLabel" | "timing" | "flags"> & { timing?: TimingResult }) => {
-    const { timing = timingOf(item.recordedAt), ...rest } = item;
-    items.push({ ...rest, timing: timing.timing, flags: timing.flags, timeLabel: timeLabel(item.at, item.recordedAt, display) });
+  const push = (item: Omit<TimelineItem, "timeLabel" | "timing" | "flags"> & { timing?: TimingResult } & Placement) => {
+    const { timing = timingOf(item.recordedAt), orderAt = item.at, rank = 0, ...rest } = item;
+    placed.push({ item: { ...rest, timing: timing.timing, flags: timing.flags, timeLabel: timeLabel(item.at, item.recordedAt, display) }, orderAt, rank });
   };
   const beforeEntry: TimingResult = { timing: "BEFORE_ENTRY", flags: [] };
 
@@ -256,12 +301,14 @@ export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STR
     });
   }
 
+  const revisedAt = new Map((inputs.revisions ?? []).map(revision => [revision.proposalId, revision.createdAt] as const));
   for (const check of inputs.riskChecks ?? []) {
     const parsed = check.decision === "BLOCKED" ? storedRiskSchema.safeParse(check.result) : null;
     const firstReason = parsed?.success ? explainReport(parsed.data, inputs.explainLookup?.(check, parsed.data)).blocking[0]?.detail : undefined;
     push({
       id: `check:${check.id}`, kind: "RISK_CHECK", at: check.recordedAt, recordedAt: check.recordedAt,
       title: `Risk check: ${check.decision === "APPROVED" ? "Approved" : "Blocked"}`, body: firstReason, source: `check:${check.id}`,
+      ...checkPlacement(check, check.proposalId !== undefined ? revisedAt.get(check.proposalId) : undefined, check.id === inputs.lockEvaluationId ? trade.locked_at : null),
     });
   }
 
@@ -341,9 +388,11 @@ export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STR
 
   if (inputs.disposition) {
     const disposition = inputs.disposition;
+    // The skip or cancellation is the last decision before an entry that never happened: it keeps its place.
     push({
       id: `disposition:${trade.id}`, kind: "DISPOSITION", at: disposition.recordedAt, recordedAt: disposition.recordedAt,
       title: disposition.status === "SKIPPED" ? "Trade skipped" : "Trade cancelled", body: disposition.reason ?? undefined, source: `disposition:${trade.id}`,
+      timing: beforeEntry,
     });
   }
 
@@ -366,10 +415,29 @@ export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STR
 
   for (const event of inputs.lifecycleEvents ?? []) {
     const title = event.event === "DRAFT_DISCARDED" ? "Draft discarded" : event.event === "REVIEW_COMPLETED" ? "Review completed" : "Review reopened";
-    push({ id: `lifecycle:${event.id}`, kind: event.event, at: event.recordedAt, recordedAt: event.recordedAt, title, body: event.reason ?? undefined, source: `lifecycle:${event.id}` });
+    push({
+      id: `lifecycle:${event.id}`, kind: event.event, at: event.recordedAt, recordedAt: event.recordedAt, title, body: event.reason ?? undefined, source: `lifecycle:${event.id}`,
+      // Only a draft can be discarded: the discard is its last decision before an entry and keeps its place.
+      ...(event.event === "DRAFT_DISCARDED" ? { timing: beforeEntry } : {}),
+    });
   }
 
-  return items.sort((a, b) => compareInstants(a.at, b.at) || compareInstants(a.recordedAt, b.recordedAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return placed
+    .sort((a, b) => compareInstants(a.orderAt, b.orderAt) || a.rank - b.rank || compareInstants(a.item.at, b.item.at)
+      || compareInstants(a.item.recordedAt, b.item.recordedAt) || (a.item.id < b.item.id ? -1 : a.item.id > b.item.id ? 1 : 0))
+    .map(entry => entry.item);
+}
+
+/**
+ * Where a risk check sits (causal order, spec §5.4). A check evaluates a saved revision, so it is never placed before
+ * that revision: at the revision's instant it follows it (`revisedAt`, when the save wrote the check first). The check
+ * that authorised a lock is never placed after the lock: at the lock's instant it precedes it (`lockedAt`, given only
+ * for that evaluation). Every other check keeps its own time.
+ */
+function checkPlacement(check: TimelineRiskCheck, revisedAt: string | undefined, lockedAt: string | null): Placement {
+  if (lockedAt !== null && compareInstants(check.recordedAt, lockedAt) >= 0) return { orderAt: lockedAt, rank: -1 };
+  if (revisedAt !== undefined && compareInstants(revisedAt, check.recordedAt) >= 0) return { orderAt: revisedAt, rank: 1 };
+  return {};
 }
 
 export interface TimingGroup {

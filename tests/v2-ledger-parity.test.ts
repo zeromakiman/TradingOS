@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { previewProposal } from "@/domain/fixtures";
 import { DRAFT_CHECKS, type DraftCheck, LIFECYCLES, type Lifecycle, ledgerRow, TRADE_ORIGINS } from "@/domain/ledger";
-import { deriveDraftCheck, deriveLifecycle } from "@/domain/trade-state";
+import { deriveDraftCheck, deriveLifecycle, planEndedAt } from "@/domain/trade-state";
 import { type BootstrappedAccount, createTestDatabase, OWNER, type TestDatabase } from "./helpers/pglite";
 
 // §2.2: public.trade_ledger derives lifecycle and draft_check in SQL; deriveLifecycle/deriveDraftCheck mirror it in
@@ -20,10 +20,14 @@ interface PendingV1 { name: string; lifecycle: Lifecycle; draftCheck?: DraftChec
 const SECOND_PRICES = { entry: "1.2", stop: "1.198", target: "1.206" };
 const THIRD_PRICES = { entry: "1.3", stop: "1.298", target: "1.306" };
 
+/** `private.plan_ended_at` of a trade and the rows that date its end facts, as JSON text (the shape PostgREST returns). */
+interface EndFacts { id: string; sql: string | null; disposition: string | null; legacy: { decision: string; recorded_at: string } | null }
+
 let db: TestDatabase;
 const scenarios = new Map<string, Scenario>();
 const v1History: PendingV1[] = [];
 let rows: Json[] = [];
+let ends: EndFacts[] = [];
 
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 const proposalJson = (a: BootstrappedAccount, changes: Json = {}) =>
@@ -253,6 +257,15 @@ beforeAll(async () => {
   await buildV2Trades();
   await db.actor(OWNER);
   rows = (await db.query<{ row: Json }>("select to_jsonb(l) as row from public.trade_ledger l order by l.created_at, l.id")).rows.map((r) => r.row);
+  await db.admin();
+  ends = (await db.query<EndFacts>(`
+    select t.id::text as id, to_jsonb(private.plan_ended_at(t.id)) #>> '{}' as sql,
+           (select to_jsonb(d.recorded_at) #>> '{}' from public.trade_plan_links l join public.trade_dispositions d on d.plan_id = l.plan_id
+             where l.trade_id = t.id) as disposition,
+           (select jsonb_build_object('decision', h.decision, 'recorded_at', h.recorded_at) from public.setup_human_decisions h
+              join public.trade_revisions r on r.proposal_id = h.proposal_id
+             where r.trade_id = t.id order by h.recorded_at desc, h.id desc limit 1) as legacy
+      from public.trades t order by t.created_at, t.id`)).rows;
 }, 120_000);
 afterAll(async () => { await db.close(); });
 
@@ -282,6 +295,25 @@ describe("trade_ledger and deriveTradeState parity (§2.2)", () => {
       return parsed.success ? [] : [`${scenarioOf(row).name}: ${parsed.error.issues.map((issue) => `${issue.path.join(".")} ${issue.message}`).join("; ")}`];
     });
     expect(failures).toEqual([]);
+  });
+
+  it("dates the end of a plan exactly like private.plan_ended_at on every row (§5.2)", () => {
+    expect(ends).toHaveLength(rows.length);
+    const mismatches = rows.flatMap((row): { scenario: string; sql: string | null; typescript: string | null }[] => {
+      const end = ends.find((candidate) => candidate.id === row.id);
+      const typescript = planEndedAt(ledgerRow.parse(row), {
+        dispositionAt: end?.disposition ?? null, legacySkipAt: end?.legacy?.decision === "SKIPPED" ? end.legacy.recorded_at : null,
+      });
+      return end && typescript === end.sql ? [] : [{ scenario: scenarioOf(row).name, sql: end?.sql ?? null, typescript }];
+    });
+    expect(mismatches).toEqual([]);
+    // Every kind of end is covered: discards, dispositions, V1 skips (drafts, locked plans, before a cancellation).
+    const ended = rows.filter((row) => ends.find((end) => end.id === row.id)?.sql !== null).map((row) => scenarioOf(row).name);
+    expect(ended).toEqual(expect.arrayContaining([
+      "discarded draft", "locked, disposition SKIPPED", "locked, disposition CANCELLED", "draft with a legacy SKIPPED decision",
+      "locked, then a legacy SKIPPED decision", "legacy SKIPPED decision, then a cancellation", "V1 proposal with a SKIPPED decision", "V1 plan, disposition SKIPPED",
+    ]));
+    expect(ended).not.toContain("legacy SKIPPED decision, then a fill");
   });
 
   it("agrees with deriveLifecycle and deriveDraftCheck on every row", () => {

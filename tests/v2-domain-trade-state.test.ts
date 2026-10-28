@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
-import { deriveDraftCheck, deriveLifecycle, deriveTradeState, LOCKED_PLAN_NOTE, NO_PLAN_BANNER, type TradeStateOptions } from "@/domain/trade-state";
+import {
+  ARCHIVED_DRAFT_LABEL, blockedOnEarlierDay, deriveDraftCheck, deriveLifecycle, deriveTradeState, LOCKED_PLAN_NOTE, NO_PLAN_BANNER, planEndedAt,
+  type TradeStateOptions,
+} from "@/domain/trade-state";
 
 function ledger(changes: Partial<LedgerTrade> = {}): LedgerTrade {
   const blank = Object.fromEntries(LEDGER_COLUMNS.map(column => [column, null])) as unknown as LedgerTrade;
@@ -115,6 +118,55 @@ describe("vocabulary, stepper and next action (spec §2.3–2.4)", () => {
     expect(state.checkCurrent).toBe(false);
     expect(deriveTradeState(checked("APPROVED"), options).checkCurrent).toBe(true);
   });
+
+  it("leads a block found on an earlier strategy day with the free recheck; Edit draft keeps the reason one click away", () => {
+    const reason = "Daily trade limit reached: 2 of 2 trades already used today (2 planned, 0 recorded live).";
+    // 04:59:59.999999 UTC is 23:59:59.999999 UTC−5 of Sep 3; 05:00 UTC starts Sep 4.
+    const blockedYesterday = ledger({ latest_check_decision: "BLOCKED", latest_check_at: "2026-09-04T04:59:59.999999Z" });
+    const state = deriveTradeState(blockedYesterday, { now: "2026-09-04T05:00:00Z", checkCurrent: false, aiAvailable: true, blockingReason: reason });
+    // The word and tone stay "Blocked" (Today groups and labels it so); only the next step changes.
+    expect(state).toMatchObject({ lifecycle: "DRAFT", draftCheck: "BLOCKED", label: "Blocked", tone: "danger", step: "Draft" });
+    expect(state.nextAction).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
+    expect(state.secondaryActions).toEqual([
+      { kind: "EDIT_DRAFT", label: "Edit draft", detail: reason },
+      { kind: "ANALYZE_BLOCKED", label: "Analyze blocked setup anyway", aiOperation: "ANALYZE_SETUP" },
+      { kind: "DISCARD", label: "Discard" },
+    ]);
+    expect(blockedOnEarlierDay(blockedYesterday, "2026-09-04T05:00:00Z")).toBe(true);
+    // The same block seen on its own strategy day keeps Edit draft first.
+    expect(deriveTradeState(blockedYesterday, { now: "2026-09-04T04:59:59.999999Z", checkCurrent: false, blockingReason: reason }).nextAction)
+      .toEqual({ kind: "EDIT_DRAFT", label: "Edit draft", detail: reason });
+    expect(blockedOnEarlierDay(blockedYesterday, "2026-09-04T04:59:59.999999Z")).toBe(false);
+    // Only blocked drafts: an approval, a locked plan or a plan that ended are never led by a recheck for their day.
+    expect(blockedOnEarlierDay(ledger({ latest_check_decision: "APPROVED", latest_check_at: "2026-09-03T12:00:00Z" }), now)).toBe(false);
+    expect(blockedOnEarlierDay({ ...locked, latest_check_decision: "BLOCKED", latest_check_at: "2026-09-03T12:00:00Z" }, now)).toBe(false);
+    expect(blockedOnEarlierDay(ledger({ latest_check_decision: "BLOCKED", latest_check_at: "2026-09-03T12:00:00Z", discarded_at: now }), now)).toBe(false);
+    expect(blockedOnEarlierDay(ledger({ latest_check_decision: null, latest_check_at: null }), now)).toBe(false);
+  });
+});
+
+describe("when a planned trade ended without an entry (spec §5.2, private.plan_ended_at)", () => {
+  const SKIP = "2026-09-04T14:10:00.000001Z";
+  const LEGACY = "2026-09-04T14:05:00Z";
+  it.each([
+    ["an open draft", ledger(), {}, null],
+    ["a discarded draft", ledger({ discarded_at: "2026-09-04T13:50:00Z" }), {}, "2026-09-04T13:50:00Z"],
+    ["a skipped plan", { ...locked, disposition: "SKIPPED" as const }, { dispositionAt: SKIP }, SKIP],
+    ["a cancelled plan", { ...locked, disposition: "CANCELLED" as const }, { dispositionAt: SKIP }, SKIP],
+    ["a draft skipped in V1", ledger({ legacy_decision: "SKIPPED" }), { legacySkipAt: LEGACY }, LEGACY],
+    ["a plan skipped in V1, then cancelled: the earlier fact", { ...locked, legacy_decision: "SKIPPED" as const, disposition: "CANCELLED" as const }, { dispositionAt: SKIP, legacySkipAt: LEGACY }, LEGACY],
+    ["a plan skipped in V1, then filled", { ...live, legacy_decision: "SKIPPED" as const }, { legacySkipAt: LEGACY }, null],
+    ["a closed plan", closed, {}, null],
+    ["a locked plan", locked, {}, null],
+    ["a live-first trade", liveFirst, { dispositionAt: SKIP }, null],
+  ])("%s", (_name, row, times, ended) => {
+    expect(planEndedAt(row, times)).toBe(ended);
+  });
+
+  it("compares instants exactly, whatever their notation", () => {
+    expect(planEndedAt(ledger({ discarded_at: "2026-09-04T09:00:00.000002-05:00" }), { legacySkipAt: "2026-09-04T14:00:00.000001Z" })).toBe("2026-09-04T14:00:00.000001Z");
+    expect(planEndedAt(ledger({ discarded_at: "2026-09-04T09:00:00.000001-05:00" }), { legacySkipAt: "2026-09-04T14:00:00.000002Z" })).toBe("2026-09-04T09:00:00.000001-05:00");
+  });
 });
 
 describe("live-first and imported trades", () => {
@@ -197,5 +249,67 @@ describe("editability (spec §2.5)", () => {
     expect(deriveTradeState(ledger(), options).canDuplicate).toBe(true);
     expect(deriveTradeState(locked, options).canDuplicate).toBe(true);
     expect(deriveTradeState(ledger({ revision_count: 0 }), options).canDuplicate).toBe(false);
+  });
+});
+
+describe("trades of an archived account (spec §3.2, §9, §14.9)", () => {
+  // The database refuses new activity on an archived account (ACCOUNT_ARCHIVED); its trades are finished as usual.
+  const archived: TradeStateOptions = { ...ai, accountArchived: true };
+
+  it("a draft can only be discarded: no new revision, check, lock, analysis or duplicate", () => {
+    for (const row of [ledger(), checked("BLOCKED"), checked("APPROVED"), ledger({ latest_check_decision: "BLOCKED", latest_check_at: "2026-09-03T13:30:00Z" })]) {
+      const state = deriveTradeState(row, archived);
+      expect(state.nextAction).toBeNull();
+      expect(state.secondaryActions.map(action => action.kind)).toEqual(["DISCARD"]);
+      expect(state.editable.plan).toBe(false);
+      expect(state.canDuplicate).toBe(false);
+      // Evidence, journal notes and tags stay open, as on every trade.
+      expect(state.editable).toMatchObject({ evidence: "manage", journal: true, tags: true });
+    }
+    // An approval can't be current while the plan can't be locked: never "Ready to lock".
+    expect(deriveTradeState(checked("APPROVED"), archived)).toMatchObject({ draftCheck: "APPROVED", checkCurrent: false });
+  });
+
+  it("names the archived account as the reason, never a risk step it can't take, and keeps the fact of the last check", () => {
+    expect(ARCHIVED_DRAFT_LABEL).toBe("Account archived");
+    const rows: [LedgerTrade, "UNCHECKED" | "BLOCKED" | "APPROVED"][] = [
+      [ledger(), "UNCHECKED"],
+      [checked("BLOCKED"), "BLOCKED"],
+      // A block from an earlier strategy day: no "Recheck risk" either (the database refuses the check).
+      [ledger({ latest_check_decision: "BLOCKED", latest_check_at: "2026-09-03T13:30:00Z" }), "BLOCKED"],
+      // A current approval (it would read "Ready to lock") and one from an earlier day (it would read "Recheck needed").
+      [checked("APPROVED"), "APPROVED"],
+      [ledger({ latest_check_decision: "APPROVED", latest_check_at: "2026-09-03T13:30:00Z" }), "APPROVED"],
+    ];
+    for (const [row, draftCheck] of rows) {
+      const state = deriveTradeState(row, archived);
+      expect(state).toMatchObject({ lifecycle: "DRAFT", draftCheck, checkCurrent: false, label: "Account archived", tone: "muted", step: "Draft", nextAction: null });
+      expect(state.label).not.toMatch(/Recheck|Ready to lock|Blocked/);
+    }
+    // Once the account is restored, the same draft reads as its check says again.
+    expect(deriveTradeState(checked("APPROVED"), ai)).toMatchObject({ label: "Ready to lock", tone: "positive", nextAction: { kind: "LOCK_PLAN" } });
+    expect(deriveTradeState(checked("APPROVED"), { ...ai, checkCurrent: false })).toMatchObject({ label: "Recheck needed", nextAction: { kind: "RECHECK_RISK" } });
+  });
+
+  it("trades it already holds keep their actions, and nothing can be duplicated", () => {
+    const same = (row: LedgerTrade) => {
+      const { canDuplicate: _archived, ...state } = deriveTradeState(row, archived);
+      const { canDuplicate: _active, ...active } = deriveTradeState(row, ai);
+      expect(state).toEqual(active);
+      expect(deriveTradeState(row, archived).canDuplicate).toBe(false);
+    };
+    same(locked);
+    same(live);
+    same(closed);
+    same({ ...closed, review_completed_at: now });
+    same({ ...locked, disposition: "SKIPPED" });
+    same(liveFirst);
+    expect(deriveTradeState(locked, archived).nextAction?.kind).toBe("RECORD_ENTRY");
+    expect(deriveTradeState(live, archived).secondaryActions.map(action => action.kind)).toContain("CLOSE_TRADE");
+  });
+
+  it("is off by default", () => {
+    expect(deriveTradeState(checked("APPROVED"), options)).toMatchObject({ label: "Ready to lock", canDuplicate: true });
+    expect(deriveTradeState(checked("APPROVED"), { ...options, accountArchived: false }).nextAction?.kind).toBe("LOCK_PLAN");
   });
 });

@@ -484,3 +484,190 @@ could not be read). Keys, headers, prompts, facts and outputs are never logged.
 - Repeating an identical request body returns the identical output.
 
 Tests: `npx pnpm@11.19.0 exec vitest run tests/v2-mock-openai.test.ts`.
+
+## Browser acceptance
+
+`acceptance/run.mjs` is the scripted browser acceptance of V2 (master specification §60 and §64,
+docs/V2_ARCHITECTURE.md §16.2). It drives the **running** app (default `http://127.0.0.1:3000`, loopback origins only)
+with playwright-core from `.local/tools` and an installed Edge or Chrome (headless, as `screenshot.mjs` does), signs in
+through the real `/login` page as fresh synthetic users it creates for the run, and asserts behaviour through what a
+user sees. Controls are found through roles, accessible names and visible text, never CSS classes or test ids; the
+only class it reads is the design-system variant (`btn-primary`, `btn-secondary`) of controls found that way, to tell
+the primary action of a blocked draft from the secondary ones. Every step records pass/fail with its evidence and
+screenshots.
+
+### Before a run
+
+- Stack running (`start.mjs`) and `.env.local` from `env.mjs`.
+- The dev server started with the local mock AI provider **and** the mock platform sync, for example (Git Bash,
+  repository root):
+
+  ```sh
+  AI_ENABLED=true OPENAI_API_KEY=sk-local-mock-local MOCK_OPENAI=1 TRADING_OS_ENABLE_MOCK_SYNC=true \
+    NODE_OPTIONS="--import=./scripts/local-stack/mock-openai.mjs" npx pnpm@11.19.0 dev
+  ```
+
+  Without the mock the AI flow fails at its first request (nothing reaches OpenAI either way); without
+  `TRADING_OS_ENABLE_MOCK_SYNC=true` the Connections step fails. The runner never starts, stops or restarts the server.
+
+### Run
+
+```sh
+node scripts/local-stack/acceptance/run.mjs                                   # every flow at 1440×1000, then 393×852
+node scripts/local-stack/acceptance/run.mjs --flows=planned,live-first --viewport=mobile
+npx pnpm@11.19.0 run acceptance --publish-screens                             # full run, then refresh docs/v2-screens/
+```
+
+| Option | Meaning |
+|---|---|
+| `--flows=a,b` | `planned`, `live-first`, `analytics`, `accounts`, `ai`, `settings`, `ux` (default: all, always in this order) |
+| `--viewport=desktop\|mobile\|both` | 1440×1000, 393×852 (touch, 2× pixels) or both (default) |
+| `--out=<dir>` | Output folder (default `.local/acceptance/<run-id>/`) |
+| `--base=<url>` | App origin, loopback only (default `http://127.0.0.1:3000`) |
+| `--browser=edge\|chrome`, `--headed` | Browser choice (`LOCAL_STACK_BROWSER_PATH` overrides) and a visible window |
+| `--publish-screens` | After a passing full run, copy the curated screenshots into `docs/v2-screens/` and rewrite its `README.md` index |
+
+The verdict (`results.json` → `verdict` and `verdictReasons`, also the exit code) is **pass** only when no step failed,
+no §60 criterion failed (including 7, 11 and 18, which are judged over every screen of the run and belong to no single
+step) and, in a full run of every flow at both viewports, every one of the 20 criteria has evidence; a clock-limited
+step does not fail a run. Otherwise it is **fail** (or **interrupted** after Ctrl+C) and the reasons are listed. A full
+run at both viewports took 16–17 minutes outside Dead Pool and 26 minutes during it (two more seeded users), most of it
+`seed-v2.mjs` (25–55 s per seeded user, nine or eleven users) and the dev server compiling routes on first use.
+
+### Users
+
+Every run creates its own users at the reserved domain (`acc-<run-id>-<key>@example.test`), so nothing depends on a user
+that existed before the run and a run can be repeated at any time:
+
+| Key | Kind | Used by |
+|---|---|---|
+| `planned-<viewport>`, `live-<viewport>` | empty (gateway admin API); `live-*` gets one account through `create_trading_account` | first-run onboarding and the planned flow; the live-first flow |
+| `history` | seeded (`seed-v2.mjs`), shared by both viewports | analytics and UX checks (read-mostly) |
+| `mutable-<viewport>` | seeded, only during Dead Pool | the planned flow continues on its locked plan (see below) |
+| `accounts-<viewport>`, `ai-<viewport>`, `settings-<viewport>` | seeded | the flows that change data |
+| `erase-<viewport>` | seeded | deleted through Settings → Danger zone |
+
+Passwords are kept in `<run>/users.private.json` and `.local/seed-v2-users.json` (both git-ignored) and never printed.
+Seeded users stay in the local database after the run (synthetic data; `reset.mjs` clears everything). The runner waits
+when `seed-v2.mjs` would refuse to start (within a few minutes of 12:00 or 24:00 UTC−5).
+
+### Flows
+
+| Flow | What it proves (master specification §64) |
+|---|---|
+| `planned` | Onboarding creates a Trading Account; Plan Trade with a risk above the maximum shows the exact BLOCKED sentence in the live preview; on the desktop a chart is pasted (a real Ctrl+V key press answered with a `paste` event carrying PNG bytes) and another dropped (`DataTransfer` drop), on the phone one is added through "Choose files" and one through "Take photo" (the system pickers); Save draft opens the trade as Blocked with the reason in the Plan section and "Edit draft" as the next action (and, AI being off for a new account, no paid AI tool); Edit draft saves revision 2 of the **same** trade; Ready to lock; the optional AI step (consent for the new account in Settings → AI, then "Analyze setup · ≈ €…" on the ready draft against the mock, its card led by "Risk Engine · Approved", Lock plan still the next action); Lock plan (the dialog lists what becomes immutable); the locked plan's edit page shows no editor, and the owner's own session calling `revise_trade_draft` and `discard_trade_draft` directly is refused with `DRAFT_NOT_EDITABLE` while the trade keeps its revisions; Record entry (pre-filled); a live note with a screenshot without leaving the trade (pasted with Ctrl+V on the desktop, attached through "Attach screenshots" and the system picker on the phone); Close; a lesson after close lands in After close only; tags and Mark reviewed; the timeline bands |
+| `live-first` | Record Live Trade with account, instrument, direction and entry price only; "No pre-trade plan was recorded before execution." and "No pre-trade plan recorded"; no stepper and no pre-trade AI tools; a timestamped note, a screenshot (dropped onto the composer on the desktop, "Take photo" on the phone) and a Decision while live; close with the platform's net P&L (no size, so P&L can't be calculated); an explanation after close is listed under After close and never as Before entry evidence; Mark reviewed |
+| `analytics` | Journal (grouping, search, origin filter, row → trade); EDGE headline statistics with the sample caveat, money per currency, every chart with its table view; statistic → trades (Net R by model → OTE trades); calendar day → trades → trade; trade → evidence viewer (Escape closes); All Accounts → account → day → trade → evidence by clicking only; a trade locked under Risk Plan V1.0 still shows V1.0 while the account's active plan is newer |
+| `accounts` | All Accounts is a context (selector option "Aggregate of every trading account", no table row, no stored account); an account dashboard in its own currency; switching context with the header selector and seeing it on Journal, Today, EDGE, Review and Settings; account-scoped EDGE and Journal; money never added across currencies; New account (GBP); Archive; archived accounts are not offered by Plan Trade or Record Live Trade, `?account=<archived>` falls back to All Accounts with a notice, and `record_live_trade` and `create_planned_trade` called directly with the user's own session must refuse it with `ACCOUNT_ARCHIVED` (no trade is stored on it) |
+| `ai` | Budget summary per account; on a blocked draft the primary action is Edit draft and AI is only "Analyze blocked setup anyway · ≈ €…" (secondary, nothing sent on load); Analyze Setup, Challenge My Bias, the timeline-aware Review Trade, Weekly Review, Recent Trades and Monthly Review against the mock (each request is matched to a `status=200` line of `.local/logs/mock-openai.log`); concise cards with friendly sources; each "View full analysis" sheet carries the card's title, every item the card shows in full (the card shows first sentences) and something the card leaves out (another section, item or the AI's limitations); the Review history lists the run's Monthly, Recent Trades and Weekly reviews first as compact rows; usage grows in the budget; one failure (`weekly_review_v1: http_500` in `.local/mock-openai-scenarios.json` for a single request, then restored) is reported as held for review and pauses that account's AI |
+| `settings` | Theme and time display; a new risk-plan version that starts tomorrow; a profile revision, "Confirm unchanged", an external loss added and removed; the Connections copy (cTrader and MT5 planned, read-only scope) and the mock platform (connect, Simulate sync, imported trades in the Journal, disconnect keeps them); Export my data: the ZIP is downloaded and checked (every part belongs to the user, every table holds exactly the user's stored rows, no other user's id or email anywhere, one CSV row per trade, every screenshot present with its SHA-256); Delete Trading OS account on the `erase-*` user: a wrong password gets the server's own answer ("That password is not correct. Nothing was deleted." in an alert), and once the form is idle again every tenant table, the login, the storage objects and the stored files are compared with the moment before the attempt; then DELETE + password deletes it, the browser lands on `/login?reason=account_deleted`, sign-in fails, and superuser SQL finds no row in any tenant table, no auth user, no storage object or file, one new de-identified erasure receipt, and another user's rows unchanged |
+| `ux` | The next action of every state above the fold; core actions never inside a collapsed disclosure; the command palette (Ctrl+K, `/`, Enter, Escape); the `?`, `P` and `L` shortcuts; the skip link and a visible focus ring of at least 2 px; the Tab order of Plan Trade; Escape closes dialogs and menus and returns focus; the editor of the seeded draft blocked for two reasons (both listed, a risk preset clicked or tapped without saving, the page within the screen width); on the phone a live note from Today's live card with taps only; Today at a glance; the dark theme tokens on key screens; last on the phone, every phone screen the run reached fits 393 px |
+
+### The real clock
+
+Locks and risk checks use the server's clock, which the runner never fakes. During Dead Pool (12:00–18:00 UTC−5) the Risk
+Engine blocks every lock, so revision 2 of the new draft stays Blocked with only the Dead Pool sentence: the runner
+records that step as **clock-limited** (the expected deterministic behaviour, not a failure), seeds a `mutable-*` user
+whose plan `seed-v2.mjs` locked before Dead Pool, and continues the planned flow there (immutability, entry, live note,
+close, review); the optional AI step and the lock itself are then skipped. For the same reason Challenge My Bias (it
+needs a draft that passes the current check) is clock-limited during Dead Pool, and Analyze Setup runs as "Analyze
+blocked setup anyway". Run outside Dead Pool (from 18:00 UTC−5, for example) to also exercise the lock of a new draft,
+Analyze Setup on it and Challenge My Bias; the summary lists every clock-limited step.
+
+The runner never takes the app's word for the clock. Every Dead Pool answer is first checked against the strategy clock
+for the moments that bracket the check (`deadPoolExpectation` in `rules.mjs`, with one minute of slack around 12:00 and
+18:00 UTC−5): a Dead Pool block outside 12:00–18:00, a "Ready to lock" inside it, or a lock that succeeds inside it
+fails the step ("the Risk Engine does not allow a lock during Dead Pool"). Only a refusal the clock explains is
+clock-limited, including a lock refused because Dead Pool began between the check and the lock.
+
+### Phones (393×852)
+
+The phone pass uses a touch screen (`hasTouch`, `isMobile`, 2× pixels, coarse pointer): controls are tapped, the new-trade
+actions come from the tab bar's "+" sheet, and screenshots reach Plan Trade and the live journal the way a phone offers
+them ("Choose files", "Attach screenshots" and "Take photo" open the system picker, which the runner answers with the PNG
+through Playwright's `filechooser` event) instead of Ctrl+V or a drag. Nothing relies on hover. Criteria 3 (Ctrl+V)
+and 4 (drag and drop) are therefore judged on the desktop only.
+
+When a page is laid out wider than the phone, the browser widens its layout viewport and pans the visible part inside
+it, and a touch can land beside the control it aims at. Such a missed tap **fails its step** (and every criterion the
+step evidences) with an error naming the screen and both widths, and a `-tap-missed` screenshot of that moment; the
+control is then activated with a synthetic click only so the rest of the step, and the steps after it, can still be
+judged. The screen is scanned after every navigation (`goto`, and `arrive` after links, redirects and shortcuts), right
+before every tap, at every screenshot and at the end of every step. Each scan measures the layout against the 393 px
+device width (`innerWidth` grows with the content on phones, so it is not used) and names the most deeply nested element
+reaching furthest right (fixed bars such as the tab bar only stretch to the widened layout, so they are never named). The
+summary's "Phone width" section lists every screen that pans sideways, and the last step of the phone pass (`ux` →
+`phone-width`) fails while any does. The `ux` flow also opens the editor of the seeded draft blocked for two reasons
+(a longer verdict in its sticky bar than the planned flow's own draft has outside Dead Pool) and taps a risk preset
+there, so that screen is measured and tapped whatever the clock says.
+
+### UX criteria (master specification §60)
+
+Each step names the criteria it evidences; a passed step records its sentence of evidence, a failed one records the
+failure, and `uxCriteria[]` gives every criterion pass (evidence and no failure), fail (any failure) or not-run:
+
+| # | Judged by |
+|---|---|
+| 1 | The next action above the fold in every state: planned flow (Blocked → Edit draft, Ready to lock → Lock plan, Locked → Record entry, Live → Add to journal, Closed → Write review) and the `ux` flow on seeded trades (also Recheck needed → Recheck risk, Reviewed → Reopen review) |
+| 2, 3, 4 | Live notes from the trade page and from Today's live card without leaving them; Ctrl+V on Plan Trade and in the live composer (desktop); `DataTransfer` drops on Plan Trade and on the composer (desktop) |
+| 5, 6, 19 | Edit draft keeps the trade id and adds revision 2, and the editor of a draft blocked for two reasons takes a click or tap and fits the screen; the exact blocking sentence in the preview and in the Plan section; a locked plan has no editor, its edit URL refuses, and the owner's direct `revise_trade_draft` and `discard_trade_draft` calls are refused with `DRAFT_NOT_EDITABLE` without a new revision |
+| 7, 11 | Every scan of every flow, viewport and theme: no raw internals in the visible text; the header's Trading Account selector on every app screen |
+| 8, 9 | Live-first with four fields; post-close notes only under After close (planned lesson, live-first explanation), never Before entry, the thesis or pre-entry evidence |
+| 10 | The AI flow, where AI is on: on a blocked draft the primary action is Edit draft; paid AI only as the secondary "Analyze blocked setup anyway · ≈ €…", nothing sent on page load (mock log). (The planned flow's new account has AI off, so it proves nothing here and records nothing for 10.) |
+| 12, 14, 20 | All Accounts as a selector context without a stored row, money per currency; statistic → trades, day → trades → trade → evidence; Risk Plan V1.0 kept on a historical trade while the account's plan is newer |
+| 13, 15 | Core actions are visible controls (never inside a closed disclosure); both trade flows end Reviewed through labelled controls only |
+| 16 | Every AI card's visible length is bounded; the full analysis opens only in its sheet, which holds every item of the card in full plus what the card leaves out |
+| 17 | Pre-filled account, contract, entry and size; no manual daily-loss total anywhere in Settings |
+| 18 | Phone steps done with taps (note from Today's card, note and picker screenshot on the trade, camera button on live-first) and Today and the trade page fitting 393 px in every phone scan |
+
+Any missed phone tap fails the criteria its step evidences. Criteria 7, 11 and 18 are judged over every screen of the
+run, so they can fail a run without any failed step; the verdict counts them.
+
+### Output
+
+`.local/acceptance/<run-id>/` (git-ignored):
+
+| Path | Content |
+|---|---|
+| `results.json` | `runId`, `base`, `browser`, `clock` (start and end), `verdict` and `verdictReasons`, `users` (keys, emails, ids; no passwords), `steps[]` (`flow`, `viewport`, `id`, `title`, `status` = pass/fail/skipped/clock, `ms`, `evidence[]` of `{ok, message, detail}`, `screenshots[]`, `error`), `matrix` (flow × viewport), `uxCriteria[]` (the 20 criteria of §60 with verdict pass/fail/not-run and their evidence), `scans[]` (per screen, viewport and theme: raw-internal hits, the context selector's text, `overflowPx` against the device width and the widest element), `warnings[]` (console errors, page errors such as hydration mismatches, failing requests, dev-overlay issues, native dialogs, missed taps), `notes[]` |
+| `summary.md` | Verdict with its reasons, pass matrix, UX criteria table, failures (steps with their screenshots, failed criteria, and in a full run criteria that never ran), clock-limited steps, every step, the visible-text scan, phone width and warning summary |
+| `screens/<viewport>/<flow>/NN-<name>.png` | Screenshots of the steps (`-failure` on a failed step, `-tap-missed` at a missed phone tap, `.dark` in the dark theme) |
+| `curated/` | Documentation candidates (device pixels; long phone pages at CSS pixels; each fitted under 480 KB) and their `index.json` |
+| `downloads/export-<viewport>.zip` | The exported archive that was inspected |
+| `seed-<key>.log`, `users.private.json` | Seed output and the run's synthetic credentials |
+
+The visible-text scan runs after every navigation, before every phone tap, at every screenshot and at the end of every
+step: `document.body.innerText` (closed Technical details are not rendered, so they are not part of it) must contain no
+UUID, hex hash of 40 or more characters, provider id (`resp_…`), rule code, SNAKE_CASE backend enum, raw JSON or prompt
+text. It also records whether the header's Trading Account selector is shown and how far a phone screen is wider than
+the device; criteria 7, 11 and 18 are judged over every screen of the run. A navigation that fails inside the browser
+itself (for example `net::ERR_NETWORK_IO_SUSPENDED` while Windows suspends network I/O) is retried twice and reported as
+a `network` warning; an HTTP error from the app is never retried. A form's "leave this page?" question (`beforeunload`)
+is answered with leave, since the runner leaves pages on purpose; any other native dialog is reported and dismissed.
+
+`--publish-screens` replaces the PNGs in `docs/v2-screens/` with the published selection (29 images: Today, the planned
+and live-first trade workspaces, the phone live note, Journal, EDGE with the calendar day, the evidence viewer, Accounts,
+an account dashboard and its risk policy, Review, AI cards concise and full, an AI failure, Settings, the command
+palette and three dark-theme screens) and rewrites its `README.md`: the run, its pass matrix and every image inline,
+grouped by area. It does so only after a run whose verdict is pass, that covered every flow at both viewports and
+captured every published image; any other run (failed, interrupted, partial, or missing an image) leaves
+`docs/v2-screens/` exactly as it was and says why in its notes and log. Captures wait for the images in view
+(screenshot thumbnails load lazily) and hide toasts and the dev indicator.
+
+### Side effects
+
+- AI: only the dev server's mock is ever called. The failure scenario writes `.local/mock-openai-scenarios.json` for one
+  request and then restores the previous content (or removes the file again); if someone else changed the file
+  meanwhile, it is left as found. The file is shared by every user of the dev server, so avoid other AI checks during
+  that request. The held reservation stays on the run's own `ai-*` user (release it with the SQL under "Scenarios" if
+  needed).
+- The operating-system clipboard is never touched (a headless browser on Windows could share it with the desktop).
+- Only the run's own users are changed; exactly one per viewport (`erase-*`) is deleted, through the app. The planned
+  flow's direct `revise_trade_draft` and `discard_trade_draft` calls on the locked plan are expected to be refused; the
+  `ux` flow changes a risk preset in the editor of the shared `history` user's blocked draft without saving it.
+
+### Pure rules and tests
+
+`acceptance/rules.mjs` (options, strategy clock, scan patterns, phone width, criteria verdicts, summary), the published
+selection and README index of `acceptance/curate.mjs`, and the ZIP reader in `acceptance/fixtures.mjs` are covered by
+`tests/v2-acceptance-runner.test.ts` (`npx pnpm@11.19.0 exec vitest run tests/v2-acceptance-runner.test.ts`).

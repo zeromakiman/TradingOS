@@ -4,10 +4,19 @@ import { Check } from "lucide-react";
 import { DropdownMenu as RadixMenu } from "radix-ui";
 import type { ComponentProps, ReactNode } from "react";
 import { cx } from "./cx";
+import { slotChildren } from "./slot";
 
 /** Menu button (Radix): arrow keys, typeahead, Escape to close, focus returns to the trigger. */
 export const DropdownMenu = RadixMenu.Root;
-export const DropdownMenuTrigger = RadixMenu.Trigger;
+
+/** Opens the menu; with `asChild` a server-rendered element (lazy RSC chunk) is resolved first (./slot.ts). */
+export function DropdownMenuTrigger({ asChild, children, ...props }: ComponentProps<typeof RadixMenu.Trigger>) {
+  return (
+    <RadixMenu.Trigger asChild={asChild} {...props}>
+      {slotChildren(asChild, children)}
+    </RadixMenu.Trigger>
+  );
+}
 export const DropdownMenuGroup = RadixMenu.Group;
 export const DropdownMenuRadioGroup = RadixMenu.RadioGroup;
 
@@ -26,7 +35,13 @@ export type DropdownMenuItemProps = ComponentProps<typeof RadixMenu.Item> & {
 };
 
 export function DropdownMenuItem({ className, icon, detail, children, asChild, ...props }: DropdownMenuItemProps) {
-  if (asChild) return <RadixMenu.Item className={cx("menu-item", className)} asChild {...props}>{children}</RadixMenu.Item>;
+  if (asChild) {
+    return (
+      <RadixMenu.Item className={cx("menu-item", className)} asChild {...props}>
+        {slotChildren(true, children)}
+      </RadixMenu.Item>
+    );
+  }
   return (
     <RadixMenu.Item className={cx("menu-item", className)} {...props}>
       {icon}
@@ -49,7 +64,7 @@ export function DropdownMenuRadioItem({ className, children, asChild, ...props }
   if (asChild) {
     return (
       <RadixMenu.RadioItem className={cx("menu-item", className)} asChild {...props}>
-        {children}
+        {slotChildren(true, children)}
       </RadixMenu.RadioItem>
     );
   }

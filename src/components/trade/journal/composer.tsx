@@ -9,7 +9,7 @@ import { EvidenceStager } from "@/components/evidence/evidence-stager";
 import { defaultLabelForTiming, timingLabel } from "@/components/evidence/labels";
 import { clipboardHasText, clipboardImageFiles, transferHasFiles } from "@/components/evidence/paste-model";
 import { EvidencePasteTarget } from "@/components/evidence/paste-target";
-import { type CaptureMethod, TRADE_EVIDENCE_LIMIT } from "@/components/evidence/types";
+import { type CaptureMethod, type EvidenceLabel, TRADE_EVIDENCE_LIMIT } from "@/components/evidence/types";
 import { uploadStagedEvidence, uploadSummary } from "@/components/evidence/upload";
 import { randomUuid, useEvidenceStager } from "@/components/evidence/use-evidence-stager";
 import { useModifierKeyLabel } from "@/components/shell/use-media-query";
@@ -33,9 +33,10 @@ import {
  * Live journal composer (docs/V2_ARCHITECTURE.md §3.6, §7.1, §8.2, §13.4, §14.4): a one-line "Add to
  * trade journal…" field that grows, kind chips Note · Decision · Stop · Target · Partial · Lesson with the
  * few structured fields they need, and screenshots by paste, drop, picker or camera (default label by
- * timing: before entry → Pre-entry, while live → Management, after close → Exit). Ctrl/⌘+Enter adds the
- * entry through `addJournalEntry`; staged screenshots are then uploaded one by one. The entry shows as
- * pending at once; errors are focused. `J` focuses the field (it carries `data-journal-composer`).
+ * timing: before entry → Pre-entry, while live → Management, after close → Exit; Other once a plan ended
+ * without an entry). Ctrl/⌘+Enter adds the entry through `addJournalEntry`; staged screenshots are then
+ * uploaded one by one. The entry shows as pending at once; errors are focused. `J` focuses the field (it
+ * carries `data-journal-composer`).
  */
 
 export interface JournalComposerActions {
@@ -54,6 +55,11 @@ export interface JournalComposerProps {
   tradeId: string;
   /** Band new entries will most likely land in; sets the default screenshot label. The server decides the real timing. */
   timingHint: Timing;
+  /**
+   * Label of attached screenshots when the band's default doesn't fit (`defaultLabelForLifecycle`): Other on a plan
+   * that ended without an entry, which had neither an entry nor an exit. Default: the band's (Pre-entry, Management, Exit).
+   */
+  defaultLabel?: EvidenceLabel;
   /** Known contract: Stop and Target prices are checked against its tick size. */
   instrument?: { tickSize: string; quantityStep?: string | null } | null;
   autoFocus?: boolean;
@@ -106,6 +112,7 @@ async function saveEntry(addEntry: JournalComposerActions["addEntry"], tradeId: 
 export function JournalComposer({
   tradeId,
   timingHint,
+  defaultLabel,
   instrument = null,
   autoFocus = false,
   requestKey: firstRequestKey,
@@ -118,7 +125,9 @@ export function JournalComposer({
 }: JournalComposerProps) {
   const addEntry = actions?.addEntry ?? JOURNAL_COMPOSER_ACTIONS.addEntry;
   const router = useRouter();
-  const stager = useEvidenceStager({ defaultLabel: defaultLabelForTiming(timingHint), max: maxScreenshots, uploader: actions?.upload ?? JOURNAL_COMPOSER_ACTIONS.upload });
+  const stager = useEvidenceStager({
+    defaultLabel: defaultLabel ?? defaultLabelForTiming(timingHint), max: maxScreenshots, uploader: actions?.upload ?? JOURNAL_COMPOSER_ACTIONS.upload,
+  });
   const [draft, setDraft] = useState<JournalDraft>(EMPTY_JOURNAL_DRAFT);
   const [fieldErrors, setFieldErrors] = useState<JournalFieldErrors>({});
   // `focus`: the alert takes focus only when no field is to blame (field errors focus the first field instead).

@@ -766,6 +766,26 @@ describe("Today · plans from an earlier day", () => {
     expect(html.match(/aria-label="Recheck risk: /g)).toHaveLength(1);
   });
 
+  it("offers no check and no edit on an archived account's draft blocked on an earlier day, as the trade page does", async () => {
+    const archivedAccount = { ...PERSONAL_ACCOUNT, status: "ARCHIVED" as const };
+    const frozen = { ...staleBlocked, id: uuid(12), account_id: PERSONAL, currency: "EUR", symbol: "DE40", instrument_version_id: DE40 };
+    m.context = allContext([FTMO_ACCOUNT, archivedAccount]);
+    const data = todayData({ context: allContext([FTMO_ACCOUNT, archivedAccount]), drafts: { blocked: [staleBlocked, frozen] } });
+    // The data layer derives every row's state with its account's status (src/lib/trades-data.ts).
+    data.plans.blocked = data.plans.blocked.map(entry => entry.id === frozen.id
+      ? { ...entry, account: { ...entry.account, status: "ARCHIVED" as const }, state: deriveTradeState(frozen, { now: NOW, checkCurrent: false, accountArchived: true }) }
+      : entry);
+    m.getToday.mockResolvedValue(data);
+    const html = await render();
+    expect(visibleText(html)).toContain("DE40 · Long Account archived");
+    // The database refuses its check and its revision (ACCOUNT_ARCHIVED): neither is offered.
+    expect(html).not.toContain(`/trades/${frozen.id}/edit`);
+    expect(html).not.toContain('aria-label="Recheck risk: DE40 · Long"');
+    // The active account's draft keeps the free recheck first, with Edit draft beside it.
+    expect(html).toContain('aria-label="Recheck risk: GBPUSD · Long"');
+    expect(anchorTo(html, `/trades/${staleBlocked.id}/edit`)).toContain("btn-ghost");
+  });
+
   it("lists plans locked on an earlier day apart from today's, with Record entry as a choice beside Skip", async () => {
     m.getToday.mockResolvedValue(todayData({ locked: [lockedPlan, earlierLocked] }));
     const html = await render();

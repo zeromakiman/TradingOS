@@ -7,10 +7,10 @@ import {
   equityCurveR, isEarlySample, type MoneyTotal, moneyByCurrency, type RMetrics, rMetrics, sampleCaveat,
 } from "@/domain/performance";
 import { daysInMonth, strategyMonth } from "@/domain/time-display";
-import { type AccountContext, currentSession, type Db, getAccountContext } from "./account-context";
+import { ALL_ACCOUNTS_VALUE, type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext } from "./account-context";
 import {
-  applyLedgerFilters, inTradeDateRange, journalHref, ledgerSelect, normalizeFilters, parseLedger, postFilter, searchSymbol, searchTradeIds, type TradeFilters,
-  type TradeScope,
+  applyLedgerFilters, contextScope, filteredScope, inTradeDateRange, journalHref, ledgerSelect, normalizeFilters, parseLedger, postFilter, resolveAccountFilter,
+  searchSymbol, searchTradeIds, type TradeFilters, type TradeScope,
 } from "./trades-data";
 
 /**
@@ -41,12 +41,13 @@ export interface LoadLedgerOptions {
 
 /**
  * Every ledger row of the scope matching the filters, in id order (keyset pagination by id avoids PostgREST's row cap
- * and shifting offsets). Trade-date range, session, weekday and R bounds are applied to the parsed rows.
+ * and shifting offsets). Trade-date range, session, weekday and R bounds are applied to the parsed rows. A read-only
+ * account filter narrows an All Accounts scope to that account (`filteredScope`).
  */
 export async function loadLedgerRows(db: Db, userId: string, scope: TradeScope, raw: TradeFilters, options: LoadLedgerOptions = {}): Promise<LedgerRows> {
   const filters = normalizeFilters(raw);
   const maxRows = options.maxRows ?? MAX_LEDGER_ROWS;
-  const searchIds = filters.q !== undefined ? await searchTradeIds(db, userId, scope, filters.q) : null;
+  const searchIds = filters.q !== undefined ? await searchTradeIds(db, userId, filteredScope(scope, filters), filters.q) : null;
   if (filters.q !== undefined && !searchSymbol(filters.q) && !searchIds?.length) return { rows: [], truncated: false };
   const rows: LedgerTrade[] = [];
   let read = 0;
@@ -101,6 +102,20 @@ function drillHref(filters: TradeFilters, drill: DrillDown): string {
   return journalHref(filters, drill.account ? { account: drill.account } : {});
 }
 
+/**
+ * Drill-downs into one account's history from All Accounts: the read-only account filter instead of a context switch.
+ * For archived accounts, which can never be the working context (§9.2) but keep their history.
+ */
+export function accountHistoryDrill(accountId: string, base: TradeFilters = {}): DrillDown {
+  return { base: { ...base, accountFilter: accountId }, account: ALL_ACCOUNTS_VALUE };
+}
+
+/** Every trade of one account in the Journal of All Accounts (read-only account filter; see `accountHistoryDrill`). */
+export function accountHistoryJournalHref(accountId: string): string {
+  const drill = accountHistoryDrill(accountId);
+  return drillHref(drill.base, drill);
+}
+
 /** Journal link of a breakdown bar; the account breakdown switches the context to that account explicitly. */
 export function breakdownHref(group: Pick<BreakdownGroup, "key" | "value">, drill: DrillDown): string | null {
   const filters = breakdownFilters(group.key, group.value, drill.base);
@@ -123,9 +138,16 @@ export function tradeHref(tradeId: string): string {
   return `/trades/${tradeId}`;
 }
 
-/** Account contribution rows open that account's Journal (switching the context explicitly). */
-export function accountJournalHref(accountId: string, base: TradeFilters): string {
-  return journalHref({ ...base, states: CLOSED_STATES }, { account: accountId });
+/**
+ * Account contribution rows open that account's Journal: an active account becomes the context (switching it
+ * explicitly); an archived one, which cannot be the context, opens in All Accounts with the read-only account filter.
+ */
+export function accountJournalHref(account: Pick<ContextAccount, "id" | "status">, base: TradeFilters): string {
+  if (account.status === "ARCHIVED") {
+    const drill = accountHistoryDrill(account.id, { ...base, states: CLOSED_STATES });
+    return drillHref(drill.base, drill);
+  }
+  return journalHref({ ...base, states: CLOSED_STATES }, { account: account.id });
 }
 
 export interface LinkedBreakdownGroup extends BreakdownGroup {
@@ -191,7 +213,10 @@ export interface PerformanceView {
   daily: (DailyPoint & { href: string })[];
   distribution: DistributionR & { bins: (DistributionBin & { href: string })[] };
   breakdowns: Partial<Record<BreakdownKey, LinkedBreakdownGroup[]>>;
-  /** All Accounts: each account's trades, net R, own-currency net P&L and share of net R. */
+  /**
+   * All Accounts without the read-only account filter: each account's trades, net R, own-currency net P&L and share of
+   * net R. Null for one account (an account context or the account filter).
+   */
   contribution: (AccountContribution & { href: string })[] | null;
   calendar: LinkedCalendar;
   /** "R is per-trade risk units, not money" (All Accounts R label, §9.3). */
@@ -210,8 +235,13 @@ export interface PerformanceOptions {
 
 export const R_LABEL = "R is per-trade risk units, not money";
 
-/** Pure assembly of the EDGE view from closed ledger rows. */
-export function buildPerformance(context: AccountContext, rows: LedgerRows, filters: TradeFilters, now: string, options: PerformanceOptions = {}): PerformanceView {
+/**
+ * Pure assembly of the EDGE view from closed ledger rows. The read-only account filter combines with All Accounts only
+ * (`resolveAccountFilter`): in an account context, where the read already ignored it (`filteredScope`), the view and its
+ * drill-down links drop it too, so a filter left in the URL by a context switch never travels on.
+ */
+export function buildPerformance(context: AccountContext, rows: LedgerRows, requested: TradeFilters, now: string, options: PerformanceOptions = {}): PerformanceView {
+  const filters = resolveAccountFilter(requested, context).filters;
   const trades = rows.rows;
   const drill: DrillDown = { base: filters };
   const metrics = rMetrics(trades);
@@ -223,9 +253,12 @@ export function buildPerformance(context: AccountContext, rows: LedgerRows, filt
   }
   const distribution = distributionR(trades);
   const month = parseMonth(options.month, strategyMonth(now));
-  const contribution = context.selected.mode === "all"
+  const statuses = new Map(context.accounts.map(account => [account.id, account.status] as const));
+  // Contribution compares the accounts of All Accounts; the read-only account filter narrows the page to one of them,
+  // so, as in an account context, there is nothing to compare (and no other account to drill into).
+  const contribution = context.selected.mode === "all" && !filters.accountFilter
     ? accountContribution(trades, context.accounts.map(account => ({ id: account.id, name: account.name, currency: account.currency })))
-      .map(entry => ({ ...entry, href: accountJournalHref(entry.accountId, filters) }))
+      .map(entry => ({ ...entry, href: accountJournalHref({ id: entry.accountId, status: statuses.get(entry.accountId) ?? "ACTIVE" }, filters) }))
     : null;
   return {
     filters,
@@ -249,15 +282,14 @@ export function buildPerformance(context: AccountContext, rows: LedgerRows, filt
 /** EDGE of the request's account context (closed trades only). */
 export async function getPerformance(filters: TradeFilters, options: PerformanceOptions = {}): Promise<PerformanceView> {
   const [{ db, user }, context] = await Promise.all([currentSession(), getAccountContext()]);
-  const scope: TradeScope = context.selected.mode === "account" ? { mode: "account", accountId: context.selected.account.id } : { mode: "all" };
-  const rows = await loadLedgerRows(db, user.id, scope, filters, { closedOnly: true });
+  const rows = await loadLedgerRows(db, user.id, contextScope(context), filters, { closedOnly: true });
   return buildPerformance(context, rows, filters, new Date().toISOString(), options);
 }
 
 /** Calendar month only (month navigation and mode switches re-read just the month's exits). */
 export async function getCalendar(month: string, mode: CalendarMode, filters: TradeFilters, currency?: string): Promise<LinkedCalendar> {
   const [{ db, user }, context] = await Promise.all([currentSession(), getAccountContext()]);
-  const scope: TradeScope = context.selected.mode === "account" ? { mode: "account", accountId: context.selected.account.id } : { mode: "all" };
+  const scope = contextScope(context);
   const valid = parseMonth(month, strategyMonth(new Date().toISOString()));
   const last = `${valid}-${String(daysInMonth(valid)).padStart(2, "0")}`;
   const monthFilters: TradeFilters = { ...filters, closedFrom: maxDay(filters.closedFrom, `${valid}-01`), closedTo: minDay(filters.closedTo, last) };

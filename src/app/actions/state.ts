@@ -30,6 +30,8 @@ export const SESSION_COPY = "Your session has ended. Sign in again to continue."
 export const SQL_ERROR_COPY: Readonly<Record<string, string>> = Object.freeze({
   AUTH_REQUIRED: SESSION_COPY,
   ACCOUNT_NOT_FOUND: "That trading account isn't available.",
+  // An archived account keeps its history and lets open trades finish, but takes no new trades or records (§3.2, §14.9).
+  ACCOUNT_ARCHIVED: "This trading account is archived, so it takes no new trades or records. Restore it in Manage account to use it again.",
   ACCOUNT_INCOMPLETE: "This trading account needs account values, a risk plan and an instrument before a plan can be checked.",
   TRADE_NOT_FOUND: "That trade isn't available.",
   PLAN_REQUIRED: "This trade has no locked plan yet.",

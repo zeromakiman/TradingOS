@@ -1,3 +1,4 @@
+import { ALL_ACCOUNTS_SCOPE, exportHref, TOO_MANY_TRADES } from "@/app/edge/export/contract";
 import type { DrawdownPoint } from "@/components/charts/line-chart";
 import type { ChartDatum, HistogramBin } from "@/components/charts/types";
 import { evidenceHref } from "@/components/evidence/gallery-model";
@@ -8,12 +9,12 @@ import { ENTRY_MODELS, type EntryModel, type LedgerTrade, type TradeOrigin } fro
 import { type BreakdownKey, type DistributionBin, EARLY_SAMPLE_NOTE, groupEvidence, type RMetrics } from "@/domain/performance";
 import { formatDay, strategyDay } from "@/domain/time-display";
 import { deriveTradeState } from "@/domain/trade-state";
-import type { AccountContext } from "@/lib/account-context";
+import type { AccountContext, ContextAccount } from "@/lib/account-context";
 import { type LinkedBreakdownGroup, type PerformanceView, R_LABEL } from "@/lib/performance-data";
-import { evidenceSource, journalHref } from "@/lib/trades-data";
+import { evidenceSource, journalHref, resolveAccountFilter } from "@/lib/trades-data";
 import type { EdgeData } from "./edge-data";
 import { formatDrawdownR, formatProfitFactor, formatRate, formatShare, type SignTone, sampleWords, signTone } from "./format";
-import { type EdgeQuery, exportHref, RANGE_LABELS } from "./query";
+import { type EdgeQuery, RANGE_LABELS } from "./query";
 
 /**
  * Presentation model of EDGE (docs/V2_ARCHITECTURE.md §13.6–13.8, §14.6): every label pre-formatted with the domain
@@ -37,9 +38,17 @@ export function isAllAccounts(context: AccountContext): boolean {
   return context.selected.mode === "all";
 }
 
-/** "All Accounts · 3 trading accounts" or "FTMO 100K · USD". */
-export function scopeLabel(context: AccountContext): string {
+/**
+ * "All Accounts · 3 trading accounts", "FTMO 100K · USD", or the one account the read-only account filter narrows All
+ * Accounts to: "Personal 12K · EUR · archived" (an account the user cannot read leaves All Accounts; its chip says so).
+ */
+export function scopeLabel(context: AccountContext, query: Pick<EdgeQuery, "accountFilter"> = {}): string {
   if (context.selected.mode === "account") return `${context.selected.account.name} · ${context.selected.account.currency}`;
+  const filter = resolveAccountFilter({ accountFilter: query.accountFilter }, context).state;
+  if (filter.kind === "account") {
+    const { name, currency, status } = filter.account;
+    return [name, currency, ...(status === "ARCHIVED" ? ["archived"] : [])].join(" · ");
+  }
   return `All Accounts · ${plural(context.accounts.length, "trading account")}`;
 }
 
@@ -228,6 +237,7 @@ export function distributionBins(view: PerformanceView, rows: readonly LedgerTra
     return {
       key: `${bin.from ?? "open"}:${bin.to ?? "open"}`, label: bin.label, from: bin.from, to: bin.to, count: bin.count,
       countLabel: breakEven ? `${plural(bin.count, "trade")} · ${breakEven} break-even (0R)` : plural(bin.count, "trade"), href: bin.href,
+      breakEven,
     };
   });
 }
@@ -583,17 +593,47 @@ export interface ExportLink {
   href: string;
 }
 
-/** Legacy CSV links: the selected account, or one per account in All Accounts (the file covers one account). */
-export function exportLinks(data: Pick<EdgeData, "context" | "query">): ExportLink[] {
-  const { context, query } = data;
-  const accounts = context.selected.mode === "account" ? [context.selected.account] : context.accounts;
-  return accounts.map(account => ({ label: account.name, detail: account.currency, href: exportHref(query, account.id) }));
+/** "12 trades · USD, EUR": what a file holds (money columns stay in each trade's account currency). */
+function exportDetail(trades: readonly LedgerTrade[]): string {
+  return `${plural(trades.length, "trade")} · ${[...new Set(trades.map(trade => trade.currency))].sort().join(", ")}`;
+}
+
+/** The trading account a file holds, as the account filter names it: "Personal 12K", "Old prop · archived". */
+function exportAccountLabel(account: Pick<ContextAccount, "name" | "status">): string {
+  return account.status === "ARCHIVED" ? `${account.name} · archived` : account.name;
 }
 
 /**
- * The legacy CSV holds closed planned trades only, so with a live-first or imported origin filter it would contain
- * the opposite of what the page shows: it is not offered then (the page says why and how to export).
+ * CSV links (`GET /edge/export`): the file of exactly what the page counts (every origin, the page's filters with its
+ * effective exit days, the selected account or All Accounts) and, in All Accounts with trades in several accounts, one
+ * file per account that has trades on the page. Every file is labelled with what it holds: when the read-only account
+ * filter narrows All Accounts to one account, the page's file is that account's (the link keeps the page's filter).
+ * A filter naming an account the user cannot read matches no trade, so no file is offered.
  */
-export function exportMatchesOrigin(query: Pick<EdgeQuery, "origin">): boolean {
-  return query.origin === undefined || query.origin === "PLANNED";
+export function exportLinks(data: Pick<EdgeData, "context" | "query" | "rows">): ExportLink[] {
+  const { context, query, rows } = data;
+  if (context.selected.mode === "account") {
+    const { account } = context.selected;
+    return [{ label: exportAccountLabel(account), detail: exportDetail(rows), href: exportHref(query, account.id) }];
+  }
+  const filter = resolveAccountFilter({ accountFilter: query.accountFilter }, context).state;
+  if (filter.kind === "unavailable") return [];
+  const page: ExportLink = {
+    label: filter.kind === "account" ? exportAccountLabel(filter.account) : "All Accounts",
+    detail: exportDetail(rows),
+    href: exportHref(query, ALL_ACCOUNTS_SCOPE),
+  };
+  const perAccount = context.accounts
+    .map(account => ({ account, trades: rows.filter(row => row.account_id === account.id) }))
+    .filter(entry => entry.trades.length > 0);
+  if (perAccount.length < 2) return [page];
+  return [page, ...perAccount.map(({ account, trades }) => ({ label: exportAccountLabel(account), detail: exportDetail(trades), href: exportHref(query, account.id) }))];
+}
+
+/**
+ * Why EDGE offers no file: its read stopped at the row limit (`truncated`), so the page counts only part of the
+ * matching trades and the export refuses a partial file. Undefined when the files are offered.
+ */
+export function exportUnavailable(data: Pick<EdgeData, "truncated">): string | undefined {
+  return data.truncated ? TOO_MANY_TRADES : undefined;
 }

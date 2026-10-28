@@ -1,7 +1,7 @@
 import "server-only";
 import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
-import type { AiAvailability } from "@/ai/availability";
+import { type AiAvailability, HELD_RESERVATION_MESSAGE } from "@/ai/availability";
 import { monthlyPeriod } from "@/ai/monthly-period";
 import { recentSample } from "@/ai/recent-trades-context";
 import { weeklyPeriod } from "@/ai/weekly-period";
@@ -49,6 +49,8 @@ export function availabilityReason(availability: Pick<AiAvailability, "status" |
       return "AI is off for this trading account. Turn it on in Settings → AI.";
     case "BUDGET_REACHED":
       return "This month's AI budget can't cover another request. Review the limit in Settings → AI.";
+    case "ACCOUNTING_REVIEW":
+      return HELD_RESERVATION_MESSAGE;
     case "DISABLED":
       return "AI analysis is turned off for this deployment.";
     default:

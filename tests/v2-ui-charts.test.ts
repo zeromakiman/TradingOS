@@ -2,7 +2,8 @@ import Decimal from "decimal.js";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { DivergingBarChart, Histogram } from "@/components/charts/bar-chart";
+import { minorLabelsClass, xLabelsMinWidth } from "@/components/charts/axes";
+import { binCountText, binSign, DivergingBarChart, Histogram } from "@/components/charts/bar-chart";
 import { monthWeeks } from "@/components/charts/calendar";
 import { CalendarHeatmap, type CalendarHeatmapProps, type CalendarValueFormat, calendarValueLabel } from "@/components/charts/calendar-heatmap";
 import { formatTickMoney, formatTickNumber, formatTickR } from "@/components/charts/format";
@@ -24,7 +25,7 @@ import {
 import { Sparkline } from "@/components/charts/sparkline";
 import { categorySummary } from "@/components/charts/summary";
 import type { CalendarHeatmapDay, ChartDatum, HistogramBin } from "@/components/charts/types";
-import { calendarMonth, type PerformanceTrade } from "@/domain/performance";
+import { calendarMonth, distributionR, type PerformanceTrade } from "@/domain/performance";
 
 const decimals = (...values: string[]) => values.map((value) => toDecimal(value)).filter((value) => value !== null);
 
@@ -282,10 +283,11 @@ describe("Bar charts", () => {
 
   it("colours histogram bins by side of zero and links each bin", () => {
     const bins: HistogramBin[] = [
-      { key: "a", label: "−1.0R to −0.5R", from: "-1", to: "-0.5", count: 3, href: "/journal?r=-1" },
-      { key: "b", label: "−0.5R to 0R", from: "-0.5", to: "0", count: 0 },
-      { key: "c", label: "0R to 0.5R", from: "0", to: "0.5", count: 1 },
-      { key: "d", label: "−0.25R to 0.25R", from: "-0.25", to: "0.25", count: 2 },
+      { key: "a", label: "−1.0R to −0.5R", from: "-1", to: "-0.5", count: 3, breakEven: 0, href: "/journal?r=-1" },
+      { key: "b", label: "−0.5R to 0R", from: "-0.5", to: "0", count: 0, breakEven: 0 },
+      // Starts at 0R but holds no break-even trade: profit.
+      { key: "c", label: "0R to 0.5R", from: "0", to: "0.5", count: 1, breakEven: 0 },
+      { key: "d", label: "−0.25R to 0.25R", from: "-0.25", to: "0.25", count: 2, breakEven: 0 },
     ];
     const markup = renderToStaticMarkup(createElement(Histogram, { title: "R distribution", question: "How are outcomes distributed?", bins, formatEdge: formatTickR }));
     finite(markup);
@@ -302,10 +304,10 @@ describe("Bar charts", () => {
   it("accepts the domain's distribution bins, including open-ended edge bins without keys", () => {
     // Shape of distributionR(...).bins: contiguous, with open-ended outer bins.
     const bins = [
-      { from: null, to: "-1", label: "Below -1.0R", count: 1, tradeIds: ["a"] },
-      { from: "-1", to: "-0.5", label: "-1.0R to -0.5R", count: 0, tradeIds: [] },
-      { from: "-0.5", to: "0", label: "-0.5R to 0.0R", count: 2, tradeIds: ["b", "c"] },
-      { from: "0", to: null, label: "0.0R and above", count: 1, tradeIds: ["d"] },
+      { from: null, to: "-1", label: "Below -1.0R", count: 1, breakEven: 0, tradeIds: ["a"] },
+      { from: "-1", to: "-0.5", label: "-1.0R to -0.5R", count: 0, breakEven: 0, tradeIds: [] },
+      { from: "-0.5", to: "0", label: "-0.5R to 0.0R", count: 2, breakEven: 0, tradeIds: ["b", "c"] },
+      { from: "0", to: null, label: "0.0R and above", count: 1, breakEven: 0, tradeIds: ["d"] },
     ];
     const markup = renderToStaticMarkup(createElement(Histogram, { title: "R distribution", question: "How are outcomes distributed?", bins, formatEdge: formatTickR }));
     finite(markup);
@@ -328,7 +330,7 @@ describe("Bar charts", () => {
     const rows = renderToStaticMarkup(createElement(HBarChart, { title: "Net R by model", question: "Which conditions perform?", data }));
     finite(rows);
     expect(rows.match(/class="hbar-bar"/g)).toHaveLength(1);
-    expect(rows.match(/class="hbar-row"/g)).toHaveLength(2);
+    expect(rows.match(/class="hbar-row[ "]/g)).toHaveLength(2);
     expect(rows).toContain(">—<");
   });
 
@@ -583,5 +585,142 @@ describe("Sparkline", () => {
     const markup = renderToStaticMarkup(createElement(Sparkline, { values, label: "Net R, last 12 weeks" }));
     finite(markup);
     expect(markup).toContain("<title>Net R, last 12 weeks</title>");
+  });
+});
+
+describe("Horizontal bars in narrow containers (phones, narrow cards)", () => {
+  const mixed = [datum(0, "3.5", "+3.50R"), datum(1, "-1.25", "−1.25R"), datum(2, "0.5", "+0.50R")];
+  const render = (data: ChartDatum[]) => renderToStaticMarkup(createElement(HBarChart, { title: "Net R by model", question: "Which conditions perform?", data, valueName: "Net R" }));
+
+  it("measures the list, not the page, and stacks each row below 32rem: name and value above a full-width bar", () => {
+    const markup = render(mixed);
+    finite(markup);
+    expect(markup).toContain('class="hbar-list @container"');
+    expect(markup.match(/class="hbar-row @max-\[32rem\]:grid-cols-\[minmax\(0,1fr\)_auto\][^"]*"/g)).toHaveLength(3);
+    // Mixed signs reserve label room on both sides of the track, only side by side.
+    expect(markup.match(/class="hbar-track ml-18 mr-18 @max-\[32rem\]:col-span-2 @max-\[32rem\]:mx-0"/g)).toHaveLength(3);
+    // Stacked rows show the value beside the name and hide the tip label, so the bar gets the whole width.
+    expect(markup).toMatch(/<span class="hidden [^"]*@max-\[32rem\]:block" aria-hidden="true">\+3\.50R<\/span>/);
+    expect(markup.match(/class="hbar-value @max-\[32rem\]:hidden"/g)).toHaveLength(3);
+    // The value is announced once, through the row's accessible name.
+    expect(markup).toContain('aria-label="Oct 1: Net R +3.50R. 1 trades"');
+  });
+
+  it("reserves label room only on the side that has bars", () => {
+    const markup = render([datum(0, "3.5", "+3.50R"), datum(1, "1", "+1.00R")]);
+    expect(markup).toContain('class="hbar-track mr-18 @max-[32rem]:col-span-2 @max-[32rem]:mx-0"');
+    expect(markup).not.toContain("ml-18");
+  });
+
+  it("never cuts a group's sample line off: it wraps at every width, only between its parts, with its text unchanged", () => {
+    const detail = "N = 27 · 1 without risk · Emerging tendency";
+    const markup = render([{ ...datum(0, "1.5", "+1.50R"), detail }, { ...datum(1, "-0.5", "−0.50R"), detail: "N = 3" }]);
+    // Desktop included (§13.8): the evidence label in a 176px label column is no longer ellipsized.
+    expect(markup).toContain(
+      '<span class="hbar-detail whitespace-normal"><span class="inline-block wrap-anywhere">N = 27 ·</span> <span class="inline-block wrap-anywhere">1 without risk ·</span> <span class="inline-block wrap-anywhere">Emerging tendency</span></span>',
+    );
+    expect(markup).toContain('<span class="hbar-detail whitespace-normal"><span class="inline-block wrap-anywhere">N = 3</span></span>');
+    expect(markup).not.toContain("@max-[32rem]:whitespace-normal");
+    const shown = /<span class="hbar-detail[^"]*">((?:<span[^>]*>[^<]*<\/span> ?)+)<\/span>/.exec(markup)?.[1].replace(/<[^>]+>/g, "");
+    expect(shown).toBe(detail);
+  });
+});
+
+describe("Time axis labels", () => {
+  const labels = (texts: string[]) =>
+    texts.map((text, index) => ({ key: `x${index}`, text, x: Math.round((index / (texts.length - 1)) * 100), minor: index > 0 && index < texts.length - 1 }));
+
+  it("computes the narrowest plot where neighbours keep a gap, counting the inward reach of the edge labels", () => {
+    // Two edge labels: each reaches inwards by its whole width (6 × 0.42rem), plus the 0.75rem gap.
+    expect(xLabelsMinWidth([{ text: "Oct 14", x: 0 }, { text: "Oct 21", x: 100 }])).toBeCloseTo(5.79, 2);
+    // A centred label 25% before the right-aligned last one: half its width plus the last label's whole width.
+    expect(xLabelsMinWidth([{ text: "Oct 14", x: 75 }, { text: "Oct 21", x: 100 }])).toBeCloseTo((1.26 + 2.52 + 0.75) / 0.25, 2);
+  });
+
+  it("hides the in-between labels of axes narrower than they need, keeping the first and last", () => {
+    const five = labels(["Start", "Oct 6", "Oct 9", "Oct 14", "Oct 21"]);
+    const needed = xLabelsMinWidth(five);
+    expect(needed).toBeGreaterThan(16);
+    const hide = minorLabelsClass(five);
+    const threshold = Number(/@max-\[(\d+)rem\]/.exec(hide)?.[1]);
+    expect(threshold).toBeGreaterThanOrEqual(needed);
+    expect(hide).toBe(`@max-[${threshold}rem]:[&>[data-minor]]:hidden`);
+    expect(minorLabelsClass(labels(["Oct 1", "Oct 31"]))).toBe("");
+    // Far too many long labels for any card: the in-between ones never show.
+    expect(minorLabelsClass(labels(Array.from({ length: 30 }, (_, index) => `Week ${index + 1} of the year`)))).toBe("[&>[data-minor]]:hidden");
+  });
+
+  it("makes the axis a size container whose labels hide by its own width", () => {
+    const points = ["0", "1", "-0.5", "2", "1.5", "3", "2.5"].map((value, index) => datum(index, value));
+    const markup = renderToStaticMarkup(createElement(LineChart, { title: "Cumulative R", question: "Is the process compounding?", series: [{ id: "r", name: "Cumulative R", points }] }));
+    expect(markup).toContain('<div class="chart-x-axis @container" aria-hidden="true"><div class="absolute inset-0');
+    expect(markup).toMatch(/class="chart-x-tick"[^>]*data-minor="true"/);
+    expect(markup).toMatch(/class="chart-x-tick" data-edge="end"[^>]*>Oct 7</);
+  });
+});
+
+describe("R distribution: break-even trades are neither profit nor loss (0R bin)", () => {
+  const ledger = (id: string, realized: string) =>
+    ({ id, realized_r: realized, exited_at: "2026-10-14T15:00:00Z", lifecycle: "CLOSED", net_pnl: "0", currency: "USD" }) as unknown as PerformanceTrade;
+
+  it("counts the break-even trades of the bin that starts at 0R", () => {
+    const result = distributionR([ledger("a", "0"), ledger("b", "0.00000000"), ledger("c", "0.25"), ledger("d", "-0.25"), ledger("e", "1")]);
+    const bin = (from: string) => result.bins.find((entry) => entry.from === from);
+    expect(bin("0")).toMatchObject({ to: "0.5", count: 3, breakEven: 2, label: "0.0R to +0.5R" });
+    expect(bin("-0.5")).toMatchObject({ count: 1, breakEven: 0 });
+    expect(bin("1")).toMatchObject({ count: 1, breakEven: 0 });
+    expect(result.bins.every((entry) => entry.from === "0" || entry.breakEven === 0)).toBe(true);
+  });
+
+  it("draws the bin starting at 0R in the neutral tone while it holds break-even trades, and as profit with none", () => {
+    expect(binSign({ from: "0", to: "0.5", breakEven: 2 })).toBe("neutral");
+    expect(binSign({ from: "0", to: "0.5", breakEven: 0 })).toBe("pos");
+    expect(binSign({ from: "0", to: null, breakEven: 1 })).toBe("neutral");
+    expect(binSign({ from: "0", to: null, breakEven: 0 })).toBe("pos");
+    // An unreadable count cannot show that the bin holds only winners.
+    expect(binSign({ from: "0", to: "0.5", breakEven: Number.NaN })).toBe("neutral");
+    expect(binSign({ from: "0.5", to: "1", breakEven: 0 })).toBe("pos");
+    expect(binSign({ from: "-0.5", to: "0", breakEven: 0 })).toBe("neg");
+  });
+
+  it("requires every bin to carry its break-even count, so a consumer mapping the domain's bins cannot drop it", () => {
+    // @ts-expect-error `breakEven` is required: without it a 0R bin of winners could only be drawn neutral.
+    const dropped: HistogramBin = { label: "0.0R to +0.5R", from: "0", to: "0.5", count: 2 };
+    // At run time a bin without a readable count is still never drawn as profit.
+    expect(binSign(dropped)).toBe("neutral");
+  });
+
+  it("draws the domain's 0R bin as profit when it holds only winners, and neutral once it holds a break-even trade", () => {
+    const tones = (trades: PerformanceTrade[]) => {
+      // As a screen passes them on: the domain's bins with a drill-down link each.
+      const bins: HistogramBin[] = distributionR(trades).bins.map((bin) => ({ ...bin, href: `/journal?rFrom=${bin.from}` }));
+      const markup = renderToStaticMarkup(createElement(Histogram, { title: "R distribution", question: "How are outcomes distributed?", bins, formatEdge: formatTickR }));
+      return { markup, signs: [...markup.matchAll(/class="chart-bar" data-sign="(\w+)"/g)].map((match) => match[1]) };
+    };
+    const winners = [ledger("a", "0.25"), ledger("b", "0.3"), ledger("c", "-0.4"), ledger("d", "1.2")];
+    const onlyWinners = tones(winners);
+    // −0.5R to 0R, 0R to +0.5R (two winners), +0.5R to +1R (empty), +1R to +1.5R.
+    expect(onlyWinners.signs).toEqual(["neg", "pos", "zero", "pos"]);
+    expect(onlyWinners.markup).toContain('aria-label="0.0R to +0.5R: Trades 2"');
+    const withBreakEven = tones([...winners, ledger("e", "0")]);
+    expect(withBreakEven.signs).toEqual(["neg", "neutral", "zero", "pos"]);
+    expect(withBreakEven.markup).toContain('aria-label="0.0R to +0.5R: Trades 3 (1 at 0R)"');
+  });
+
+  it("names the break-even trades in the chart, its table and the accessible names", () => {
+    const bins: HistogramBin[] = [
+      { label: "-0.5R to 0.0R", from: "-0.5", to: "0", count: 1, breakEven: 0 },
+      { label: "0.0R to +0.5R", from: "0", to: "0.5", count: 3, breakEven: 2 },
+      { label: "+0.5R to +1.0R", from: "0.5", to: "1", count: 1, breakEven: 0 },
+    ];
+    expect(binCountText(bins[1])).toBe("3 (2 at 0R)");
+    expect(binCountText({ count: 3, breakEven: 2, countLabel: "3 trades · 2 break-even (0R)" })).toBe("3 trades · 2 break-even (0R)");
+    const markup = renderToStaticMarkup(createElement(Histogram, { title: "R distribution", question: "How are outcomes distributed?", bins, formatEdge: formatTickR }));
+    finite(markup);
+    expect(markup.match(/class="chart-bar" data-sign="neutral"/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="0.0R to +0.5R: Trades 3 (2 at 0R)"');
+    expect(markup).toMatch(/<td[^>]*>3 \(2 at 0R\)<\/td>/);
+    // The text summary counts the bin in the same words.
+    expect(markup).toContain(">R distribution: 5 outcomes in 3 bins; most frequent 0.0R to +0.5R: 3 (2 at 0R).</span>");
   });
 });

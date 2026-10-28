@@ -2,6 +2,7 @@ import { LoaderCircle } from "lucide-react";
 import { Slot } from "radix-ui";
 import type { ComponentProps, ReactNode } from "react";
 import { cx } from "./cx";
+import { resolveSlotChild } from "./slot";
 import { Tooltip } from "./tooltip";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "link";
@@ -22,6 +23,13 @@ const variantClass: Record<ButtonVariant | LegacyButtonVariant, string> = {
 
 const sizeClass: Record<ButtonSize, string> = { sm: "btn-sm", md: "", lg: "btn-lg" };
 
+/**
+ * Touch screens (§13.5: targets of at least 44px): small buttons grow to 44px only where the pointer is coarse, so
+ * desktop density stays as designed (medium and large buttons already are 44px there; text links keep their height).
+ */
+export const TOUCH_TARGET = "pointer-coarse:min-h-11";
+const TOUCH_ICON_TARGET = "pointer-coarse:min-h-11 pointer-coarse:w-11";
+
 export type ButtonStyleOptions = {
   variant?: ButtonVariant | LegacyButtonVariant;
   size?: ButtonSize;
@@ -31,7 +39,8 @@ export type ButtonStyleOptions = {
 
 /** Class list for elements that should look like a button, such as a `<Link>` rendered by a server component. */
 export function buttonClasses({ variant = "primary", size = "md", iconOnly = false, className }: ButtonStyleOptions = {}) {
-  return cx("btn", variantClass[variant], sizeClass[size], iconOnly && "btn-icon", className);
+  const touch = size === "sm" && variant !== "link" ? (iconOnly ? TOUCH_ICON_TARGET : TOUCH_TARGET) : undefined;
+  return cx("btn", variantClass[variant], sizeClass[size], iconOnly && "btn-icon", touch, className);
 }
 
 export type ButtonProps = ComponentProps<"button"> &
@@ -70,7 +79,7 @@ export function Button({
     return (
       <Slot.Root className={classes} aria-disabled={disabled || loading || undefined} aria-busy={loading || undefined} {...props}>
         {leading}
-        <Slot.Slottable>{children}</Slot.Slottable>
+        <Slot.Slottable>{resolveSlotChild(children)}</Slot.Slottable>
         {iconEnd}
       </Slot.Root>
     );
