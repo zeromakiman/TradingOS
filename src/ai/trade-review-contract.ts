@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { tradeReviewAllowedSources } from "./trade-review-sources";
-export const REVIEW_TRADE_VERSION="REVIEW_TRADE_V1";
 const observation=z.object({assessment:z.enum(["ALIGNED","DEVIATION","INSUFFICIENT_EVIDENCE"]),interpretation:z.string().min(1).max(1800),sourceRefs:z.array(z.string().max(100)).min(1).max(16)}).strict();
 export const tradeReviewOutput=z.object({planAdherence:observation,executionQuality:observation,modelFit:observation,processDiscipline:observation,deviations:observation,behavioralMistakes:observation,lessons:z.array(observation).min(1).max(5),limitations:z.array(z.string().max(1000)).max(8)}).strict();
 export type TradeReviewOutput=z.infer<typeof tradeReviewOutput>;

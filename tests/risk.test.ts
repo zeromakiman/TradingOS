@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import Decimal from "decimal.js";
-import { evaluateRisk, moneyString, type Proposal, type RiskContext } from "@/domain/risk";
-import { previewContext, previewProposal } from "@/domain/fixtures";
+import { evaluateRisk, type Proposal, type RiskContext } from "@/domain/risk";
+import { previewContext, previewProposal, usageFixture } from "@/domain/fixtures";
 import { strategyClock } from "@/domain/session";
 const proposal = { ...previewProposal, narrative:"Liquidity sweep then meaningful M5 displacement; user-reported.", contractConfirmed:true };
 const run = (p: Partial<Proposal> = {}, c: Partial<RiskContext> = {}) => evaluateRisk({...proposal,...p},{...previewContext,...c});
@@ -10,7 +10,8 @@ const has = (code:string,p:Partial<Proposal>={},c:Partial<RiskContext>={}) => ex
 describe("exact monetary risk and sizing",()=>{
   it("calculates 0.5% risk, 20 pip stop, 0.25 lots and 3R",()=>{
     const r=run(); expect(r.status).toBe("RISK_APPROVED");
-    expect(r.calculations).toMatchObject({budget:"50.00",permittedRisk:"50.00",quantity:"0.25",nominalRisk:"50",plannedRR:"3.00000000",stopPips:"20.0000",plannedReward:"150"});
+    // Report 1.2 stores canonical decimals (trailing zeros stripped, spec §6.4).
+    expect(r.calculations).toMatchObject({budget:"50",permittedRisk:"50",quantity:"0.25",nominalRisk:"50",plannedRR:"3",stopPips:"20",plannedReward:"150"});
   });
   it("supports mirrored shorts and OTE without extra OB requirements",()=>{
     const r=run({direction:"SHORT",model:"OTE",stop:"1.102",target:"1.094"});
@@ -28,12 +29,12 @@ describe("exact monetary risk and sizing",()=>{
   });
   it("does not compare display-rounded RR",()=>{has("MIN_RR",{target:"1.10599"});});
   it("blocks an undersized futures-like quantity instead of rounding upward",()=>{has("MINIMUM_QUANTITY",{entry:"100",stop:"98",target:"106"},{instrument:{...previewContext.instrument,tickSize:"0.25",tickValue:"12.5",pipSize:null,quantityStep:"1",minimumQuantity:"1"}});});
-  it.each(["50.005","10000.99999","NaN","-1","1e5"])("rejects invalid monetary input %s",v=>{expect(moneyString.safeParse(v).success).toBe(false);});
   it("retains exact version links",()=>{const r=run();expect(r.strategyVersionId).toBe(previewContext.strategyVersionId);expect(r.riskPlanVersionId).toBe(previewContext.plan.id);});
 });
 describe("hard rules and missing data",()=>{
   it("blocks excessive requested risk",()=>has("RISK_LIMIT",{riskPercent:"0.51"}));
-  it("blocks max daily slots",()=>has("MAX_TRADES",{},{slotsUsed:2}));
+  it("blocks max daily slots",()=>has("MAX_TRADES",{},{usage:usageFixture({plannedSlots:2})}));
+  it("counts live-first trades toward the daily slots",()=>has("MAX_TRADES",{},{usage:usageFixture({plannedSlots:1,unplannedTrades:1})}));
   it("blocks missing stop",()=>has("MISSING_STOP",{stop:null}));
   it.each([{stop:"1.1"},{stop:"1.11"},{target:"1.09"}])("blocks incorrect geometry %o",p=>has("PRICE_GEOMETRY",p));
   it("blocks off-tick prices",()=>has("OFF_TICK",{entry:"1.100001"}));
@@ -42,10 +43,20 @@ describe("hard rules and missing data",()=>{
   it("blocks explicit strategy contradiction",()=>has("STRATEGY_CONTRADICTION",{contradiction:true}));
   it("blocks duplicates",()=>has("DUPLICATE",{},{duplicate:true}));
   it("blocks stale equity",()=>has("STALE_EQUITY",{},{observationDay:"2026-09-03"}));
-  it("enforces configured daily risk cap",()=>has("DAILY_RISK_LIMIT",{},{riskConsumed:"50",plan:{...previewContext.plan,dailyRiskCap:"99.99"}}));
-  it("permits exact cap boundary",()=>expect(run({},{riskConsumed:"50",plan:{...previewContext.plan,dailyRiskCap:"100"}}).status).toBe("RISK_APPROVED"));
-  it("does not invent losses for a configured cap",()=>has("DAILY_LOSS_UNKNOWN",{},{plan:{...previewContext.plan,dailyLossCap:"100"}}));
-  it("checks gross losses plus reserved risk",()=>has("DAILY_LOSS_LIMIT",{},{grossLoss:"51",plan:{...previewContext.plan,dailyLossCap:"100"}}));
+  it("enforces configured daily risk cap",()=>has("DAILY_RISK_LIMIT",{},{usage:usageFixture({plannedRisk:"50"}),plan:{...previewContext.plan,dailyRiskCap:"99.99"}}));
+  it("permits exact cap boundary",()=>expect(run({},{usage:usageFixture({plannedRisk:"50"}),plan:{...previewContext.plan,dailyRiskCap:"100"}}).status).toBe("RISK_APPROVED"));
+  it("never needs a manually reported loss for a configured cap: 1.2 computes today's losses",()=>{
+    const capped={plan:{...previewContext.plan,dailyLossCap:"100"}};
+    const report=run({},capped);
+    expect(report.status).toBe("RISK_APPROVED");
+    expect(report.issues.map(i=>i.code)).not.toContain("DAILY_LOSS_UNKNOWN");
+    expect(run({},{...capped,usage:usageFixture({realizedLoss:"50"})}).status).toBe("RISK_APPROVED");
+    has("DAILY_LOSS_LIMIT",{},{...capped,usage:usageFixture({realizedLoss:"50.01"})});
+  });
+  it("checks realized losses plus open risk",()=>{
+    has("DAILY_LOSS_LIMIT",{},{usage:usageFixture({realizedLoss:"51"}),plan:{...previewContext.plan,dailyLossCap:"100"}});
+    has("DAILY_LOSS_LIMIT",{},{usage:usageFixture({openExposure:"51"}),plan:{...previewContext.plan,dailyLossCap:"100"}});
+  });
   it("keeps unknown news as warning",()=>has("NEWS_UNKNOWN"));
   it("applies versioned news and RR policies",()=>{
     expect(run({news:"RESTRICTED"},{plan:{...previewContext.plan,newsPolicy:"BLOCK"}}).status).toBe("TRADE_BLOCKED");
@@ -55,7 +66,7 @@ describe("hard rules and missing data",()=>{
   it.each(["NaN","Infinity","-1","0","1e2",""])("rejects invalid price %s",entry=>has("INVALID_INPUT",{entry}));
   it("blocks malformed optional context without throwing",()=>{
     has("INVALID_CONTEXT",{},{plan:{...previewContext.plan,dailyRiskCap:"oops"}});
-    has("INVALID_CONTEXT",{},{grossLoss:"-5"});
+    has("INVALID_CONTEXT",{},{usage:{...previewContext.usage,realizedLoss:"-5"}});
     has("INVALID_CONTEXT",{},{instrument:{...previewContext.instrument,pipSize:"0"}});
   });
 });

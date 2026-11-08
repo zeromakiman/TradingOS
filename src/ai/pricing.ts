@@ -40,11 +40,6 @@ export function operationPricing(operation:AiOperation,now=new Date()):Pricing {
  if(operation.maxInputTokens>p.contextTokens||operation.maxOutputTokens>p.maxOutputTokens)throw new Error("Operation exceeds pricing bounds");
  return p;
 }
-export function pricingFor(model: string, now = new Date()): Pricing {
- const pricing=Object.values(PRICING_PROFILES).find(p=>p.model===model);
- if (!pricing || now.getTime() >= Date.parse(pricing.validUntil)) throw new Error("AI pricing requires review before requests can run.");
- return pricing;
-}
 export function reservationMicros(pricing:Pricing|undefined=undefined,operation:AiOperation=operationFor("SETUP_ANALYSIS")) {
  pricing??=PRICING_PROFILES[operation.pricingProfile];
  if(!pricing)throw new Error("Unknown operation pricing profile");

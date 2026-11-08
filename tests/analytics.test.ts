@@ -1,5 +1,5 @@
 import { describe,it,expect } from "vitest";
-import { metrics,enrichTrades,filterTrades,groups,realizedR,sampleLabel,tradeCsv,validateFilters,type JournalTrade } from "@/domain/analytics";
+import { metrics,enrichTrades,filterTrades,groups,sampleLabel,validateFilters,type JournalTrade } from "@/domain/analytics";
 function trade(r:number,index=0,changes:Partial<JournalTrade>={}):JournalTrade{
  return {id:`10000000-0000-4000-8000-${String(index+1).padStart(12,"0")}`,account_id:"20000000-0000-4000-8000-000000000001",locked_at:"2026-09-01T07:00:00Z",strategy_version_id:"30000000-0000-4000-8000-000000000001",risk_plan_version_id:"40000000-0000-4000-8000-000000000001",strategy_version:"ICT V1.0",risk_plan_version:"Risk V1",instrument:"EURUSD",entry_model:index%2?"OTE":"OB_FIRST_TOUCH",direction:"LONG",planned_entry:"1.1",initial_stop:"1.098",planned_quantity:"0.25",initial_risk:"50",risk_percent:"0.5",strategy_offset:-300,status:"CLOSED",execution_id:`50000000-0000-4000-8000-${String(index+1).padStart(12,"0")}`,entry_price:"1.1",quantity:"0.25",entered_at:`2026-09-${String(index+1).padStart(2,"0")}T08:00:00Z`,exit_price:"1.102",exited_at:`2026-09-${String(index+1).padStart(2,"0")}T09:00:00Z`,realized_r:String(r),outcome:r>0?"WIN":r<0?"LOSS":"BREAKEVEN",fees:"0",net_pnl:String(r*50),setup_grade:null,liquidity_context:null,mss_timeframe:null,tag_source:null,...changes};
 }
@@ -41,13 +41,7 @@ describe("grouping, sequence and filters",()=>{
  it("keeps predecessor and daily order account isolated",()=>{const ts=enrichTrades([trade(-1),trade(2,1,{account_id:"other"})]);expect(ts[1].previousOutcome).toBeNull();expect(ts[1].dailySequence).toBe(1);});
  it("does not invent order for simultaneous closes or their successor",()=>{const ts=enrichTrades([trade(1),trade(-1,1,{exited_at:fixture[0].exited_at}),trade(2,2)]);expect(ts.map(t=>t.previousOutcome)).toEqual([null,null,null]);});
  it("preserves missing grades and liquidity as NO DATA",()=>{expect(groups(enrichTrades(fixture),t=>t.setup_grade??"NO DATA")[0].completed).toBe(7);});
- it("exports raw trade fields without authentication identifiers or formula injection",()=>{const csv=tradeCsv(enrichTrades([trade(1,0,{instrument:"=HYPERLINK(\"x\")"})]));expect(csv).toContain("'=");expect(csv).not.toContain("account_id");expect(csv).not.toContain(fixture[0].account_id);});
 });
-describe("full-close realized R",()=>{
- const input={direction:"LONG" as const,entry:"1.1",exit:"1.104",quantity:"0.25",tickSize:"0.00001",tickValue:"1",initialRisk:"50",fees:"0"};
- it("calculates a long win",()=>expect(realizedR(input)).toEqual({realizedR:"2",outcome:"WIN"}));
- it("calculates a short win",()=>expect(realizedR({...input,direction:"SHORT",exit:"1.096"})).toEqual({realizedR:"2",outcome:"WIN"}));
- it("deducts round-trip fees and uses original locked risk",()=>expect(realizedR({...input,fees:"5"})).toEqual({realizedR:"1.9",outcome:"WIN"}));
- it("derives loss and break-even deterministically",()=>{expect(realizedR({...input,exit:"1.098"}).outcome).toBe("LOSS");expect(realizedR({...input,exit:"1.1"})).toEqual({realizedR:"0",outcome:"BREAKEVEN"});});
- it("rejects zero denominator and negative fees",()=>{expect(()=>realizedR({...input,initialRisk:"0"})).toThrow();expect(()=>realizedR({...input,fees:"-1"})).toThrow();});
-});
+// Full-close realized R: the V1 realizedR helper had no caller and is gone. The close the app records is worked out by
+// src/domain/close-preview.ts (tests/v2-domain-close.test.ts: long, short, fees, loss, break-even, no R without a risk
+// basis) and matches the database (tests/v2-close-preview-parity.test.ts), which refuses negative fees.

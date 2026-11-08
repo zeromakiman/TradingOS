@@ -1,4 +1,6 @@
-import { Shell } from "@/components/shell";
-import { TradeWorkspace } from "@/components/trade-workspace";
-import { previewContext, previewInstrument } from "@/domain/fixtures";
-export default function PreviewPage() { return <Shell active="Analyze" preview><TradeWorkspace preview context={previewContext} instruments={[previewInstrument]}/></Shell>; }
+import { redirect } from "next/navigation";
+
+/** Legacy V1 preview (docs/V2_ARCHITECTURE.md §1.2): there is no signed-out demo workspace in V2, so it opens sign-in. */
+export default function LegacyPreviewPage() {
+  redirect("/login");
+}

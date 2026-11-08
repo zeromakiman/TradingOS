@@ -1,115 +1,175 @@
-# Private deployment and recovery runbook
+# Deployment, migration and recovery runbook (V2)
 
-Reviewed 2026-09-14. Private production is deployed and accepted; see [the production report](PRODUCTION_DEPLOYMENT.md) for its exact release, URL and verified Auth settings. **AI_ENABLED=false.**
+Status: **Trading OS V2 (branch `ui/claude-v2`) has not been deployed.** The private V1 production release and its
+verified settings are recorded in [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md) (historical). This runbook
+describes what a V2 deployment needs; [V2_ARCHITECTURE.md](V2_ARCHITECTURE.md) is the design it implements.
+
+Hard rules for every environment:
+
+- **AI stays off on Vercel Preview and production (`AI_ENABLED=false`)** until the real-provider acceptance that
+  follows the independent audit. V2 development and every automated test ran without a single paid AI call.
+- **`TRADING_OS_ENABLE_MOCK_SYNC` is never set on Preview or production.** It enables a developer simulation of
+  platform sync; production platform sync does not exist in V2. Before any real provider (cTrader, MT5) is accepted,
+  the gap documented in [V2_1_GAPS.md](V2_1_GAPS.md) must be closed: the daily limits do not see platform executions
+  that are held, unlinked or whose close was not recorded on a trade.
+- Synthetic data only outside production. Never point a Preview at the production database, and never run test or
+  acceptance scripts against a real account.
+- Migrations are additive and applied once, in order. Never edit or re-run an applied file.
+  V2 release note: 0015–0019 have so far been applied only to local development databases, and 0015 and 0017 were
+  edited during development after such local applications (those databases were reset or patched to match; the
+  committed files are final, and a fresh apply equals the patched catalog). No hosted database has applied any V2
+  file. From the first hosted application on, the rule above holds and every change ships as a new migration.
 
 ## Architecture
 
 ```text
-Browser (authenticated session, public Supabase configuration)
-  → HTTPS → Vercel / Next.js (Node 24, server-rendered pages/actions/routes)
-      → Supabase Auth: verify and refresh user
-      → PostgreSQL: authenticated RPCs, owner RLS, immutable history
-      → private Supabase Storage: validated upload, authorized image delivery
+Browser (HttpOnly Supabase session and account-context cookies, Secure on HTTPS; display preference cookies)
+  → HTTPS → Vercel / Next.js 16 (Node 24): proxy, server-rendered pages, server actions, route handlers
+      proxy (src/proxy.ts): refreshes the session (getClaims), marks every response private/no-store,
+                            redirects signed-out page requests to /login, applies ?account= (stored on page loads only)
+      → Supabase Auth: verified user per request
+      → PostgreSQL via PostgREST: owner RLS on every table, writes only through SECURITY DEFINER RPCs,
+                                  immutability triggers, append-only history, the SQL Risk Engine decides at lock
+      → private Storage: buckets `setup-screenshots` (V1) and `trade-evidence` (V2), validated server uploads,
+                         reads through /api/evidence/[id] and /api/screenshots/[id] with the user's session
 ```
 
-Normal database operations use the user's session. Screenshot upload uses a server-only Supabase secret after verifying authentication and loading the proposal through owner RLS. The server derives ownership and storage paths. Secrets never belong in client props, source, public environment values, or logs. The database owner and service role are trusted administrative boundaries.
-
-Astra remains preserved and disabled at central configuration, route and provider boundaries. Enabling AI without a key gives an AI-only configuration state. Continue development and tests without live AI calls.
+The service-role key is used only by the trusted server, for the complete list in V2_ARCHITECTURE.md §10.3: evidence
+upload, registration, cleanup and duplicate copies; the AI ledger and AI start/authorize/finish RPCs; mock connection
+ingest (developer mode, only when mock sync is enabled); the erasure purge (`purge_user_trading_data`, after the typed
+DELETE and password re-entry), erasure storage deletion and `auth.admin.deleteUser`. It never reaches the browser.
+Every other read and write uses the signed-in user's session.
 
 ## Environment
 
-| Variable | Classification | Value / purpose |
+| Variable | Where | Value / purpose |
 |---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | PUBLIC; required | Exact HTTPS project origin; build and runtime. |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | PUBLIC; required | Same project's `sb_publishable_…`; build and runtime. Secret/service-role keys are rejected. |
-| `SUPABASE_SECRET_KEY` | SERVER SECRET | Required for full screenshot upload functionality; use `sb_secret_…`. Missing value does not prevent ordinary user-scoped database operations. |
-| `AI_ENABLED` | OPTIONAL; explicitly set | **`false`**. Only literal `true` enables AI. |
-| `OPENAI_API_KEY` | OPTIONAL SERVER SECRET | Omit while AI is disabled. |
-| `OPENAI_SETUP_MODEL` | OPTIONAL server setting | Existing default `gpt-6-astra`; unused while disabled. Verify provisioned model availability before future activation. |
-| `OPENAI_SETUP_REASONING` | OPTIONAL server setting | Existing default `high`; unused while disabled. |
-| `OPENAI_SETUP_DEEP_REVIEW` | OPTIONAL server setting | Existing default `true`; has no effect while AI is disabled. |
-| `NODE_ENV`, `PORT` | Platform/runtime | Managed by Next/Vercel; optional local port override. |
-| `.local/integration-users.json` | DEVELOPMENT ONLY file | Optional test credentials; never commit/deploy. |
+| `NEXT_PUBLIC_SUPABASE_URL` | all | Exact HTTPS project origin (`http://127.0.0.1:54321` only for the local stack). Build and runtime. |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | all | The same project's `sb_publishable_…` key. Secret and service-role keys are rejected at startup. |
+| `SUPABASE_SECRET_KEY` | server only | `sb_secret_…`. **Required in V2**: screenshot/evidence upload, AI accounting, and account deletion use it. Never `NEXT_PUBLIC_`. |
+| `AI_ENABLED` | server | **`false` on Preview and production.** Only the literal `true` enables AI; per-account consent and budgets still apply. |
+| `OPENAI_API_KEY` | server only | Omit while AI is off. |
+| `OPENAI_SETUP_MODEL`, `OPENAI_SETUP_REASONING`, `OPENAI_SETUP_DEEP_REVIEW` | server | Optional overrides; a model or reasoning value that differs from the reviewed operation registry is refused. Unused while AI is off. |
+| `TRADING_OS_ENABLE_MOCK_SYNC` | local only | `true` shows the mock platform sync in Settings → Developer. **Never on Preview or production.** |
+| `MOCK_OPENAI`, `NODE_OPTIONS=--import=./scripts/local-stack/mock-openai.mjs` | local only | The local mock AI provider (scripts/local-stack/README.md). It refuses to start on Vercel or with a non-mock key. |
+| `NODE_ENV`, `PORT` | platform | Managed by Next.js/Vercel. A production build answers 404 for the developer gallery `/dev/ui`. |
 
-No OpenAI key, application database password, Supabase management token or broker credential is required for normal use. A database connection credential is an operator requirement for CLI migrations/backups, not an application runtime secret. No server secret has a `NEXT_PUBLIC_` prefix.
+Checking an environment before a V2 deployment (Vercel CLI; the project has no Git integration):
 
-## Deployment prerequisites
+```sh
+vercel env ls preview       # AI_ENABLED must be false, TRADING_OS_ENABLE_MOCK_SYNC absent, no OPENAI_API_KEY
+vercel env ls production
+```
 
-1. Establish a reviewed Git release with the pinned lockfile and all migrations. Direct Vercel CLI deployment can use this local release without a GitHub connection. Keep an off-host private source copy. See [current deployment status](PRODUCTION_DEPLOYMENT.md).
-2. Select Vercel's **Next.js** preset, repository root, **Node 24.x**, install `pnpm install --frozen-lockfile`, build `pnpm build`, default Next output. pnpm is pinned to 11.19.0. [Vercel Node support](https://vercel.com/docs/functions/runtimes/node-js/node-js-versions)
-3. Configure the two public Supabase values, server-only secret, and `AI_ENABLED=false` in production. Omit OpenAI credentials. Protect previews or connect them to a separate test Supabase project. `.vercelignore` excludes local credentials, temporary data and caches.
-4. Verify migration ledger 0001–0007, RLS, private screenshot bucket and disabled public signup. Provision only intended personal users and deliberately retained isolated test users.
-5. Follow the [practical backup procedure](PRODUCTION_BACKUP.md) for database and private objects. The approved deployment instructions do not require a full restore drill before deployment. Rehearse recovery separately before relying on that recovery process. Do not assume the Free project includes paid backup/PITR features.
-6. Select the exact HTTPS origin. Deploy only after explicit authorization, then adjust auth URL settings below. The approved deployment and hosted acceptance are recorded in the production report.
-7. Before daily use, verify hosted HTTPS, cookie restoration/refresh, private response caching, signed-out direct URLs, synthetic plan/lock/entry/close, screenshot upload/view, CSV and logout/login. Confirm AI stays disabled in the hosted logs/runtime. Local tests cannot prove hosting configuration.
+A Preview that was used for V1 AI acceptance may still have `AI_ENABLED=true` and a live key: set it to `false` and
+remove the key before deploying V2 there.
 
-Each screenshot is capped at 4 MiB, with at most 64 KiB multipart overhead. That fits Vercel's documented 4.5 MB request/response limit. A sufficiently large CSV can exceed the response limit; export bounded date ranges as history grows. [Vercel function limits](https://vercel.com/docs/functions/limitations)
-
-The simplest personal access model is disabled signup plus a strong personal password and controlled Supabase/Vercel administrative access. Deployment protection can add an entrance restriction where available; owner RLS remains mandatory. Landing/login/preview are public; private trading data requires authentication.
-
-## Authentication URLs
-
-For `https://<your-exact-domain>`:
-
-- Set Supabase **Site URL** to `https://<your-exact-domain>` after deployment is authorized.
-- If an auth email redirect is needed, allow exactly `https://<your-exact-domain>/login`. Keep `http://127.0.0.1:3000/login` only while local development needs it; avoid broad production wildcards.
-- Current sign-in is password-based through a server action. Password recovery uses `/forgot-password` and `/update-password`; add the exact production `/update-password` redirect and follow [the recovery guide](PASSWORD_RECOVERY.md). There is no `/auth/callback`, OAuth or magic-link completion UI. Provision confirmed users in the dashboard.
-- Keep **Allow new users to sign up** disabled; live status verified 2026-09-14. The production Site URL and exact `/login` redirect were configured after the hosted origin was assigned.
-
-[Supabase redirect configuration](https://supabase.com/docs/guides/auth/redirect-urls), [signup configuration](https://supabase.com/docs/guides/auth/general-configuration).
-
-## Migration procedure
-
-Apply once, in numeric order, through a Supabase-aware migration workflow and ledger:
+## Migrations
 
 | Migration | Purpose |
 |---|---|
-| 0001 | Immutable foundation, owner RLS, risk evaluator, transactional commands |
-| 0002 | Strategy and risk baseline |
-| 0003 | Idempotent bootstrap, persisted risk, provenance and indexes |
-| 0004 | Proposals, evidence/evaluations and human decisions |
-| 0005 | Private screenshot bucket and restrictive storage policies |
-| 0006 | Execution/outcomes, dispositions/tags and analytics view |
-| 0007 | Concurrent screenshot cap, provenance/finite-value constraints, keyed notes and risk-check index |
+| 0001–0007 | V1 foundation: immutable records and owner RLS, risk evaluator, strategy/risk baseline, proposals and evidence, private screenshot bucket, outcomes and analytics, audit hardening |
+| 0008–0014 | V1 AI: account budgets and reservations, trade reviews, pre-lock challenges, weekly/recent/monthly reviews, uncertainty resolution |
+| **0015_canonical_trades** | The Trade model: `trades`, draft `trade_revisions`, plan links, lifecycle events, live-first position facts and unplanned closes, live journal entries, V2 evidence (`trade_evidence`, removals, labels; private `trade-evidence` bucket and policies), tag sets, external losses, trading-account profiles and instrument versions, versioned risk policy (`create_risk_policy_version`), the `trade_ledger` view (one row per trade, lifecycle derived), the planned and live-first RPCs (which delegate every risk, lock, fill and outcome decision to the V1 functions), `private.active_risk_plan` (risk-plan precedence), an insert-only backfill of every V1 plan and unlocked proposal into a planned trade, and the schema marker `trading_os_schema()`. Also: the deferred `plan_requires_trade` check (an API request that locks a plan without linking it to a trade rolls back with `PLAN_WITHOUT_TRADE`), V1 `save_setup_proposal`, `check_setup_risk`, `save_daily_context` and `set_account_ai_preferences` refusing archived accounts (AI can still be turned off; `check_setup_risk` also refuses a NULL `p_lock`), duplicates moved to the account's current contract version, and stop/target/partial-close journal entries only while the trade is live (`ENTRY_NOT_LIVE`) |
+| **0016_risk_engine_usage** | Risk Engine 1.1 with report 1.2: `private.daily_usage` and `get_daily_risk_usage` (planned and live-first slots and risk, realized and external losses, open exposure), `private.risk_report_v12`; every engine path evaluates with the active risk plan and today's usage. Stored 1.0/1.1 reports keep their meaning |
+| **0017_platform_connections** | Connection-ready, read-only platform model: connections, external executions deduplicated by `(connection_id, external_id)`, appended closes, connection events, append-only trade/execution links, overview views. Only the MOCK provider is accepted; ingest is service-only; a plan with a linked position cannot be skipped or cancelled (`linked_disposition_guard`) |
+| **0018_trade_ai_timeline** | AI on V2 drafts (latest revision only, V2 evidence), the timeline-aware trade review (`trade_timeline_reviews`, results, service-only RPCs, the `trade_ai_activity` view, AI review counts in `trade_ledger`), periodic reviews accepting the compact V2 facts, and the zero-cost release of dispatched AI requests that never reached the provider (`ai_request_generations` records the generation commit; SQL then refuses a release) |
+| **0019_account_erasure** | Owner-requested erasure (`purge_user_trading_data(p_user_id, p_confirm)`: executable by `service_role` only, called by the trusted server after the typed DELETE and password re-entry, so no user token can call it; one transaction, no AI request in flight, catalog-driven delete order, completeness check, de-identified receipt); statement-level TRUNCATE guards; service-role DML revoked except inserts on `setup_evaluation_passes` and `evaluator_versions` (V2 registers no legacy `setup_screenshots`); foreign-key lookup indexes; the V1 entry points that could bypass the trade model (`lock_trade_plan`, `evaluate_trade_plan`, `import_locked_setup`, `create_risk_version`, `record_observation`, `record_setup_decision`) revoked from `authenticated`. **Must stay the last migration** |
 
-Trading OS already has all seven; **0007 was applied on 2026-09-12**. Do not rerun an applied file or the old AI install bundle. Files contain intentionally non-idempotent CREATE/ALTER statements; the ledger prevents replay. Preserve 0001–0006 unchanged.
+### Schema gate ("Database update required")
 
-Before future changes: back up, compare the applied ledger/source, test ordered installation on a separate restored database, check data compatibility and RLS/grants, then apply the additive change transactionally and refresh PostgREST schema. Record version/name/source when applying through SQL Editor. The optional loopback `scripts/migration-review.mjs` wrapper checks replay; keep this operator helper private and stop it after use. Existing hash differences are CRLF normalization only; exact variants are in `MIGRATION_CHECKSUMS.json`.
+The app reads `public.trading_os_schema()` once per request. While it is missing (any database before 0015) or reports
+a version older than `2.0`, every app page renders **"Database update required — this deployment expects Trading OS
+database version 2.0. No changes were made."** with a sign-out button, and every V2 server action refuses to write.
+Public pages still render. This keeps a V2 build that is pointed at an un-migrated database harmless.
 
-Use compatible reviewed builds for app rollback. Migration 0007 revokes unkeyed note calls, so old clients fail note submission safely until refreshed. Prefer additive forward repairs. Do not disable immutability or rewrite history to accommodate an old client.
+The marker is created by 0015, so the gate distinguishes "before V2" from "V2", not each file: apply **0015 through 0019
+together, in order, in one maintenance window**, before the V2 build serves traffic. A database stopped between 0015
+and 0019 passes the gate but lacks the engine, connection, AI and erasure functions the app calls.
 
-## Testing and clean setup
+### Pre-deployment checks of the hosted project
 
-Follow README: Node 24.x, pnpm 11.19.0, frozen install, `.env.example`, ordered migrations, confirmed user, `pnpm dev`. Required checks: `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`. Automated tests require no private machine files, Supabase credentials or OpenAI calls.
+V2 was verified on the local Supabase-compatible stack only. Before release, confirm on the hosted project (a staging
+copy, with a synthetic user) what the local gateway emulates:
 
-Optional live scripts use this ignored file shape:
+1. **Recovery sessions carry a timestamped `recovery` method in `amr`.** `/update-password` accepts only PKCE recovery
+   links (`?code=`) and sets a new password only on a session whose `amr` claim has a `recovery` entry from the last 15
+   minutes (V2_ARCHITECTURE.md §14.12, [PASSWORD_RECOVERY.md](PASSWORD_RECOVERY.md)). Request a recovery email, open
+   its link and check that the form is offered and the password changes; if hosted GoTrue's PKCE exchange does not put
+   `{method: "recovery", timestamp}` into `amr` (or an access-token hook rewrites it), every recovery is refused.
+2. **PostgREST 11 or later.** Today and the command palette find open trades with anti-joins (`is.null` on an embedded
+   resource: `trade_outcomes=is.null`, `trade_unplanned_closes=is.null`; V2_ARCHITECTURE.md §13.3), which older
+   PostgREST versions reject. The local stack runs v13.0.8.
 
-```json
-{"project":"https://<project-ref>.supabase.co","users":[{"id":"<uuid-a>","email":"<test-a>","password":"<password-a>"},{"id":"<uuid-b>","email":"<test-b>","password":"<password-b>"}]}
-```
+### Procedure
 
-Both users must be isolated confirmed test users in that project. Scripts create permanent synthetic history. `verify-audit-live.mjs` expects existing synthetic plans/evidence/failed history; `verify-audit-flows.mjs` creates its own account/proposals but also verifies an existing closed fixture; `verify-edge-live.mjs` requires the historical synthetic dataset recorded in its report. They fail missing prerequisites; they are not required to start a clean application. Never run these against personal trading accounts.
+1. Back up the database **and both storage buckets** (see below); keep the copy off the project.
+2. Compare the project's migration ledger with `supabase/migrations/`; files already applied are never re-run.
+3. Rehearse on a separate restored copy (or the local stack: `node scripts/local-stack/reset.mjs --through=0014`, seed
+   V1 data, then `start.mjs`): apply 0015–0019 in order, then run the app and the acceptance checks.
+4. Apply 0015, 0016, 0017, 0018 and 0019 in order through a migration workflow that records the ledger. Each file ends
+   with `notify pgrst, 'reload schema'`.
+5. Verify: `select public.trading_os_schema()` returns `2.0`; the RLS/grants catalogue (`tests/v2-schema-catalog.test.ts`
+   describes the expectations); the `trade-evidence` bucket is private; anonymous requests see no table; the
+   pre-deployment checks above pass.
+6. Deploy the V2 build with the environment above. Sign in with a synthetic test user on staging and run the smoke
+   path: Today, Plan Trade → check → lock → entry → close → review, Record Live Trade → note → screenshot → close,
+   Journal, EDGE, account dashboard, Settings → Export my data.
 
-For local production acceptance with an enforced AI network guard, create `.local/` and start `node --import ./scripts/no-openai-network.mjs node_modules/next/dist/bin/next start --hostname 127.0.0.1`. This optional preload blanks the key, forces AI off and records attempted OpenAI calls without transmitting them. Do not invoke opt-in live AI acceptance.
+### Rollback
+
+- **App**: redeploy the previous V2 build; schema changes are additive, so older V2 builds keep working.
+- **Back to the V1 app**: not supported once 0019 is applied. 0019 revokes the V1 lock/evaluate/observation entry points
+  from `authenticated`, so the V1 UI can no longer lock plans or record values; V2 also removed the V1 pages.
+- **Schema**: there are no down migrations, and history is never rewritten. Repair forward with a new additive migration
+  (0020+). Restoring the pre-migration backup is the last resort and loses everything recorded after it.
+
+## Authentication URLs
+
+For `https://<your-exact-domain>`: set Supabase **Site URL** to that origin; allow exactly
+`https://<your-exact-domain>/update-password` for password recovery (see [PASSWORD_RECOVERY.md](PASSWORD_RECOVERY.md));
+keep `http://127.0.0.1:3000/...` only for local development; avoid wildcards. Sign-in is password-based through a server
+action; there is no OAuth, magic link or `/auth/callback`. Keep **Allow new users to sign up** disabled and provision
+confirmed users in the dashboard. `/update-password` accepts only PKCE recovery links (`?code=`) and sets a new password
+only on a session whose `amr` claim has a `recovery` entry from the last 15 minutes; verify on the hosted project that
+a recovery link's session carries it (PASSWORD_RECOVERY.md; pre-deployment check 1 above) before release.
+
+Changing the password (Settings → Security) verifies the current password with a separate sign-in, sets the new one on
+that freshly verified session, keeps this browser signed in with it, and signs out every other session.
 
 ## Backup and recovery
 
-The current project is Free. Supabase documents logical exports and plan-dependent backup/PITR options. **Database backups do not include Storage object bytes.** [Supabase backup guidance](https://supabase.com/docs/guides/platform/backups)
+Database backups do not include Storage object bytes. Keep encrypted, dated, off-host copies of:
 
-Keep encrypted, dated off-host backups of:
+- the database (schema, migration ledger, all rows including immutable versions, events and AI history);
+- every object in `setup-screenshots` (V1) **and** `trade-evidence` (V2), with bucket and path, and the bucket policies;
+- the source release, lockfile and deployment settings (credentials stored separately).
 
-- Database schema, migration ledger, application data, immutable versions/events and ownership/auth relationships. Use the documented Supabase CLI/database export workflow; verify which roles/schemas/auth records the chosen export includes.
-- Every private screenshot's bytes and original bucket/path, plus metadata IDs, MIME type, size and hashes. Include removed evidence and bucket/policy configuration. A database dump alone does not copy objects.
-- Source release, lockfile and deployment settings. Store credentials separately in a secure credential store.
+Back up before applying migrations and after active trading days. Settings → Export my data gives each user a ZIP of
+their own records and screenshots (checked against recorded SHA-256 fingerprints); it is a personal copy, not a
+database backup. Rehearse restores into a separate project; never test a restore over the only live project.
 
-Back up before schema changes and after active trading days, or select a managed schedule matching acceptable data loss. Keep multiple copies and verify readability. EDGE CSV is a useful copy of **filtered completed outcomes only**; it cannot restore proposals, events, governing versions, ownership or screenshots.
+## Operational notes
 
-Rehearse restoration into a separate Supabase project using documented import ordering. Preserve user IDs/FKs; restore objects under original paths; compare table counts, locked risk, outcomes and screenshot hashes. Verify login, owner RLS, denied anonymous/foreign access and private bucket status before switching production configuration. Do not restore over the only live project to test recovery. **A complete off-project disaster-recovery drill was not performed in this audit.**
-
-## Operational limits
-
-Manual account/news/contract inputs remain authoritative inputs, and strategy time stays fixed UTC−5. Full-position accounting only; skip/cancel preserves reservations. Actual-fill mistakes cannot be overwritten through the current UI. No broker, market feed, calendar, partial closes, position adds or new AI capability was added.
-
-Logs use fixed operational event names/statuses without tokens, passwords, request bodies or raw provider/database errors. Trade audit events are separate. Investigate repeated storage failures and verify orphan cleanup after an outage.
-
-A nonce-based CSP, comprehensive assistive-technology certification, extended expiry soak testing, automated screenshot backups and a full restore drill remain documented limitations. They were not claimed as completed checks.
+- Every response is `private, no-store`. The Supabase session cookies are HttpOnly and SameSite=Lax; no browser code
+  creates a Supabase client or reads them. The account context lives in HttpOnly cookies (`tos_account`,
+  `tos_last_account`); theme, time display, sidebar and developer mode in preference cookies. Session and context
+  cookies are Secure when the request came over HTTPS: the URL protocol in the proxy; the Origin header, else
+  X-Forwarded-Proto, in server actions (`src/lib/cookie-security.ts`). `?account=` stores the context only on a page
+  load; client-side navigations store it through the shell, and prefetches never do. Sign-out, password reset and
+  account deletion remove both context cookies; a sign-in (password, or a recovery link) keeps only All Accounts and the
+  signed-in person's own account ids, so a shared browser never carries the previous person's accounts.
+- Unknown, foreign and malformed trade or account ids render the not-found state inside the app shell. Because those
+  pages stream a loading skeleton first, the HTTP status is 200 with `noindex` (a "soft 404"; Next.js commits the
+  status before a streamed page can call `notFound()`); nothing about the record is revealed (the page for another
+  user's id is identical to the page for an id that does not exist, apart from the request id and server time). The
+  skeletons are kept on purpose: a real 404 would cost either the instant skeleton on every trade and account
+  navigation or an extra ownership query in the proxy before every such page load, for an app that is private and
+  `noindex` anyway. Addresses that match no route answer 404 with the styled root not-found page, and signed-out
+  requests for app pages go to sign-in. Legacy V1 addresses answer with real 307 redirects (an unknown legacy id with a
+  real 404).
+- Signing out, by any path, and deleting the account forget the browser tab's unsaved Plan Trade, Record Live Trade and
+  Edit Draft entries and the command palette's recent entries, so a shared browser never shows them to the next person.
+- Logs use fixed operational event names without tokens, passwords, request bodies or raw provider/database errors.
+- Screenshots are capped at 4 MB each (PNG, JPEG, WEBP), 24 per trade, within Vercel's request limits.
+- Strategy time is fixed UTC−5 (no daylight saving); Dead Pool is 12:00–18:00 strategy time.

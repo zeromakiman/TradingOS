@@ -1,19 +1,18 @@
 import { afterEach,beforeEach,describe,expect,it,vi } from "vitest";
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
-const mocks=vi.hoisted(()=>({load:vi.fn(),admin:vi.fn(),user:vi.fn(),transport:vi.fn(),command:vi.fn()}));
+// Optional-AI isolation: the availability flag, the provider and the legacy evaluator endpoint fail closed. The V1
+// SetupControls test that lived here (risk and upload controls stay usable while AI is off) moved with the component's
+// V2 replacement: tests/v2-v1-replacements-ai-history.test.ts ("pre-trade AI tools while AI cannot run") and
+// tests/v2-screen-trade.test.ts (drafts render Check risk, Lock plan and the evidence stager without AI).
+const mocks=vi.hoisted(()=>({load:vi.fn(),admin:vi.fn(),user:vi.fn(),transport:vi.fn()}));
 vi.mock("server-only",()=>({}));
 vi.mock("@/lib/setup-data",()=>({loadSetup:mocks.load}));
 vi.mock("@/lib/supabase/admin",()=>({trustedServer:mocks.admin}));
 vi.mock("@/lib/supabase/server",()=>({supabaseServer:async()=>({auth:{getUser:mocks.user}})}));
-vi.mock("@/app/setup-actions",()=>({setupCommand:mocks.command}));
-vi.mock("next/navigation",()=>({useRouter:()=>({refresh:vi.fn()})}));
 import { aiAvailability } from "@/ai/availability";
 import { callResponses } from "@/ai/provider";
 import { modelConfig } from "@/ai/config";
 import { analyzeSetup } from "@/lib/setup-analysis";
 import { POST } from "@/app/api/setups/[id]/analyze/route";
-import { SetupControls } from "@/components/setup-controls";
 beforeEach(()=>{vi.clearAllMocks();vi.stubEnv("AI_ENABLED","false");vi.stubEnv("OPENAI_API_KEY","");mocks.user.mockResolvedValue({data:{user:{id:"owner"}},error:null});});
 afterEach(()=>vi.unstubAllEnvs());
 describe("optional AI feature isolation",()=>{
@@ -26,12 +25,4 @@ describe("optional AI feature isolation",()=>{
  it("returns a normal disabled response to a direct Analyze POST",async()=>{const r=await POST(new Request("http://localhost:3000/api/setups/x/analyze",{method:"POST",headers:{origin:"http://localhost:3000"}}),{params:Promise.resolve({id:"x"})});expect(r.status).toBe(200);expect(await r.json()).toEqual({status:"DISABLED",message:"AI analysis is currently disabled"});expect(mocks.load).not.toHaveBeenCalled();expect(mocks.admin).not.toHaveBeenCalled();});
  it("reports missing-key configuration errors only through the AI endpoint",async()=>{vi.stubEnv("AI_ENABLED","true");const r=await POST(new Request("http://localhost:3000/api/setups/x/analyze",{method:"POST",headers:{origin:"http://localhost:3000"}}),{params:Promise.resolve({id:"x"})});expect(r.status).toBe(503);expect((await r.json()).error).toContain("API key is missing");expect(mocks.load).not.toHaveBeenCalled();});
  it("preserves authentication on disabled endpoints",async()=>{mocks.user.mockResolvedValue({data:{user:null},error:null});const r=await POST(new Request("http://localhost:3000/api/setups/x/analyze",{method:"POST",headers:{origin:"http://localhost:3000"}}),{params:Promise.resolve({id:"x"})});expect(r.status).toBe(401);});
- it.each(["DISABLED","CONFIGURATION_ERROR"] as const)("keeps upload and risk controls available with AI %s and a historical running job",state=>{
-  const ai=state==="DISABLED"?aiAvailability({}):aiAvailability({AI_ENABLED:"true"});
-  const html=renderToStaticMarkup(createElement(SetupControls,{id:"proposal",activeCount:1,running:true,locked:false,ai}));
-  expect(html).toContain(ai.message);
-  expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Analyze setup<\/button>/);
-  for(const label of ["Recheck risk","Recheck &amp; lock plan","Record skipped","Record taken"]){const button=html.match(new RegExp(`<button[^>]*>${label}<\\/button>`))?.[0];expect(button).toBeTruthy();expect(button).not.toContain('disabled=""');}
-  expect(html).toContain('name="file"');expect(html).not.toContain('role="alert"');
- });
 });

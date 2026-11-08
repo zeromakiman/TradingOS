@@ -12,6 +12,9 @@ import {budgetedAiRequest} from "@/ai/request-gate";
 import {ProviderError} from "@/ai/provider";
 import {validateMonthlyReview} from "@/ai/monthly-review-contract";
 import {monthlyPeriod} from "@/ai/monthly-period";
+import {rpcErrorMessage} from "@/ai/rpc-error";
+/** The database runs one monthly review per account and month at a time (`Review already running`): nothing was written or sent. */
+export const MONTHLY_IN_PROGRESS="A review of this month is already running, so no new review was requested. Its result will appear in the history.";
 export async function reviewMonth(accountId:string,month:string,requestId:string){
  z.uuid().parse(requestId);
  const period=monthlyPeriod(month),owner=await ownedMonthlyAccount(accountId),operation=operationFor("MONTHLY_REVIEW");
@@ -21,7 +24,7 @@ export async function reviewMonth(accountId:string,month:string,requestId:string
  try {facts=await loadMonthlyFacts(owner,period.month);}catch(error){if(error instanceof MonthlyScopeError)return {status:"SCOPE_LIMIT",message:error.message};throw error;}
  if(!facts.trades.length)return {status:"EMPTY",message:"No completed trades in this month. No AI request was made."};
  const admin=trustedServer(),start=await admin.rpc("start_monthly_ai_review",{p_id:requestId,p_user_id:owner.user.id,p_account_id:owner.account.id,p_month_start:period.startDate,p_facts:facts,p_hash:createHash("sha256").update(JSON.stringify(facts)).digest("hex"),p_operation:operation,p_contract:operationContract(operation,facts)});
- if(start.error)throw new Error("Could not start monthly review. Refresh the month and check history for a running attempt.");
+ if(start.error){if(rpcErrorMessage(start.error)==="Review already running")return {status:"IN_PROGRESS",message:MONTHLY_IN_PROGRESS};throw new Error("Could not start monthly review. Refresh the month and check history for a running attempt.");}
  if(start.data!==true)return {status:"RECORDED",message:"This request was already recorded. No additional provider request was made."};
  let reservationId:string|null=null,raw:unknown=null,interpretation:ReturnType<typeof validateMonthlyReview>|null=null,errorCode:string|null=null;
  const authorize=async()=>{const {error}=await admin.rpc("authorize_monthly_ai_review",{p_id:requestId,p_user_id:owner.user.id});if(error)throw new ProviderError("MONTHLY_REVIEW_UNAVAILABLE");};
