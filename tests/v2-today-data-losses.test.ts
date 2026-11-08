@@ -18,10 +18,17 @@ vi.mock("@/lib/performance-data", () => ({ loadLedgerRows: async () => ({ rows: 
 vi.mock("@/lib/trades-data", () => {
   // Every list query (live, locked, drafts) resolves empty; only today's closed trades come back.
   const chain: Record<string, unknown> = {};
-  for (const method of ["eq", "order", "limit"]) chain[method] = () => chain;
+  for (const method of ["eq", "is", "order", "limit"]) chain[method] = () => chain;
   // biome-ignore lint/suspicious/noThenProperty: Models Supabase's thenable query interface.
   chain.then = (resolve: (value: unknown) => void) => resolve({ data: [], error: null });
   return {
+    // All Accounts list reads are split per account (the real helpers' contract; every read resolves empty here).
+    ACCOUNT_READ_CONCURRENCY: 4,
+    accountScopes: (scope: { mode: string }, accounts: readonly { id: string }[]) =>
+      scope.mode === "account" || accounts.length === 0 ? [scope] : accounts.map(account => ({ mode: "account", accountId: account.id })),
+    mapLimited: <T, R>(items: readonly T[], _limit: number, task: (item: T) => Promise<R>) => Promise.all(items.map(task)),
+    newestCreatedFirst: () => 0,
+    openLedgerRows: async () => [],
     ledgerSelect: () => chain,
     parseLedger: (data: unknown) => data,
     inBatches: <T,>(values: readonly T[]) => (values.length ? [[...values]] : []),

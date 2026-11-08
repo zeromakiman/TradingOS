@@ -71,7 +71,7 @@ import TodayPage from "@/app/(app)/today/page";
 import { saveDailyContext } from "@/app/(app)/today/actions";
 import { idleState } from "@/app/actions/state";
 import {
-  CLOSED_EMPTY_TITLE, EARLIER_LOCKED_LABEL, EARLIER_LOCKED_NOTE, EMPTY_DAY_TITLE, LIVE_TRADE_COPY, NO_ACTIVE_TITLE, NO_R_COPY, NOTES_ALL_ACCOUNTS_COPY, NOTES_SAVED_COPY,
+  CLOSED_EMPTY_TITLE, EARLIER_LOCKED_LABEL, EARLIER_LOCKED_NOTE, EMPTY_DAY_TITLE, LIVE_TRADE_COPY, NO_ACTIVE_TITLE, NO_R_COPY, NOTES_ALL_ACCOUNTS_COPY, NOTES_ARCHIVED_COPY, NOTES_SAVED_COPY,
   NOTES_TITLE, ONBOARDING_TITLE, PLAN_TRADE_COPY, PLANS_EMPTY_TITLE, RISK_NOT_RECORDED_HINT,
 } from "@/components/today/copy";
 import { daySegments, renderOutdated, ribbonModel } from "@/components/today/ribbon-model";
@@ -1100,5 +1100,15 @@ describe("Today · saveDailyContext", () => {
     m.tables = accountRows();
     m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.0", error: null } : { data: null, error: { message: "Account not found" } }));
     expect(await saveDailyContext(idleState, form({ accountId: FTMO, narrative: "x" }))).toEqual({ status: "error", message: "That trading account isn't available." });
+  });
+
+  it("gives the archived-account copy when the database refuses an account archived after the page's check", async () => {
+    // Active when the action read it, archived by the time save_daily_context ran (another tab): the RPC refuses (0015).
+    m.tables = accountRows();
+    m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.0", error: null }
+      : { data: null, error: { message: "ACCOUNT_ARCHIVED: This trading account is archived; restore it to add new trades or records" } }));
+    expect(await saveDailyContext(idleState, form({ accountId: FTMO, narrative: "x" })))
+      .toEqual({ status: "error", message: NOTES_ARCHIVED_COPY, fieldErrors: { accountId: NOTES_ARCHIVED_COPY } });
+    expect(m.revalidatePath).not.toHaveBeenCalledWith("/today");
   });
 });

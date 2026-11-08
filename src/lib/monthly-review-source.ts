@@ -9,8 +9,12 @@ import {PERIODIC_V2_LIMITS} from "@/ai/periodic-limits";
 import {estimateRequest} from "@/ai/request-estimate";
 import {countPeriodicRecords,loadPeriodicSources,PeriodicRecordsLimitError,periodicAccountRow,type RecordScope} from "./periodic-review-source";
 export class MonthlyScopeError extends Error {}
-/** Copy when even the deterministic summary would not fit the operation's input limit. */
-export const MONTHLY_TOO_LARGE="This month is too large to analyse, even as a deterministic summary. Nothing was sent; no partial month was selected.";
+/** What a trader can still do with a month one monthly review cannot take: every closed trade can still be reviewed on its own. */
+export const MONTHLY_NEXT_STEP="You can still review each of its trades with Review this trade on the trade's page.";
+/** Copy for a month above the trade bound (also the database's bound), a rule of the review; nothing else is read. */
+export const MONTHLY_TOO_MANY_TRADES=`This month has more than ${PERIODIC_V2_LIMITS.MONTHLY_REVIEW.trades} completed trades, and a monthly review covers at most ${PERIODIC_V2_LIMITS.MONTHLY_REVIEW.trades}. Nothing was sent and no trade was left out. ${MONTHLY_NEXT_STEP}`;
+/** Copy when even the deterministic summary would not fit the operation's input limit (not reached within the trade bound). */
+export const MONTHLY_TOO_LARGE=`This month is too large to review, even as a summary of its results. Nothing was sent and no trade was left out. ${MONTHLY_NEXT_STEP}`;
 export async function ownedMonthlyAccount(accountId:string){
  const {db,user}=await requireUser();
  const a=await db.from("accounts").select("id,name,currency").eq("id",z.uuid().parse(accountId)).eq("user_id",user.id).maybeSingle();
@@ -30,7 +34,7 @@ export async function loadMonthlyFacts(owner:Awaited<ReturnType<typeof ownedMont
  const q=await db.from("journal_analytics").select("*").eq("account_id",account.id).eq("status","CLOSED").gte("exited_at",period.start).lt("exited_at",period.endExclusive).order("exited_at").order("id").limit(limits.trades+1);
  if(q.error)throw new Error("Monthly trades unavailable");
  const trades=z.array(journalRow).parse(q.data);
- if(trades.length>limits.trades)throw new MonthlyScopeError(`This month exceeds the ${limits.trades}-trade review limit. Nothing was sent; no trades were silently omitted.`);
+ if(trades.length>limits.trades)throw new MonthlyScopeError(MONTHLY_TOO_MANY_TRADES);
  const scope:RecordScope={kind:"WITHIN",start:period.start,endExclusive:period.endExclusive};
  let facts:MonthlyReviewFactsV2|null=null;
  if(trades.length<=limits.detailedTrades){

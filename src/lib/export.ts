@@ -227,11 +227,17 @@ interface InFilter {
   values: readonly string[];
 }
 
+/** Restricts a read to the rows whose `column` equals `value`. */
+interface EqualFilter {
+  column: string;
+  value: string;
+}
+
 async function readPage(
-  db: SupabaseClient, entry: ExportTable, after: readonly KeyValue[] | null, limit: number, columns = columnsFor(entry), filter?: InFilter,
+  db: SupabaseClient, entry: ExportTable, after: readonly KeyValue[] | null, limit: number, columns = columnsFor(entry), filter?: InFilter | EqualFilter,
 ): Promise<Row[]> {
   let query = db.from(entry.name).select(columns);
-  if (filter) query = query.in(filter.column, [...filter.values]);
+  if (filter) query = "value" in filter ? query.eq(filter.column, filter.value) : query.in(filter.column, [...filter.values]);
   for (const column of entry.key) query = query.order(column, { ascending: true });
   if (after) query = entry.key.length === 1 ? query.gt(entry.key[0], after[0]) : query.or(keysetFilter(entry.key, after));
   const { data, error } = await query.limit(limit);
@@ -250,7 +256,7 @@ async function readPage(
   return rows;
 }
 
-async function readTable(db: SupabaseClient, entry: ExportTable, columns?: string, filter?: InFilter): Promise<Row[]> {
+async function readTable(db: SupabaseClient, entry: ExportTable, columns?: string, filter?: InFilter | EqualFilter): Promise<Row[]> {
   const rows: Row[] = [];
   for (let after: KeyValue[] | null = null; ;) {
     const page = await readPage(db, entry, after, PAGE_ROWS, columns, filter);
@@ -267,6 +273,20 @@ async function readWhereIn(db: SupabaseClient, entry: ExportTable, column: strin
   for (let start = 0; start < distinct.length; start += LOOKUP_VALUES) {
     rows.push(...await readTable(db, entry, columns, { column, values: distinct.slice(start, start + LOOKUP_VALUES) }));
   }
+  return rows;
+}
+
+/**
+ * Every ledger row of the user, one account at a time (each in keyset order): the ledger derives most columns per row, so
+ * a keyset page over every account makes PostgreSQL compute every remaining trade of the user before it can sort them
+ * by id (the CSV of 19,900 trades took 29-43 s and of 45,000 trades 41-44 s, against the route's 60 s limit). The ledger holds
+ * exactly the trades of the accounts RLS lists, so their union is every row; without accounts the read is whole.
+ */
+async function readLedger(db: SupabaseClient, columns: string): Promise<Row[]> {
+  const accounts = await readTable(db, ACCOUNTS, "id");
+  if (accounts.length === 0) return readTable(db, LEDGER, columns);
+  const rows: Row[] = [];
+  for (const account of accounts) rows.push(...await readTable(db, LEDGER, columns, { column: "account_id", value: String(account.id) }));
   return rows;
 }
 
@@ -378,6 +398,7 @@ type TradeTiming = z.output<typeof timingRow>;
 const endRow = z.object({ recorded_at: timestamp });
 
 const LEDGER = table("trade_ledger");
+const ACCOUNTS = table("accounts");
 const REVISIONS = table("trade_revisions", ["proposal_id"]);
 const DISPOSITIONS = table("trade_dispositions");
 const DECISIONS = table("setup_human_decisions");
@@ -558,7 +579,7 @@ export async function exportResponse(db: SupabaseClient, user: ExportUser, param
   const day = now.toISOString().slice(0, 10);
   try {
     if (request.part === "trades-csv") {
-      const ledger = await readTable(db, LEDGER, LEDGER_COLUMNS.join(","));
+      const ledger = await readLedger(db, LEDGER_COLUMNS.join(","));
       return new Response(ledgerCsv(ledger), { headers: exportHeaders("text/csv; charset=utf-8", `trading-os-trades-${day}.csv`) });
     }
     const document: ExportDocument = {
@@ -574,7 +595,7 @@ export async function exportResponse(db: SupabaseClient, user: ExportUser, param
     } else {
       document.tables = await readTables(db, EXPORT_TABLES[request.part]);
       if (request.part === "evidence-manifest") {
-        const [revisions, trades] = [await readTable(db, REVISIONS), await readTable(db, LEDGER, LEDGER_TIMING_COLUMNS)];
+        const [revisions, trades] = [await readTable(db, REVISIONS), await readLedger(db, LEDGER_TIMING_COLUMNS)];
         document.manifest = buildEvidenceManifest(document.tables, revisions, trades, await planEnds(db, trades, revisions));
       }
     }

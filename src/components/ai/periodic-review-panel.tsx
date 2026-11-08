@@ -17,8 +17,8 @@ import { periodicRunningBlock } from "./periodic";
 /**
  * Weekly, recent-trades and monthly AI reviews of one trading account (docs/V2_ARCHITECTURE.md §11.5, §14.10): the
  * explicit scope ("FTMO 100K · Week of Oct 6–12 (UTC−5) · 8 trades"), the visible limitation about live-first and
- * imported trades, the run button with its estimate, the latest review of the period as a concise card, and the
- * period's history. Budgets, consent and scope are per account, so the panel always takes an explicit account.
+ * imported trades, what a month reviewed as its summary leaves out (before it runs), the run button with its estimate,
+ * the latest review of the period as a concise card, and the period's history. Budgets, consent and scope are per account, so the panel always takes an explicit account.
  */
 
 export type { PeriodicKind } from "./panel-data";
@@ -89,6 +89,11 @@ function PeriodicReviewPanelView({ data, runningSample, developerMode, timeDispl
     <section aria-labelledby={headingId} className="flex min-w-0 flex-col gap-4" data-panel="periodic-ai" data-kind={kind}>
       <SectionHeader as="h2" id={headingId} title={TITLES[kind]} description={periodicScopeLine(data)} className="mb-0" />
       <Callout tone="neutral">{PERIODIC_LIMITATION}</Callout>
+      {data.scopeNote && (
+        <Callout tone="info" title="Summary review">
+          {data.scopeNote}
+        </Callout>
+      )}
       <AiActionButton
         operation={data.operation}
         label={`${RUN_VERBS[kind]} ${data.runLabel}`}

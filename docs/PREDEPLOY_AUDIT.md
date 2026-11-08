@@ -10,7 +10,10 @@ Audit completed 2026-09-14 against the actual Next.js production build and the T
 > tables). Both take `--users=<file>` and `--out=<file>` (point local runs under `.local/`; the defaults write the
 > tracked JSON files below), and the live script `--ai-enabled` for a server running AI. The V1 upload route
 > `POST /api/setups/[id]/screenshots` no longer exists and V2 registers no `setup_screenshots` row (0019 also revokes
-> the service role's insert on that table); legacy screenshots stay readable.
+> the service role's insert on that table); legacy screenshots stay readable. Before a
+> V2 deployment, the hosted-project checks in [DEPLOYMENT.md](DEPLOYMENT.md) ("Pre-deployment checks of the hosted
+> project") must pass: recovery sessions carry a timestamped `recovery` method in `amr` (verified only against the
+> local gateway), and PostgREST is version 11 or later (the open-trade reads use `is.null` on embedded resources).
 
 There are no unresolved critical/high findings or known code blockers for private personal use. This conclusion is bounded by the verified manual/full-position workflow; it is not a hosted-environment or disaster-recovery certification. AI stayed disabled and the local production process ran with an empty OpenAI key. No paid API credits were used.
 

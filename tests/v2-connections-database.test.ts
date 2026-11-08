@@ -726,6 +726,39 @@ describe("positions first seen open and later closed (§8.6)", () => {
     expect(await platformCloses(differsTrade.executionId)).toHaveLength(1);
   });
 
+  it("counts a close once in daily usage, whether the platform or the trader recorded it, and never the conflicting other one", async () => {
+    const a = await db.bootstrapAccount(OWNER);
+    const connection = await connect(a);
+    const usage = async () => {
+      await db.actor(OWNER);
+      return value<Json>("select public.get_daily_risk_usage($1) as value", [a.accountId]);
+    };
+    const start = await usage();
+    // The platform closes an imported position at a loss: its P&L is the trade's close, counted once.
+    const platformFirst = openPosition({ externalId: "MOCK-USE-1", enteredAt: ago(60) });
+    const imported = await ingest(connection, platformFirst);
+    const lossClose = closedLater(platformFirst, { exitPrice: "1.09812", exitedAt: await dbNow(), commission: "-1.75", realizedPnl: "-51.75" });
+    expect((await ingest(connection, lossClose)).outcome).toBe("CLOSED");
+    expect((await ingest(connection, lossClose)).outcome).toBe("UNCHANGED");
+    const afterPlatform = await usage();
+    expect(Number(afterPlatform.realizedLoss) - Number(start.realizedLoss)).toBe(51.75);
+    expect(Number(afterPlatform.unplannedTrades) - Number(start.unplannedTrades)).toBe(1);
+    // The trader records a close first; the platform's different loss is a warning and never a second input.
+    const traderFirst = openPosition({ externalId: "MOCK-USE-2", enteredAt: ago(60) });
+    const second = await ingest(connection, traderFirst);
+    const exitedAt = await dbNow();
+    await closeLiveTrade(String(second.tradeId), { exitPrice: "1.09900", exitedAt, fees: "1.75" });
+    const afterTrader = await usage();
+    expect(Number(afterTrader.realizedLoss) - Number(afterPlatform.realizedLoss)).toBe(29.75);
+    expect(await ingest(connection, closedLater(traderFirst, { exitPrice: "1.09812", exitedAt, commission: "-1.75", realizedPnl: "-51.75" }))).toMatchObject({ outcome: "CLOSED" });
+    expect(await usage()).toEqual(afterTrader);
+    expect((await ledger(String(second.tradeId))).net_pnl).toBe("-29.75");
+    expect((await ledger(String(imported.tradeId))).net_pnl).toBe("-51.75");
+    expect((await warnings(connection)).map((warning) => warning.message)).toEqual([
+      "EURUSD long position MOCK-USE-2 was closed on the platform with values that differ from the close recorded in Trading OS; the recorded close was kept.",
+    ]);
+  });
+
   it("leaves the imported trade open when the platform close has no realized P&L", async () => {
     const a = await db.bootstrapAccount(OWNER);
     const connection = await connect(a);
@@ -820,6 +853,45 @@ describe("trader links (link_external_execution / unlink_external_execution)", (
     // A position entered before the plan was locked cannot belong to it.
     await expect(link(second.tradeId, (await ingest(connection, openPosition({ externalId: "MOCK-C4", enteredAt: ago(240) }), { kind: "HOLD" })).executionId))
       .rejects.toThrow(/^LINK_MISMATCH: The execution was entered before the plan was locked/);
+  });
+
+  it("never changes a locked plan, a trade's result or daily usage when linking or unlinking, in any linkable state", async () => {
+    // Links are provenance only: no ledger column, no daily-usage input and no plan reads trade_execution_links.
+    const snapshot = async (accountId: string, tradeId: string) => {
+      await db.actor(OWNER);
+      return {
+        ledger: await value<Json>("select to_jsonb(l) as value from public.trade_ledger l where l.id = $1", [tradeId]),
+        plan: await rows("select to_jsonb(p) as plan from public.trade_plans p join public.trade_plan_links pl on pl.plan_id = p.id where pl.trade_id = $1", [tradeId]),
+        outcomes: await rows("select to_jsonb(o) as outcome from public.trade_outcomes o join public.trade_plan_links pl on pl.plan_id = o.plan_id where pl.trade_id = $1", [tradeId]),
+        usage: await value<Json>("select public.get_daily_risk_usage($1) as value", [accountId]),
+      };
+    };
+    const cases: { lifecycle: string; tradeId: string; accountId: string; lockedAt: string }[] = [];
+    // Two plans per account: the daily trade limit allows two locks.
+    for (const lifecycles of [["LOCKED", "LIVE"], ["CLOSED", "REVIEWED"]]) {
+      const a = await db.bootstrapAccount(OWNER);
+      for (const [index, lifecycle] of lifecycles.entries()) {
+        const plan = await lockedTrade(a, { target: `1.1060${index}` });
+        await db.actor(OWNER);
+        if (lifecycle !== "LOCKED") await db.query("select public.record_planned_entry($1, '1.1', '0.25', clock_timestamp())", [plan.tradeId]);
+        if (lifecycle === "CLOSED" || lifecycle === "REVIEWED") await db.query("select public.close_planned_trade($1, '1.097', clock_timestamp(), '3.5')", [plan.tradeId]);
+        if (lifecycle === "REVIEWED") await db.query("select public.complete_trade_review($1, null)", [plan.tradeId]);
+        expect((await ledger(plan.tradeId)).lifecycle).toBe(lifecycle);
+        cases.push({ lifecycle, tradeId: plan.tradeId, accountId: a.accountId, lockedAt: plan.lockedAt });
+      }
+    }
+    for (const [index, { lifecycle, tradeId, accountId, lockedAt }] of cases.entries()) {
+      const connection = await connect({ accountId } as BootstrappedAccount);
+      // A losing platform close of the position: stored, and never applied to a planned trade it is linked to.
+      const open = openPosition({ externalId: `MOCK-INV-${index}`, enteredAt: lockedAt });
+      const held = await ingest(connection, open, { kind: "HOLD" });
+      expect(await ingest(connection, closedLater(open, { exitPrice: "1.0951", exitedAt: await dbNow(), realizedPnl: "-128.75" }))).toMatchObject({ outcome: "CLOSED" });
+      const before = await snapshot(accountId, tradeId);
+      expect(await link(tradeId, held.executionId), lifecycle).toMatchObject({ action: "LINK", method: "USER" });
+      expect(await snapshot(accountId, tradeId), `${lifecycle} after link`).toEqual(before);
+      expect(await unlink(tradeId, held.executionId), lifecycle).toMatchObject({ action: "UNLINK" });
+      expect(await snapshot(accountId, tradeId), `${lifecycle} after unlink`).toEqual(before);
+    }
   });
 
   it("denies other users and keeps rows immutable, guarding direct writes too", async () => {

@@ -123,22 +123,32 @@ export const JOURNAL_COPY = Object.freeze({
   quantity: "Size must be a positive number with up to 8 decimals.",
   percent: "Percent must be more than 0 and less than 100.",
   partialEmpty: "Describe the partial close or give its price, size or percent.",
-  /** `ENTRY_NOT_LIVE`: the trade is no longer (or not yet) live, for example after it was closed in another tab. */
-  notLive: "Stop, target and partial-close entries can only be recorded while the trade is live.",
+  /**
+   * `ENTRY_NOT_LIVE`: the trade is no longer (or not yet) live, for example after it was closed in another tab. The
+   * composer keeps the text, so the trader can send it again as a Decision or a Note.
+   */
+  notLive: "Stop, target and partial-close entries can only be recorded while the trade is live. To keep what happened, write it as a Decision or a Note.",
   /** Drafts: the plan's stop and target change with a new revision, never through the journal. */
   draftKinds: "The stop and target are part of the plan: change them with Edit draft.",
   /** Locked plans: the plan is immutable; management is journaled once there is a position. */
   lockedKinds: "Stop moves, target changes and partial closes can be journaled once the entry is recorded.",
+  /**
+   * Closed and reviewed trades, also a live-first trade recorded after the fact and an import that closed between syncs:
+   * the database takes no stop, target or partial entry after the close (§3.6), so what was done is written in words.
+   */
+  closedKinds: "This trade is closed. To keep a stop move, target change or partial close you made, write it as a Decision or a Note: it is saved as recorded after close and doesn't change the result.",
 });
 
 /**
  * Why the composer doesn't offer Stop, Target and Partial, when it helps to say so: on a draft (whose plan changes with
- * Edit draft, when it can still be edited) and on a locked plan (until the entry is recorded). Null otherwise: a live
- * trade offers them, and after a close or the end of a plan there is no position to manage.
+ * Edit draft, when it can still be edited), on a locked plan (until the entry is recorded), and on a closed or reviewed
+ * trade (how to keep the management that happened: as a Decision or a Note, recorded after close). Null otherwise: a
+ * live trade offers them, and a plan that ended without an entry never had a position.
  */
 export function liveKindsNote(lifecycle: Lifecycle, planEditable: boolean): { text: string; editDraft: boolean } | null {
   if (lifecycle === "DRAFT") return planEditable ? { text: JOURNAL_COPY.draftKinds, editDraft: true } : null;
   if (lifecycle === "LOCKED") return { text: JOURNAL_COPY.lockedKinds, editDraft: false };
+  if (lifecycle === "CLOSED" || lifecycle === "REVIEWED") return { text: JOURNAL_COPY.closedKinds, editDraft: false };
   return null;
 }
 

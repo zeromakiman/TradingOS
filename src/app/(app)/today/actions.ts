@@ -2,7 +2,7 @@
 import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
-import { type ActionState, actionError, actionSuccess, FAILED_COPY, formText, INVALID_COPY, rpcErrorCopy } from "@/app/actions/state";
+import { type ActionState, actionError, actionSuccess, errorCode, FAILED_COPY, formText, INVALID_COPY, rpcErrorCopy } from "@/app/actions/state";
 import { NOTES_ARCHIVED_COPY, NOTES_MAX_LENGTH, NOTES_SAVED_COPY } from "@/components/today/copy";
 import { loadAccount } from "@/lib/account-context";
 import { operationalFailure } from "@/lib/operational-log";
@@ -11,6 +11,7 @@ import { SCHEMA_OUTDATED_MESSAGE, writableSession } from "@/lib/schema-gate";
 /**
  * Today's plan · notes (docs/V2_ARCHITECTURE.md §14.1): the V1 daily context, saved through `save_daily_context` as a
  * new revision of the account's notes for the current strategy day (the database decides the day from its own clock).
+ * An archived account takes no notes: checked here, and refused by the database too (ACCOUNT_ARCHIVED, §3.2).
  * Follows the V2 action convention (§12.2): schema gate first, validation with field copy, one RPC with the user's
  * session, revalidation of Today, human copy only.
  *
@@ -44,6 +45,8 @@ export async function saveDailyContext(_prev: ActionState, form: FormData): Prom
     if (account.status === "ARCHIVED") return actionError(NOTES_ARCHIVED_COPY, { accountId: NOTES_ARCHIVED_COPY });
     const { error } = await session.db.rpc("save_daily_context", { p_account_id: account.id, p_narrative: parsed.data.narrative });
     if (error) {
+      // Archived after the check above (another tab or device): the database refuses the revision itself (0015).
+      if (errorCode(error) === "ACCOUNT_ARCHIVED") return actionError(NOTES_ARCHIVED_COPY, { accountId: NOTES_ARCHIVED_COPY });
       const message = rpcErrorCopy(error);
       if (message === FAILED_COPY) operationalFailure("database_write_failed");
       return actionError(message);

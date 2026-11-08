@@ -299,6 +299,29 @@ function closed(id: string, exitedAt: string, r: string | null, net: string, ove
 
 const ledgerRow = (trade: LedgerTrade): Row => ({ ...trade });
 
+/**
+ * The base tables the open-trade read (`openTradeIds`) uses, derived from ledger fixtures: plans with their link and
+ * (closed) outcome, trades with their origin and (closed) unplanned close. Embedded resources are null when absent, as
+ * PostgREST's `is.null` anti-join sees them; use with `passthrough` for both tables.
+ */
+function openTables(trades: readonly LedgerTrade[]): Record<string, Row[]> {
+  return {
+    trade_plans: trades.filter(trade => trade.plan_id !== null).map(trade => ({
+      id: trade.plan_id, user_id: USER, account_id: trade.account_id, trade_plan_links: [{ trade_id: trade.id }],
+      trade_outcomes: trade.origin === "PLANNED" && trade.exited_at !== null ? [{ id: trade.id }] : null,
+    })),
+    trades: trades.map(trade => ({
+      id: trade.id, user_id: USER, account_id: trade.account_id, origin: trade.origin, created_at: trade.created_at,
+      trade_unplanned_closes: trade.origin !== "PLANNED" && trade.exited_at !== null ? [{ trade_id: trade.id }] : null,
+    })),
+  };
+}
+const withOpenTables = (db: FakeDb) => {
+  db.passthrough.add("trade_plans");
+  db.passthrough.add("trades");
+  return db;
+};
+
 function usage(overrides: Partial<DailyUsage> = {}): DailyUsage {
   return {
     day: DAY, plannedSlots: 0, plannedRisk: "0", unplannedTrades: 0, unplannedRisk: "0", unplannedRiskUnknown: 0, realizedLoss: "0", externalLoss: "0",
@@ -643,11 +666,13 @@ describe("journal list (§14.5)", () => {
   const expectedOrder = [2, 1, 4, 5, 3, 6, 7].map(tradeId);
   const db = () => new FakeDb({
     trade_ledger: trades.map(ledgerRow),
+    // The palette reads its newest trade ids and its open trades from the base tables.
+    ...openTables(trades),
     trade_ai_activity: [{ trade_id: tradeId(6), account_id: A1, pre_trade_analysis_count: 0, trade_review_count: 1, timeline_review_count: 0, last_completed_at: "2026-10-11T10:00:00.000Z" }],
     trade_journal_entries: [{ trade_id: tradeId(5), account_id: A1, user_id: USER, body: "Moved stop after the FOMC candle", recorded_at: "2026-10-12T17:00:00.000Z" }],
     trade_events: [], trade_plan_links: [],
   });
-  const deps = (fake: FakeDb) => ({ db: asDb(fake), userId: USER, scope: { mode: "all" as const }, accounts: [account(A1), account(A2, { currency: "EUR" })], now: NOW, display: { mode: "strategy" as const } });
+  const deps = (fake: FakeDb) => ({ db: asDb(withOpenTables(fake)), userId: USER, scope: { mode: "all" as const }, accounts: [account(A1), account(A2, { currency: "EUR" })], now: NOW, display: { mode: "strategy" as const } });
 
   it("orders by trade date across entry, lock and creation times and pages without gaps or repeats", async () => {
     const fake = db();
@@ -1180,8 +1205,9 @@ describe("Today (§14.1)", () => {
       closed(tradeId(8), "2026-10-14T13:30:00.000Z", "-1", "-40", { account_id: A2, currency: "EUR" }),
       closed(tradeId(9), "2026-10-13T13:30:00.000Z", "3", "150"),
     ];
-    const db = new FakeDb({
+    const db = withOpenTables(new FakeDb({
       trade_ledger: trades.map(ledgerRow),
+      ...openTables(trades),
       trade_ai_activity: [],
       trade_journal_entries: [
         { trade_id: tradeId(1), user_id: USER, kind: "NOTE", body: "First", details: {}, recorded_at: "2026-10-14T12:40:00.000Z", id: uuid("c", 1) },
@@ -1194,7 +1220,7 @@ describe("Today (§14.1)", () => {
       ],
       daily_contexts: [{ account_id: A1, user_id: USER, trading_day: DAY, narrative: "Bias long above PDL", recorded_at: "2026-10-14T11:00:00.000Z", id: uuid("d", 1) }],
       risk_evaluations: [],
-    });
+    }));
     const context = resolveAccountContext({ accounts: [account(A1), account(A2, { currency: "EUR" })], stored: selected === "all" ? "all" : A1, lastAccount: undefined, proxyNotice: false });
     return loadToday({ db: asDb(db), userId: USER, context, workspaces: selected === "all" ? [w1, w2] : [w1], now: NOW });
   }
@@ -1234,9 +1260,9 @@ describe("Today (§14.1)", () => {
     const workspaceDb = new FakeDb(accountTables(A1), { get_daily_risk_usage: () => ({ data: usages[0], error: null }) });
     const w1 = await loadAccountWorkspace(asDb(workspaceDb), USER, account(A1), NOW);
     const workspaces = usages.map((dailyUsage, index) => (index === 0 ? w1 : { ...w1, account: account(A2), usage: dailyUsage }));
-    const db = new FakeDb({
-      trade_ledger: trades.map(ledgerRow), trade_ai_activity: [], trade_journal_entries: [], trade_events: [], daily_contexts: [], risk_evaluations: [], ...extra,
-    });
+    const db = withOpenTables(new FakeDb({
+      trade_ledger: trades.map(ledgerRow), ...openTables(trades), trade_ai_activity: [], trade_journal_entries: [], trade_events: [], daily_contexts: [], risk_evaluations: [], ...extra,
+    }));
     const accounts = usages.length === 1 ? [account(A1)] : [account(A1), account(A2)];
     const context = resolveAccountContext({ accounts, stored: usages.length === 1 ? A1 : "all", lastAccount: undefined, proxyNotice: false });
     return { db, data: await loadToday({ db: asDb(db), userId: USER, context, workspaces, now: NOW }) };
@@ -1262,12 +1288,13 @@ describe("Today (§14.1)", () => {
     expect(data.plans.unchecked.map(row => row.id)).not.toContain(tradeId(104));
     expect(data.truncated).toEqual({ live: false, locked: false, drafts: true, closed: false });
     expect(data.empty).toBe(false);
-    // One bounded query per list; none of them mixes lifecycles.
+    // Live trades and locked plans come from the account's open trades (plans without an outcome, live-first trades
+    // without a close), so no draft can crowd them out; drafts are one bounded query.
     const lists = db.ledgerCalls().filter(call => call.filters.some(filter => filter.startsWith("eq:lifecycle:")));
-    expect(lists.map(call => [call.filters.find(filter => filter.startsWith("eq:lifecycle:")), call.limit])).toEqual([
-      ["eq:lifecycle:LIVE", TODAY_LIVE_LIMIT + 1], ["eq:lifecycle:LOCKED", TODAY_WAITING_LIMIT + 1], ["eq:lifecycle:DRAFT", TODAY_WAITING_LIMIT + 1],
-    ]);
+    expect(lists.map(call => [call.filters.find(filter => filter.startsWith("eq:lifecycle:")), call.limit])).toEqual([["eq:lifecycle:DRAFT", TODAY_WAITING_LIMIT + 1]]);
     expect(lists.every(call => call.filters.includes(`eq:account_id:${A1}`))).toBe(true);
+    const open = db.calls.filter(call => call.table === "trade_plans" || call.table === "trades");
+    expect(open.map(call => [call.table, call.filters.includes(`eq:account_id:${A1}`)])).toEqual([["trade_plans", true], ["trades", true]]);
     // AI activity of the 202 listed trades is read 100 ids at a time.
     const activity = db.calls.filter(call => call.table === "trade_ai_activity").map(call => (call.filters[0] ?? "").split("|").length);
     expect(activity).toEqual([100, 100, 2]);

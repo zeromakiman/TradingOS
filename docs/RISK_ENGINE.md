@@ -122,8 +122,8 @@ server time whether an approval is still current ("Recheck needed" otherwise); t
 - Display never contradicts a verdict (`src/domain/format.ts`): values compared against a threshold are rounded toward
   the side that preserves the verdict (an RR of 2.995 against a minimum of 3 shows "2.99R"), policy inputs show their
   exact value padded to two decimals, prices use the instrument's tick scale, R is signed (`+1.01R`, `-1.00R`,
-  `0.00R`, never `-0.00R`), money is per currency and never converted. Money at risk is rounded up to the cent and the
-  room left under a cap after locking is rounded down; a stored plan's RR is formatted against the minimum its own
+  `0.00R`, never `-0.00R`), money is per currency and never converted. Money at risk is rounded up to the cent wherever it
+  is shown (one formatter, `formatMoneyUp`) and the room left under a cap after locking is rounded down; a stored plan's RR is formatted against the minimum its own
   check used, so a plan locked under a 2.995R minimum reads "2.995R" (V2_ARCHITECTURE.md §6.6).
 - Every issue renders from its code and `params` through `src/domain/risk-explain.ts`, the single message catalogue
   shared with SQL (which stores the same sentences for audit). The UI shows the exact blocking reasons in the primary

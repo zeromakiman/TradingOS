@@ -66,7 +66,7 @@ remove the key before deploying V2 there.
 |---|---|
 | 0001–0007 | V1 foundation: immutable records and owner RLS, risk evaluator, strategy/risk baseline, proposals and evidence, private screenshot bucket, outcomes and analytics, audit hardening |
 | 0008–0014 | V1 AI: account budgets and reservations, trade reviews, pre-lock challenges, weekly/recent/monthly reviews, uncertainty resolution |
-| **0015_canonical_trades** | The Trade model: `trades`, draft `trade_revisions`, plan links, lifecycle events, live-first position facts and unplanned closes, live journal entries, V2 evidence (`trade_evidence`, removals, labels; private `trade-evidence` bucket and policies), tag sets, external losses, trading-account profiles and instrument versions, versioned risk policy (`create_risk_policy_version`), the `trade_ledger` view (one row per trade, lifecycle derived), the planned and live-first RPCs (which delegate every risk, lock, fill and outcome decision to the V1 functions), `private.active_risk_plan` (risk-plan precedence), an insert-only backfill of every V1 plan and unlocked proposal into a planned trade, and the schema marker `trading_os_schema()`. Also: the deferred `plan_requires_trade` check (an API request that locks a plan without linking it to a trade rolls back with `PLAN_WITHOUT_TRADE`), V1 `save_setup_proposal` and `check_setup_risk` refusing archived accounts (`check_setup_risk` also refuses a NULL `p_lock`), duplicates moved to the account's current contract version, and stop/target/partial-close journal entries only while the trade is live (`ENTRY_NOT_LIVE`) |
+| **0015_canonical_trades** | The Trade model: `trades`, draft `trade_revisions`, plan links, lifecycle events, live-first position facts and unplanned closes, live journal entries, V2 evidence (`trade_evidence`, removals, labels; private `trade-evidence` bucket and policies), tag sets, external losses, trading-account profiles and instrument versions, versioned risk policy (`create_risk_policy_version`), the `trade_ledger` view (one row per trade, lifecycle derived), the planned and live-first RPCs (which delegate every risk, lock, fill and outcome decision to the V1 functions), `private.active_risk_plan` (risk-plan precedence), an insert-only backfill of every V1 plan and unlocked proposal into a planned trade, and the schema marker `trading_os_schema()`. Also: the deferred `plan_requires_trade` check (an API request that locks a plan without linking it to a trade rolls back with `PLAN_WITHOUT_TRADE`), V1 `save_setup_proposal`, `check_setup_risk`, `save_daily_context` and `set_account_ai_preferences` refusing archived accounts (AI can still be turned off; `check_setup_risk` also refuses a NULL `p_lock`), duplicates moved to the account's current contract version, and stop/target/partial-close journal entries only while the trade is live (`ENTRY_NOT_LIVE`) |
 | **0016_risk_engine_usage** | Risk Engine 1.1 with report 1.2: `private.daily_usage` and `get_daily_risk_usage` (planned and live-first slots and risk, realized and external losses, open exposure), `private.risk_report_v12`; every engine path evaluates with the active risk plan and today's usage. Stored 1.0/1.1 reports keep their meaning |
 | **0017_platform_connections** | Connection-ready, read-only platform model: connections, external executions deduplicated by `(connection_id, external_id)`, appended closes, connection events, append-only trade/execution links, overview views. Only the MOCK provider is accepted; ingest is service-only |
 | **0018_trade_ai_timeline** | AI on V2 drafts (latest revision only, V2 evidence), the timeline-aware trade review (`trade_timeline_reviews`, results, service-only RPCs, the `trade_ai_activity` view, AI review counts in `trade_ledger`), periodic reviews accepting the compact V2 facts, and the zero-cost release of dispatched AI requests that never reached the provider (`ai_request_generations` records the generation commit; SQL then refuses a release) |
@@ -83,6 +83,20 @@ The marker is created by 0015, so the gate distinguishes "before V2" from "V2", 
 together, in order, in one maintenance window**, before the V2 build serves traffic. A database stopped between 0015
 and 0019 passes the gate but lacks the engine, connection, AI and erasure functions the app calls.
 
+### Pre-deployment checks of the hosted project
+
+V2 was verified on the local Supabase-compatible stack only. Before release, confirm on the hosted project (a staging
+copy, with a synthetic user) what the local gateway emulates:
+
+1. **Recovery sessions carry a timestamped `recovery` method in `amr`.** `/update-password` accepts only PKCE recovery
+   links (`?code=`) and sets a new password only on a session whose `amr` claim has a `recovery` entry from the last 15
+   minutes (V2_ARCHITECTURE.md §14.12, [PASSWORD_RECOVERY.md](PASSWORD_RECOVERY.md)). Request a recovery email, open
+   its link and check that the form is offered and the password changes; if hosted GoTrue's PKCE exchange does not put
+   `{method: "recovery", timestamp}` into `amr` (or an access-token hook rewrites it), every recovery is refused.
+2. **PostgREST 11 or later.** Today and the command palette find open trades with anti-joins (`is.null` on an embedded
+   resource: `trade_outcomes=is.null`, `trade_unplanned_closes=is.null`; V2_ARCHITECTURE.md §13.3), which older
+   PostgREST versions reject. The local stack runs v13.0.8.
+
 ### Procedure
 
 1. Back up the database **and both storage buckets** (see below); keep the copy off the project.
@@ -92,7 +106,8 @@ and 0019 passes the gate but lacks the engine, connection, AI and erasure functi
 4. Apply 0015, 0016, 0017, 0018 and 0019 in order through a migration workflow that records the ledger. Each file ends
    with `notify pgrst, 'reload schema'`.
 5. Verify: `select public.trading_os_schema()` returns `2.0`; the RLS/grants catalogue (`tests/v2-schema-catalog.test.ts`
-   describes the expectations); the `trade-evidence` bucket is private; anonymous requests see no table.
+   describes the expectations); the `trade-evidence` bucket is private; anonymous requests see no table; the
+   pre-deployment checks above pass.
 6. Deploy the V2 build with the environment above. Sign in with a synthetic test user on staging and run the smoke
    path: Today, Plan Trade → check → lock → entry → close → review, Record Live Trade → note → screenshot → close,
    Journal, EDGE, account dashboard, Settings → Export my data.
@@ -113,7 +128,7 @@ keep `http://127.0.0.1:3000/...` only for local development; avoid wildcards. Si
 action; there is no OAuth, magic link or `/auth/callback`. Keep **Allow new users to sign up** disabled and provision
 confirmed users in the dashboard. `/update-password` accepts only PKCE recovery links (`?code=`) and sets a new password
 only on a session whose `amr` claim has a `recovery` entry from the last 15 minutes; verify on the hosted project that
-a recovery link's session carries it (PASSWORD_RECOVERY.md) before release.
+a recovery link's session carries it (PASSWORD_RECOVERY.md; pre-deployment check 1 above) before release.
 
 Changing the password (Settings → Security) verifies the current password with a separate sign-in, sets the new one on
 that freshly verified session, keeps this browser signed in with it, and signs out every other session.

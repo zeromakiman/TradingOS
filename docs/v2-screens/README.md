@@ -1,25 +1,28 @@
 # Trading OS V2 screens
 
-Curated from the scripted browser acceptance run `20261027-231720-0cb601` (2026-10-27, strategy clock 18:17 UTC−5, Asia; verdict PASS),
+Curated from the scripted browser acceptance run `20261108-165555-478b32` (2026-11-08, strategy clock 11:55 UTC−5, Kill zone; verdict PASS),
 captured from the local Supabase-compatible stack with the dev server's local mock AI provider. Every account, trade,
 screenshot and AI result shown belongs to synthetic users the run created at the reserved domain `example.test`
 (seeded with `scripts/local-stack/seed-v2.mjs`); charts inside the screenshots are stamped "Synthetic chart".
 
 Pass matrix of that run:
 
-- Planned workflow: desktop PASS 17/17, mobile PASS 17/17
+- Planned workflow: desktop PASS 18/18, mobile PASS 16/19 (1 clock-limited, 2 skipped)
 - Live-first workflow: desktop PASS 10/10, mobile PASS 10/10
 - Analytics drill-down: desktop PASS 8/8, mobile PASS 8/8
 - Trading accounts: desktop PASS 10/10, mobile PASS 10/10
-- AI (local mock provider): desktop PASS 12/12, mobile PASS 12/12
+- AI (local mock provider): desktop PASS 10/12 (2 clock-limited), mobile PASS 10/12 (2 clock-limited)
 - Settings, export and erasure: desktop PASS 8/8, mobile PASS 8/8
-- UX criteria, keyboard and themes: desktop PASS 11/11, mobile PASS 11/11
+- UX criteria, keyboard and themes: desktop PASS 12/12, mobile PASS 14/14
 
 Regenerate (stack and dev server running, see `scripts/local-stack/README.md` → Browser acceptance):
 
 ```sh
 node scripts/local-stack/acceptance/run.mjs --publish-screens
 ```
+
+Only a run whose verdict is PASS, covering every flow at both viewports and capturing every image below, replaces
+this folder; any other run leaves it untouched.
 
 ## Today
 

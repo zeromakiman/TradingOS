@@ -12,7 +12,7 @@ import { type ExplainedReport, type ExplainLookup, explainReport, riskStatusLine
 import { type StoredRiskReport, storedRiskSchema } from "@/domain/risk-report";
 import { type Session, strategyClock } from "@/domain/session";
 import {
-  addDays, formatDay, instantMicros, isCalendarDay, isInstant, STRATEGY_TIME, strategyDay, type TimeDisplay, WEEKDAY_NAMES, weekdayIndex,
+  addDays, compareInstants, formatDay, instantMicros, isCalendarDay, isInstant, STRATEGY_TIME, strategyDay, type TimeDisplay, WEEKDAY_NAMES, weekdayIndex,
 } from "@/domain/time-display";
 import {
   buildTimeline, type CheckExplainLookup, classifyTiming, type EvidenceLabel, evidenceName, groupByTiming, inferStoredPhase, legacyEvidenceLabel,
@@ -371,6 +371,97 @@ export function contextScope(context: Pick<AccountContext, "selected">): TradeSc
  */
 export function filteredScope(scope: TradeScope, filters: Pick<TradeFilters, "accountFilter">): TradeScope {
   return scope.mode === "all" && filters.accountFilter ? { mode: "account", accountId: filters.accountFilter } : scope;
+}
+
+/** All Accounts reads are split into one read per account up to this many accounts (more: one read of the scope). */
+export const MAX_ACCOUNT_READS = 50;
+/** Split reads of one request in flight at most. */
+export const ACCOUNT_READ_CONCURRENCY = 4;
+
+/**
+ * The scopes a ledger read of `scope` is split into: the account itself, or in All Accounts one scope per account of
+ * the user (archived ones included: the ledger holds exactly the trades of the user's accounts, `accounts` must be all
+ * of them). The ledger derives most columns per row, so a read of the whole scope that filters or orders by them makes
+ * PostgreSQL compute every trade of every account first; one account's read is bounded by that account's trades (at
+ * 3 × 15,000 trades: 4.6 s instead of 1.5 s per query, past the 8 s statement timeout under load). Without accounts, or
+ * with more than MAX_ACCOUNT_READS, the scope is read whole, as RLS bounds it.
+ */
+export function accountScopes(scope: TradeScope, accounts: readonly Pick<ContextAccount, "id">[]): TradeScope[] {
+  if (scope.mode === "account" || accounts.length === 0 || accounts.length > MAX_ACCOUNT_READS) return [scope];
+  return accounts.map(account => ({ mode: "account" as const, accountId: account.id }));
+}
+
+/** `task` for every item, at most `limit` at a time, results in item order. */
+export async function mapLimited<T, R>(items: readonly T[], limit: number, task: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let index = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (index < items.length) {
+      const position = index++;
+      results[position] = await task(items[position]);
+    }
+  }));
+  return results;
+}
+
+/** Newest first by creation (`created_at desc, id desc`, the order of the ledger reads that list recent trades). */
+export function newestCreatedFirst(a: Pick<LedgerTrade, "created_at" | "id">, b: Pick<LedgerTrade, "created_at" | "id">): number {
+  return compareInstants(b.created_at, a.created_at) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+}
+
+/** Rows per request of the open-trade reads (below PostgREST's row cap). */
+const OPEN_PAGE = 500;
+const NOT_PLANNED = TRADE_ORIGINS.filter(origin => origin !== "PLANNED");
+const openPlanRow = z.object({ id: z.uuid(), trade_plan_links: z.array(z.object({ trade_id: z.uuid() })) });
+const openTradeRow = z.object({ id: z.uuid() });
+
+/**
+ * Ids of the trades whose lifecycle can be LIVE or LOCKED, read from the base tables through their keys, never the
+ * ledger's derived columns: planned trades whose plan has no outcome (`trade_outcomes=is.null`, an anti-join), and
+ * live-first or imported trades without a close. A superset (skipped and cancelled plans, for example): callers keep the
+ * ledger rows of the lifecycles they list. A ledger read filtered by `lifecycle` computes every trade of the scope first
+ * (1.2 s per query at 20,000 trades; once PostgREST's prepared statement switched to a generic plan on a connection,
+ * 5 s and more, past the 8 s statement timeout under load).
+ */
+export async function openTradeIds(db: Db, userId: string, scope: TradeScope): Promise<string[]> {
+  // Every row of a keyset read by id (`page(after)` asks for OPEN_PAGE rows after `after`).
+  const keyset = async <T extends { id: string }>(schema: z.ZodType<T>, page: (after: string | null) => PromiseLike<{ data: unknown; error: unknown }>) => {
+    const rows: T[] = [];
+    for (let after: string | null = null; ;) {
+      const { data, error } = await page(after);
+      if (error) throw new Error("Trades are unavailable.");
+      const batch = z.array(schema).parse(data ?? []);
+      rows.push(...batch);
+      if (batch.length < OPEN_PAGE) return rows;
+      after = batch[batch.length - 1].id;
+    }
+  };
+  const [plans, unplanned] = await Promise.all([
+    keyset(openPlanRow, after => {
+      let query = db.from("trade_plans").select("id,trade_plan_links(trade_id),trade_outcomes(id)").eq("user_id", userId).is("trade_outcomes", null);
+      if (scope.mode === "account") query = query.eq("account_id", scope.accountId);
+      if (after !== null) query = query.gt("id", after);
+      return query.order("id", { ascending: true }).limit(OPEN_PAGE);
+    }),
+    keyset(openTradeRow, after => {
+      let query = db.from("trades").select("id,trade_unplanned_closes(trade_id)").eq("user_id", userId).in("origin", NOT_PLANNED).is("trade_unplanned_closes", null);
+      if (scope.mode === "account") query = query.eq("account_id", scope.accountId);
+      if (after !== null) query = query.gt("id", after);
+      return query.order("id", { ascending: true }).limit(OPEN_PAGE);
+    }),
+  ]);
+  return [...new Set([...plans.flatMap(plan => plan.trade_plan_links.map(link => link.trade_id)), ...unplanned.map(trade => trade.id)])];
+}
+
+/** The ledger rows of the scope's open trades (`openTradeIds`) in the given lifecycles, newest first by creation. */
+export async function openLedgerRows(db: Db, userId: string, scope: TradeScope, lifecycles: readonly Lifecycle[]): Promise<LedgerTrade[]> {
+  const wanted = new Set(lifecycles);
+  const batches = await mapLimited(inBatches(await openTradeIds(db, userId, scope)), ACCOUNT_READ_CONCURRENCY, async batch => {
+    const { data, error } = await ledgerSelect(db).in("id", batch);
+    if (error) throw new Error("Trades are unavailable.");
+    return parseLedger(data);
+  });
+  return batches.flat().filter(trade => wanted.has(trade.lifecycle)).sort(newestCreatedFirst);
 }
 
 interface Stream {
@@ -930,20 +1021,30 @@ export interface PaletteTradeEntry {
 export const PALETTE_RECENT_LIMIT = 50;
 const PALETTE_LIVE_LIMIT = 50;
 
+/** Live trades of the scope, newest first by creation (`openLedgerRows`). */
+async function paletteLiveRows(deps: ListDeps): Promise<LedgerTrade[]> {
+  return (await openLedgerRows(deps.db, deps.userId, deps.scope, ["LIVE"])).slice(0, PALETTE_LIVE_LIMIT);
+}
+
+/**
+ * The last trades by creation: their ids from `trades` (the ledger's `created_at` and `id` are that table's own), then
+ * the ledger rows of only those trades. Ordering the ledger itself by creation computes every trade of the scope first
+ * (3.3 s at 20,000 trades, in the layout of every page; past the 8 s statement timeout at 45,000).
+ */
+async function paletteRecentRows(deps: ListDeps): Promise<LedgerTrade[]> {
+  let newest = deps.db.from("trades").select("id").eq("user_id", deps.userId);
+  if (deps.scope.mode === "account") newest = newest.eq("account_id", deps.scope.accountId);
+  const ids = await newest.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(PALETTE_RECENT_LIMIT);
+  if (ids.error) throw new Error("Trades are unavailable.");
+  const tradeIds = z.array(z.object({ id: z.uuid() })).parse(ids.data ?? []).map(row => row.id);
+  if (!tradeIds.length) return [];
+  const { data, error } = await ledgerSelect(deps.db).in("id", tradeIds).order("created_at", { ascending: false }).order("id", { ascending: false });
+  if (error) throw new Error("Trades are unavailable.");
+  return parseLedger(data);
+}
+
 export async function loadPaletteTrades(deps: ListDeps): Promise<{ liveTrades: PaletteTradeEntry[]; recentTrades: PaletteTradeEntry[] }> {
-  let liveQuery = ledgerSelect(deps.db).eq("lifecycle", "LIVE");
-  let recentQuery = ledgerSelect(deps.db);
-  if (deps.scope.mode === "account") {
-    liveQuery = liveQuery.eq("account_id", deps.scope.accountId);
-    recentQuery = recentQuery.eq("account_id", deps.scope.accountId);
-  }
-  const [live, recent] = await Promise.all([
-    liveQuery.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(PALETTE_LIVE_LIMIT),
-    recentQuery.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(PALETTE_RECENT_LIMIT),
-  ]);
-  if (live.error || recent.error) throw new Error("Trades are unavailable.");
-  const liveRows = parseLedger(live.data);
-  const recentRows = parseLedger(recent.data);
+  const [liveRows, recentRows] = await Promise.all([paletteLiveRows(deps), paletteRecentRows(deps)]);
   const directory = accountDirectory(deps.accounts);
   const current = await draftCheckCurrency(deps.db, deps.userId, recentRows, directory, deps.now);
   const entry = (trade: LedgerTrade): PaletteTradeEntry => {

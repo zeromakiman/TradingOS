@@ -17,7 +17,7 @@ import { estimateRequest } from "@/ai/request-estimate";
 import { validateRecentTrades } from "@/ai/recent-trades-contract";
 import { weeklyReviewContextV2 } from "@/ai/weekly-review-context";
 import { validateWeeklyReview } from "@/ai/weekly-review-contract";
-import { storedPeriodicFacts } from "@/components/ai/periodic";
+import { MONTHLY_SUMMARY_NOTE, periodicFactModels, storedPeriodicFacts } from "@/components/ai/periodic";
 import { interpretationCard, resolveCardSources } from "@/lib/ai-history";
 import { estimateInputTokens } from "../scripts/local-stack/mock-openai-generator.mjs";
 
@@ -397,6 +397,20 @@ describe("the densest samples within the bounds: they fit or are refused before 
     expect(() => weeklyReviewContextV2(ids.account, WEEK, maximalPeriodicSources(trades, records + 1, "2026-09-01T08:00:00.000Z"), CAPTURED, "USD")).toThrow(/limits/);
   });
 
+  it("weekly: typically journaled weeks (calibrated to the seeded traders) meet the record bound before the input limit", () => {
+    // Seeded traders' 20-trade weeks with 1–4 entries per trade measure 17.0k–22.8k of the 24k tokens with the real
+    // loader; this fixture is calibrated to them. Their bound is the 70-record rule, not the estimate.
+    const { trades, records, bytes } = PERIODIC_V2_LIMITS.WEEKLY_REVIEW;
+    const typical = (count: number, n: number) => weeklyReviewContextV2(ids.account, WEEK, typicalPeriodicSources(count, n, "2026-08-31T08:00:00.000Z", 300), CAPTURED, "USD");
+    const estimates = [1, 2, 3].map(perTrade => fits("WEEKLY_REVIEW", typical(trades, trades * perTrade), bytes));
+    expect(estimates).toEqual([...estimates].sort((a, b) => a - b));
+    for (const count of [1, 5, 10, 15]) fits("WEEKLY_REVIEW", typical(count, records), bytes);
+    // A typically journaled week at both bounds still leaves room: the bounds, not the estimate, are what it meets.
+    expect(fits("WEEKLY_REVIEW", typical(trades, records), bytes)).toBeLessThan(operationFor("WEEKLY_REVIEW").maxInputTokens - 1_500);
+    expect(() => typical(trades, records + 1)).toThrow(/limits/);
+    expect(() => typical(trades + 1, trades + 1)).toThrow(/limits/);
+  });
+
   it("monthly: a dense month stays detailed while it fits and is otherwise the deterministic summary, which always fits", () => {
     const { bytes, detailedTrades, detailedRecords } = PERIODIC_V2_LIMITS.MONTHLY_REVIEW;
     const tenTrades = monthlyReviewContextV2(ids.account, "2026-08", maximalPeriodicSources(10, detailedRecords, "2026-08-04T08:00:00.000Z", 300), CAPTURED, "USD");
@@ -510,5 +524,23 @@ describe("stored V1 facts keep validating and rendering", () => {
     const v2 = recentTradesContextV2(ids.account, 10, periodicSourcesV2(3, { start: "2026-08-01T08:00:00.000Z" }), CAPTURED, "USD");
     expect(storedPeriodicFacts(v2)).toEqual({ trades: 3, netR: "9" });
     expect(storedPeriodicFacts(recentV1)).toEqual({ trades: 1, netR: "3" });
+  });
+
+  it("a month reviewed as its summary says on its card what the review did not see; a detailed month does not", () => {
+    const sources = maximalPeriodicSources(40, 160, "2026-08-02T06:00:00.000Z", 360);
+    const summary = monthlySummaryContextV2(ids.account, "2026-08", sources.map(s => s.trade), { journalEntries: 120, events: 40 }, CAPTURED, "USD");
+    const stored = storedPeriodicFacts(summary);
+    expect(stored).toMatchObject({ trades: 40, summary: true });
+    if (!stored) throw new Error("Expected stored facts");
+    expect(periodicFactModels(stored).note).toBe(`40 completed trades — developing sample; results can still change materially. ${MONTHLY_SUMMARY_NOTE}`);
+    expect(MONTHLY_SUMMARY_NOTE).toBe("Summary review: every trade counts in the results and metrics, but plans, journal entries and tags were not sent.");
+    // V1 summaries (stored history) say the same; detailed months and the other reviews add nothing.
+    expect(storedPeriodicFacts({ ...monthlyV1, mode: "DETERMINISTIC SUMMARY" })).toMatchObject({ summary: true });
+    const detailed = monthlyReviewContextV2(ids.account, "2026-08", periodicSourcesV2(2, { start: "2026-08-04T08:00:00.000Z", journal: 3 }), CAPTURED, "USD");
+    for (const facts of [detailed, monthlyV1, weeklyV1, recentV1]) {
+      const plain = storedPeriodicFacts(facts);
+      expect(plain).not.toHaveProperty("summary");
+      if (plain) expect(periodicFactModels(plain).note).not.toContain(MONTHLY_SUMMARY_NOTE);
+    }
   });
 });

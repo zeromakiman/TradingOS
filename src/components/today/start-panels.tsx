@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import {
   EMPTY_DAY_DESCRIPTION, EMPTY_DAY_TITLE, LIVE_TRADE_COPY, NO_ACTIVE_DESCRIPTION, NO_ACTIVE_TITLE, ONBOARDING_DESCRIPTION, ONBOARDING_TITLE, PLAN_TRADE_COPY,
 } from "./copy";
+import { STATUS_HEADING_ID } from "./dom-ids";
 
 /**
  * Today's starting points (docs/V2_ARCHITECTURE.md §14.1, §14.12): the empty day leads with the two primary actions and
@@ -69,7 +70,8 @@ export function Onboarding() {
           <p className="t-meta">{ONBOARDING_DESCRIPTION}</p>
         </div>
         <div className="p-4 md:p-5">
-          <CreateAccountForm />
+          {/* Once the account exists the page refreshes into the normal Today; focus moves to the trading status. */}
+          <CreateAccountForm focusAfterId={STATUS_HEADING_ID} />
         </div>
       </section>
       <NewAccountGuide />

@@ -59,7 +59,10 @@ export interface JournalComposerProps {
    * Partial only While live, `journalKindsFor`). The server decides the real timing, and refuses those kinds otherwise.
    */
   timingHint: Timing;
-  /** Says why Stop, Target and Partial aren't offered, under the kind chips (the trade page: drafts and locked plans). */
+  /**
+   * Says why Stop, Target and Partial aren't offered, under the kind chips (the trade page: drafts, locked plans, and
+   * closed trades, whose management is kept as a Decision or a Note, `liveKindsNote`).
+   */
   kindsNote?: ReactNode;
   /**
    * Label of attached screenshots when the band's default doesn't fit (`defaultLabelForLifecycle`): Other on a plan

@@ -70,7 +70,7 @@ Resolution, reserve, dispatch, settle and preferences use the same account row l
 
 After resolving, read the audit row, original incident and authenticated `get_account_ai_budget` result. Check ownership, exact deltas, original history preservation and remaining uncertainty. This procedure does not request AI or retry an old review. An explicitly authorized future review gets a new immutable history entry and new reservation.
 
-The app's AI history (V2) shows the outcome of a terminal resolution in place of "stays until an accounting review…": "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released." for NO_PROVIDER_USAGE_CONFIRMED, or the confirmed cost (and whether the rest was released, or that it exceeded the hold) for USAGE_CONFIRMED. Technical details keep the original UNCERTAIN record and list the resolution beside it.
+The app's AI history (V2) shows the outcome of a terminal resolution in place of "stays until an accounting review…": "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released." for NO_PROVIDER_USAGE_CONFIRMED, or, for USAGE_CONFIRMED, the confirmed cost in whole cents with "and the rest of the held amount was released." when the review released a difference, or, when the cost was above the hold, "It was more than the amount held for this attempt, and all of it counts toward the AI budget." (no difference amount is shown: whole cents of a sub-cent difference would match neither figure). Technical details keep the original UNCERTAIN record, list the resolution beside it and carry the exact original, reconciled, released and additional amounts.
 
 ## Rollout boundary
 

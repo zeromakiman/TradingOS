@@ -2013,23 +2013,34 @@
     gap: 0.5rem;
   }
 
+  /* A chip never widens the page: its label (an account filter's name of up to 100 characters, even one without a
+     space, or a long custom tag) wraps inside the chip, which keeps to its row's width, and the remove button keeps
+     its size. A one-line chip looks as before: the remove button and the block padding fill its 2rem, and a 1rem
+     radius is its pill shape, which a wrapped chip keeps as rounded corners instead of curving across its lines. */
   .chip {
     display: inline-flex;
     align-items: center;
     gap: 0.125rem;
+    max-width: 100%;
     min-height: 2rem;
-    padding: 0 0.25rem 0 0.75rem;
+    padding: 0.1875rem 0.25rem 0.1875rem 0.75rem;
     border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
-    border-radius: var(--radius-pill);
+    border-radius: 1rem;
     background: var(--accent-soft);
     color: var(--accent);
     font-size: 0.8125rem;
     font-weight: 500;
   }
 
+  .chip > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
   .chip-remove {
     position: relative;
     display: grid;
+    flex: none;
     width: 1.5rem;
     height: 1.5rem;
     place-items: center;
@@ -2385,9 +2396,12 @@
     opacity: 0.7;
   }
 
+  /* "Trading Account:" keeps its one line; a long account name is what gives way (it truncates). */
   .account-trigger-label {
+    flex: none;
     color: var(--text-2);
     font-weight: 500;
+    white-space: nowrap;
   }
 
   .account-trigger-value {

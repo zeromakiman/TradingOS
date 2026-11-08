@@ -30,7 +30,7 @@ vi.mock("@/app/password-actions", () => ({ requestPasswordRecovery: m.action, up
 import ForgotPasswordPage from "@/app/forgot-password/page";
 import LoginPage from "@/app/login/page";
 import UpdatePasswordPage from "@/app/update-password/page";
-import { RecoveryView } from "@/components/password-recovery";
+import { RecoveryView, startRecovery } from "@/components/password-recovery";
 import { SIGN_IN_NOTICES } from "@/components/settings/auth-page-data";
 import { INVALID_RECOVERY, RECOVERY_SESSION_REQUIRED, UNSUPPORTED_RECOVERY_LINK } from "@/lib/password-recovery";
 
@@ -173,6 +173,49 @@ describe("/update-password", () => {
     expect(text).toContain("Forgot your current password?");
     expect(html).toContain('href="/forgot-password"');
     expect(html.match(/<h1\b/g)).toHaveLength(1);
+  });
+
+  // The address bar loses every code, token and provider error detail at once, and the Next.js router learns the clean
+  // address after its own effect has run (a deferred replaceState with a null state): otherwise its next update writes
+  // back the address it knows, tokens included. A refused link is never sent to the server.
+  describe("starting the page", () => {
+    const start = (search: string, hash: string) => {
+      const calls: [unknown, string][] = [];
+      const deferred: (() => void)[] = [];
+      const shown: unknown[] = [];
+      const check = vi.fn(async () => ({ success: "Choose your new password." }));
+      const history = { state: { __NA: true }, replaceState: (state: unknown, _unused: string, url?: string | URL | null) => void calls.push([state, String(url)]) };
+      startRecovery({ search, hash, history, defer: run => void deferred.push(run) }, state => void shown.push(state), check);
+      return { calls, deferred, shown, check, flush: () => { for (const run of deferred.splice(0)) run(); } };
+    };
+
+    it.each([
+      ["a link carrying session tokens", "", "#access_token=abc&refresh_token=def&type=recovery", UNSUPPORTED_RECOVERY_LINK],
+      ["a provider error link", "?error=access_denied&error_code=otp_expired", "#error_description=Email+link+is+invalid", INVALID_RECOVERY],
+      ["a token-hash link", "?token_hash=abc&type=recovery", "", INVALID_RECOVERY],
+    ])("refuses %s at once and leaves the router a clean address", (_label, search, hash, error) => {
+      const page = start(search, hash);
+      expect(page.calls).toEqual([[{ __NA: true }, "/update-password"]]);
+      expect(page.shown).toEqual([{ error }]);
+      page.flush();
+      expect(page.calls).toEqual([
+        [{ __NA: true }, "/update-password"],
+        [null, "/update-password"],
+      ]);
+      expect(page.check).not.toHaveBeenCalled();
+    });
+
+    it("checks a PKCE code only after the router learned the clean address", async () => {
+      const page = start("?code=0f3c", "");
+      expect(page.calls).toEqual([[{ __NA: true }, "/update-password"]]);
+      expect(page.check).not.toHaveBeenCalled();
+      page.flush();
+      expect(page.calls.at(-1)).toEqual([null, "/update-password"]);
+      expect(page.check).toHaveBeenCalledWith({ kind: "code", code: "0f3c" });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(page.shown).toEqual([{ success: "Choose your new password." }]);
+    });
   });
 
   it.each([

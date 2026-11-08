@@ -22,7 +22,7 @@ import { type ExternalExecution, READ_ONLY_SCOPE } from "@/lib/sync-service";
 import { AccountStatusButton } from "./account-status-actions";
 import { ConfirmUnchangedButton, UpdateValuesForm } from "./account-values-forms";
 import { connectionLabel } from "./accounts-overview";
-import type { ConnectionDetails } from "./connection-data";
+import type { ConnectionDetails, LinkedTradeNote } from "./connection-data";
 import {
   ADD_EXTERNAL_LOSS, ARCHIVE_COPY, ARCHIVED_VALUES_COPY, accountDashboardHref, EXTERNAL_LOSSES_TITLE, MANAGE_TABS, MANUAL_CONNECTION_COPY, type ManageTab, manageHref,
   RESTORE_COPY, RR_POLICY_LABELS, STARTS_TOMORROW, typeAndBroker, UPDATE_VALUES, VERSIONING_COPY,
@@ -33,7 +33,7 @@ import { type InstrumentDraft, InstrumentForm } from "./manage-instrument-form";
 import { ProfileForm } from "./manage-profile-form";
 import { type RiskPolicyDefaults, RiskPolicyForm } from "./manage-risk-policy-form";
 import { RiskPlanStatusPill, RiskPlanTable } from "./risk-plan-table";
-import { Money } from "./values";
+import { HIT_AREA, Money } from "./values";
 
 /**
  * Manage a trading account (docs/V2_ARCHITECTURE.md §14.9): Profile, Account values, External losses, Risk policy,
@@ -645,16 +645,44 @@ function executionLabel(execution: ExternalExecution): string {
   return `${execution.symbol} ${DIRECTION[execution.direction]} · ${formatQuantity(execution.volume)}`;
 }
 
-function ExecutionFacts({ execution, display }: { execution: ExternalExecution; display: TimeDisplay }) {
+/** Why a linked planned trade does not carry its platform position's result (connection-data `linkedNotes`). */
+const LINKED_NOTE_COPY: Readonly<Record<LinkedTradeNote, string>> = {
+  CLOSE_NOT_RECORDED: "Closed on the platform, but the trade is still open in Trading OS. Record the close on the trade: until then this result is not in your results or daily limits.",
+  SKIPPED: "The platform reports this position, but its plan is marked skipped, so the position counts in no result or daily limit.",
+  CANCELLED: "The platform reports this position, but its plan is marked cancelled, so the position counts in no result or daily limit.",
+};
+
+function linkedNoteOf(details: ConnectionDetails | null, execution: ExternalExecution): string | undefined {
+  const note = details?.linkedNotes?.[execution.id];
+  return note === undefined ? undefined : LINKED_NOTE_COPY[note];
+}
+
+function ExecutionFacts({ execution, display, note }: { execution: ExternalExecution; display: TimeDisplay; note?: string }) {
   return (
-    <div className="flex min-w-0 flex-col gap-0.5">
+    // Fills a linked row next to its actions, which wrap below it on a phone.
+    <div className="flex min-w-0 grow basis-80 flex-col gap-0.5">
       <p className="font-medium">{executionLabel(execution)}</p>
       <p className="t-caption">
         Entry {formatPrice(execution.entryPrice)} · {formatDateTime(execution.enteredAt, display)}
         {execution.exitPrice && execution.exitedAt && ` · exit ${formatPrice(execution.exitPrice)} · ${formatDateTime(execution.exitedAt, display)}`}
         {execution.realizedPnl && ` · ${formatSignedMoney(execution.realizedPnl, execution.currency)}`}
       </p>
-      <p className="t-caption">From {execution.connectionLabel}</p>
+      {/* The platform's own ticket, which every platform notice names; never an internal id. */}
+      <p className="t-caption break-words">
+        Position {execution.externalId} · {execution.connectionLabel}
+      </p>
+      {execution.lastWarningMessage && (
+        // The message names the platform ticket, which may be one long word.
+        <Callout tone="warning" className="mt-2 break-words">
+          {execution.lastWarningMessage}
+          {execution.warningCount > 1 && ` ${plural(execution.warningCount - 1, "earlier notice")} about this position.`}
+        </Callout>
+      )}
+      {note && (
+        <Callout tone="warning" className="mt-2">
+          {note}
+        </Callout>
+      )}
     </div>
   );
 }
@@ -725,22 +753,39 @@ function ConnectionPanel({ manage, display, connection }: ManageViewProps) {
         description="Platform positions that could not be matched to exactly one planned trade. Link each to the trade it belongs to."
       >
         {unmatched.length ? (
-          <ul className="flex flex-col">
-            {unmatched.map(({ execution, candidates }) => (
-              <li key={execution.id} className="grid gap-3 border-b border-border py-4 first:pt-0 last:border-b-0 last:pb-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-                <ExecutionFacts execution={execution} display={display} />
-                <LinkExecutionForm
-                  executionId={execution.id}
-                  executionLabel={executionLabel(execution)}
-                  options={candidates.map(candidate => ({
-                    tradeId: candidate.tradeId,
-                    suggested: candidate.suggested,
-                    label: `${candidate.symbol ?? execution.symbol} ${candidate.direction ? DIRECTION[candidate.direction] : ""} · locked ${formatDateTime(candidate.lockedAt, display)}${candidate.plannedEntry ? ` · entry ${formatPrice(candidate.plannedEntry, candidate.tickSize)}` : ""}`,
-                  }))}
-                />
-              </li>
-            ))}
-          </ul>
+          <>
+            {/* V2_1_GAPS.md §1.2: daily usage reads trades, never platform executions. */}
+            <Callout tone="warning" className="mb-4">
+              Until a position is linked to a trade and its close is recorded there, it does not count toward this account&apos;s daily limits.
+              {!manage.archived && (
+                <>
+                  {" "}
+                  To count the loss of a closed position now, add it under{" "}
+                  <Link href={manageHref(account.id, "external-losses")} className={cx("font-medium text-accent hover:underline", HIT_AREA)}>
+                    External losses
+                  </Link>
+                  .
+                </>
+              )}
+            </Callout>
+            <ul className="flex flex-col">
+              {unmatched.map(({ execution, candidates }) => (
+                <li key={execution.id} className="grid gap-3 border-b border-border py-4 first:pt-0 last:border-b-0 last:pb-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
+                  <ExecutionFacts execution={execution} display={display} />
+                  <LinkExecutionForm
+                    executionId={execution.id}
+                    executionLabel={executionLabel(execution)}
+                    // Every candidate has the execution's instrument and direction, so the lock time and entry tell them apart.
+                    options={candidates.map(candidate => ({
+                      tradeId: candidate.tradeId,
+                      suggested: candidate.suggested,
+                      label: `Locked ${formatDateTime(candidate.lockedAt, display)}${candidate.plannedEntry ? ` · entry ${formatPrice(candidate.plannedEntry, candidate.tickSize)}` : ""}`,
+                    }))}
+                  />
+                </li>
+              ))}
+            </ul>
+          </>
         ) : (
           <EmptyState
             compact
@@ -757,7 +802,7 @@ function ConnectionPanel({ manage, display, connection }: ManageViewProps) {
           <ul className="flex flex-col">
             {linked.map(execution => (
               <li key={execution.id} className="flex flex-wrap items-start justify-between gap-3 border-b border-border py-3 first:pt-0 last:border-b-0 last:pb-0">
-                <ExecutionFacts execution={execution} display={display} />
+                <ExecutionFacts execution={execution} display={display} note={linkedNoteOf(connection, execution)} />
                 <div className="flex items-center gap-2">
                   {execution.linkedTradeId && (
                     <Link href={`/trades/${execution.linkedTradeId}`} className={buttonClasses({ variant: "ghost", size: "sm" })}>

@@ -137,6 +137,44 @@ describe("loadConnectionDetails", () => {
     expect(details.linked.map(execution => execution.externalId)).toEqual(["MOCK-1"]);
     expect(details.moreLinked).toBe(false);
   });
+
+  it("reads the account's linkable plans once for every waiting execution, never once per execution", async () => {
+    const plan = (n: number, changes: Row = {}): Row => ({
+      id: id(3, n), account_id: ACCOUNT, origin: "PLANNED", lifecycle: "LOCKED", symbol: "EURUSD", direction: "LONG", locked_at: "2026-09-15T07:00:00+00:00",
+      planned_entry: "1.1", planned_stop: "1.098", instrument_version_id: EURUSD, ...changes,
+    });
+    const { db, queries } = fakeClient({
+      external_execution_status: [executionRow(5), executionRow(6), executionRow(7, { direction: "SHORT" }), executionRow(8, { symbol: "GBPUSD" })],
+      trade_ledger: [plan(9), plan(10, { direction: "SHORT", lifecycle: "CLOSED" }), plan(11, { symbol: "GBPUSD", lifecycle: "LIVE" }), plan(12, { lifecycle: "SKIPPED" })],
+      instrument_versions: [{ id: EURUSD, tick_size: "0.00001" }],
+    });
+    m.db = db;
+    const details = await loadConnectionDetails(ACCOUNT);
+    expect(details.unmatched.map(view => [view.execution.externalId, view.candidates.map(candidate => candidate.tradeId)])).toEqual([
+      ["MOCK-8", [id(3, 11)]], ["MOCK-7", [id(3, 10)]], ["MOCK-6", [id(3, 9)]], ["MOCK-5", [id(3, 9)]],
+    ]);
+    expect(queries.filter(query => query.table === "trade_ledger")).toHaveLength(1);
+    expect(queries.filter(query => query.table === "instrument_versions")).toHaveLength(1);
+    // Two list pages and one link-state read of the candidate plans.
+    expect(queries.filter(query => query.table === "external_execution_status")).toHaveLength(3);
+  });
+
+  it("notes each planned link whose trade does not carry the platform result, reading their lifecycles once", async () => {
+    const closed = { exit_price: "1.10612", exited_at: "2026-09-15T09:40:00+00:00", realized_pnl: "148.25" };
+    const ledger = (n: number, lifecycle: string): Row => ({ id: id(3, n), account_id: ACCOUNT, origin: n === 5 ? "IMPORTED" : "PLANNED", lifecycle });
+    const { db, queries } = fakeClient({
+      external_execution_status: [
+        linkedRow(1, "AUTO_MATCH", closed), linkedRow(2, "USER", closed), linkedRow(3, "USER"), linkedRow(4, "AUTO_MATCH"), linkedRow(5, "IMPORT_CREATED", closed),
+        linkedRow(6, "USER", closed),
+      ],
+      trade_ledger: [ledger(1, "LIVE"), ledger(2, "CLOSED"), ledger(3, "LIVE"), ledger(4, "SKIPPED"), ledger(5, "LIVE"), ledger(6, "LOCKED")],
+    });
+    m.db = db;
+    const details = await loadConnectionDetails(ACCOUNT);
+    expect(details.linkedNotes).toEqual({ [id(7, 1)]: "CLOSE_NOT_RECORDED", [id(7, 4)]: "SKIPPED", [id(7, 6)]: "CLOSE_NOT_RECORDED" });
+    const reads = queries.filter(query => query.table === "trade_ledger");
+    expect(reads.map(query => query.filters)).toEqual([["in.id"]]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -176,6 +214,54 @@ describe("Manage → Connection panel", () => {
     expect(text.split("Unlink").length - 1).toBe(2);
     expect(text).toContain("Imported trade");
     expect(text).not.toContain("most recent linked executions");
+  });
+
+  it("shows each position's platform ticket and its latest platform notice, never an internal id", () => {
+    const warned = execution(4, {
+      linkedTradeId: id(3, 4), linkMethod: "IMPORT_CREATED", warningCount: 2,
+      lastWarningMessage: "EURUSD long position MOCK-4 was closed on the platform with values that differ from the close recorded in Trading OS; the recorded close was kept.",
+    });
+    const text = panel({ unmatched: [], moreUnmatched: false, linked: [warned], moreLinked: false });
+    expect(text).toContain("Position MOCK-4 · Mock platform");
+    expect(text).toContain("EURUSD long position MOCK-4 was closed on the platform with values that differ from the close recorded in Trading OS; the recorded close was kept. 1 earlier notice about this position.");
+    expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/);
+  });
+
+  it("says that waiting positions do not count toward the daily limits, and how to count a loss now", () => {
+    const waiting = { execution: execution(7, { exitPrice: "1.08412", exitedAt: "2026-10-22T14:00:00Z", realizedPnl: "-50" }), candidates: [] };
+    const html = renderToStaticMarkup(createElement(ManageView, {
+      manage: MANAGE, display: { mode: "strategy" }, tab: "connection", connection: { unmatched: [waiting], moreUnmatched: false, linked: [] }, instrumentDraft: null,
+    }));
+    const text = panel({ unmatched: [waiting], moreUnmatched: false, linked: [] });
+    expect(text).toContain("Until a position is linked to a trade and its close is recorded there, it does not count toward this account's daily limits. To count the loss of a closed position now, add it under External losses .");
+    expect(html).toMatch(new RegExp(`add it under <a [^>]*href="/accounts/${ACCOUNT}/manage\\?tab=external-losses"[^>]*>External losses</a>`));
+    // An archived account takes no external loss, so the hint is not offered there.
+    const archived = renderToStaticMarkup(createElement(ManageView, {
+      manage: { ...MANAGE, archived: true }, display: { mode: "strategy" }, tab: "connection", connection: { unmatched: [waiting], moreUnmatched: false, linked: [] }, instrumentDraft: null,
+    }));
+    expect(archived).toContain("does not count toward this account");
+    expect(archived).not.toContain("To count the loss of a closed position now");
+    // Without waiting positions there is nothing to warn about.
+    expect(panel({ unmatched: [], moreUnmatched: false, linked })).not.toContain("daily limits");
+  });
+
+  it("tells the trader when a linked plan does not carry the platform result", () => {
+    const text = panel({ unmatched: [], moreUnmatched: false, linked, moreLinked: false, linkedNotes: { [id(7, 1)]: "CLOSE_NOT_RECORDED", [id(7, 2)]: "SKIPPED" } });
+    expect(text).toContain("Closed on the platform, but the trade is still open in Trading OS. Record the close on the trade: until then this result is not in your results or daily limits.");
+    expect(text).toContain("The platform reports this position, but its plan is marked skipped, so the position counts in no result or daily limit.");
+    expect(text).not.toContain("marked cancelled");
+  });
+
+  it("names a plan to link by its lock time and entry; instrument and direction are the execution's own", () => {
+    const candidate = {
+      tradeId: id(3, 9), accountId: ACCOUNT, origin: "PLANNED" as const, lifecycle: "LOCKED" as const, linked: false, symbol: "EURUSD", direction: "LONG" as const,
+      lockedAt: "2026-10-22T12:50:00Z", plannedEntry: "1.085", plannedStop: "1.083", tickSize: "0.00001", suggested: true,
+    };
+    const html = renderToStaticMarkup(createElement(ManageView, {
+      manage: MANAGE, display: { mode: "strategy" }, tab: "connection", connection: { unmatched: [{ execution: execution(8), candidates: [candidate] }], moreUnmatched: false, linked: [] },
+      instrumentDraft: null,
+    }));
+    expect(html).toMatch(/<option value="[^"]+"[^>]*>Locked Oct 22, 07:50 · entry 1\.08500 · suggested<\/option>/);
   });
 
   it("says when only the most recent linked executions are listed", () => {

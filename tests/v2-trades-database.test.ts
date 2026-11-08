@@ -884,6 +884,46 @@ describe("trade journal", () => {
     await refusedEverywhere(imported, "a closed import");
   });
 
+  it("keeps the rule for trades recorded after the fact: management before their close counts, words after it never change the result", async () => {
+    // A live-first trade recorded with an earlier entry and closed at once (the position closed before it was
+    // recorded), and an import that opened and closed between two syncs: neither takes stop, target or partial entries
+    // once closed (ENTRY_NOT_LIVE, §3.6). What the trader did is kept as a Decision or a Note, stored After close, and
+    // the stored close (one exit price, UNPLANNED_CLOSE_V1) is the result whatever is written afterwards.
+    const a = await db.bootstrapAccount(OWNER);
+    const late = await liveTrade(a, { instrumentId: a.instrumentId, direction: "LONG", entryPrice: "1.1", quantity: "1", initialStop: "1.098", enteredAt: minutesAgo(120) });
+    // Recorded before the close is sent, a partial is accepted (the trade is still open here) and feeds the close form.
+    const partial = await journal(late, "PARTIAL_CLOSE", "Half off at 1.1005", { price: "1.1005", percent: "50" });
+    expect(await journalRow(partial)).toEqual({ phase: "LIVE", state_at_creation: "LIVE" });
+    await closeLive(late, { exitPrice: "1.101", exitedAt: minutesAgo(60) });
+    const closed = async (tradeId: string) => {
+      await db.admin();
+      const row = (await db.query<Json>("select exit_price, exited_at, net_pnl, realized_r, outcome, recorded_at from public.trade_unplanned_closes where trade_id = $1", [tradeId])).rows[0];
+      await db.actor(OWNER);
+      return { row, ledger: await value<Json>("select jsonb_build_object('lifecycle', lifecycle, 'r', realized_r::text, 'pnl', net_pnl::text) as value from public.trade_ledger where id = $1", [tradeId]) };
+    };
+    const before = await closed(late);
+    expect(before.ledger).toEqual({ lifecycle: "CLOSED", r: "0.5", pnl: "100" });
+    for (const [kind, details] of [["PARTIAL_CLOSE", { price: "1.1008", percent: "25" }], ["STOP_CHANGE", { price: "1.1" }], ["TARGET_CHANGE", { price: "1.102" }]] as const) {
+      await expect(journal(late, kind, "Happened before I recorded the trade", details), kind).rejects.toThrow(/^ENTRY_NOT_LIVE:/);
+    }
+    const decision = await journal(late, "DECISION", "Moved the stop to entry at 08:45 and took a quarter at 1.1008.");
+    expect(await journalRow(decision)).toEqual({ phase: "POST_TRADE", state_at_creation: "CLOSED" });
+    expect(await closed(late)).toEqual(before);
+
+    // Imported already closed: never live in Trading OS, so only words can describe how it was managed.
+    const imported = await importedTrade(a, "XAUUSD", "SHORT");
+    await db.admin();
+    await db.query(`insert into public.trade_unplanned_closes(trade_id, user_id, account_id, exited_at, fees, net_pnl, pnl_source, outcome)
+      values ($1, $2, $3, $4, 0, -12.5, 'IMPORTED', 'LOSS')`, [imported, OWNER, a.accountId, minutesAgo(5)]);
+    await db.actor(OWNER);
+    const importedBefore = await closed(imported);
+    for (const [kind, details] of [["PARTIAL_CLOSE", { percent: "50" }], ["STOP_CHANGE", { price: "2405.5" }]] as const) {
+      await expect(journal(imported, kind, null, details), kind).rejects.toThrow(/^ENTRY_NOT_LIVE:/);
+    }
+    expect(await journalRow(await journal(imported, "NOTE", "Platform closed half at the first target before the sync."))).toEqual({ phase: "POST_TRADE", state_at_creation: "CLOSED" });
+    expect(await closed(imported)).toEqual(importedBefore);
+  });
+
   it("validates details per kind, normalizes the body and replays by request key", async () => {
     const a = await db.bootstrapAccount(OWNER);
     const { tradeId } = await lockedTrade(a);

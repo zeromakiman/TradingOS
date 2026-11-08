@@ -3,7 +3,7 @@ import { LoaderCircle, RotateCcw, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { completePasswordRecovery } from "@/app/password-actions";
-import { INVALID_RECOVERY, type RecoveryState, recoveryInput, UNSUPPORTED_RECOVERY_LINK } from "@/lib/password-recovery";
+import { INVALID_RECOVERY, type RecoveryInput, type RecoveryState, recoveryInput, UNSUPPORTED_RECOVERY_LINK } from "@/lib/password-recovery";
 import { AuthHeading } from "./settings/auth-frame";
 import { BackToSignIn, NewPasswordForm } from "./settings/auth-forms";
 import { buttonClasses } from "./ui/button";
@@ -25,22 +25,42 @@ export function PasswordRecovery() {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    const input = recoveryInput(window.location.search, window.location.hash);
-    // Remove codes, tokens and provider error details from the address bar before anything else happens.
-    window.history.replaceState(window.history.state, "", "/update-password");
-    if (input.kind === "invalid") {
-      setState({ error: input.tokenLink ? UNSUPPORTED_RECOVERY_LINK : INVALID_RECOVERY });
-      return;
-    }
-    // The Next.js router only follows history changes once its own effect has run, after this one: it learns the clean
-    // address (a null state marks the call as not its own) before the check, whose cookies render the page again.
-    // Otherwise it would write back the address it knows, one-time code included, and a reload would reuse a spent code.
-    window.setTimeout(() => {
-      window.history.replaceState(null, "", "/update-password");
-      completePasswordRecovery(input).then(setState).catch(() => setState({ error: "Recovery could not be verified. Request a new link and try again." }));
-    }, 0);
+    startRecovery({ search: window.location.search, hash: window.location.hash, history: window.history, defer: run => window.setTimeout(run, 0) }, setState, completePasswordRecovery);
   }, []);
   return <RecoveryView state={state} />;
+}
+
+const CLEAN_ADDRESS = "/update-password";
+const UNVERIFIED = "Recovery could not be verified. Request a new link and try again.";
+
+/** What starting the page needs from the browser (src/components/password-recovery.tsx `PasswordRecovery`). */
+export interface RecoveryBrowser {
+  search: string;
+  hash: string;
+  history: Pick<History, "state" | "replaceState">;
+  /** Runs `run` once the effects of the current render, the Next.js router's included, have run (a zero timeout). */
+  defer: (run: () => void) => void;
+}
+
+/**
+ * Starts /update-password: reads only the recognized recovery parameters, removes every code, token and provider error
+ * detail from the address bar before anything else happens, then shows the refusal of a link that can't be used
+ * (without contacting the server) or asks the server to `check` the recovery session.
+ */
+export function startRecovery(browser: RecoveryBrowser, show: (state: RecoveryState) => void, check: (input: Exclude<RecoveryInput, { kind: "invalid" }>) => Promise<RecoveryState>): void {
+  const input = recoveryInput(browser.search, browser.hash);
+  // Remove codes, tokens and provider error details from the address bar before anything else happens.
+  browser.history.replaceState(browser.history.state, "", CLEAN_ADDRESS);
+  // The Next.js router only follows history changes once its own effect has run, after this one: it learns the clean
+  // address (a null state marks the call as not its own) before the check, whose cookies render the page again.
+  // Otherwise its next update would write back the address it knows: a spent one-time code that a reload would reuse,
+  // or the session tokens and provider error details of a refused link.
+  browser.defer(() => {
+    browser.history.replaceState(null, "", CLEAN_ADDRESS);
+    if (input.kind !== "invalid") check(input).then(show).catch(() => show({ error: UNVERIFIED }));
+  });
+  // A link that can't be used is refused at once, without contacting the server.
+  if (input.kind === "invalid") show({ error: input.tokenLink ? UNSUPPORTED_RECOVERY_LINK : INVALID_RECOVERY });
 }
 
 /** What /update-password shows for the result of the check (null: still checking). */

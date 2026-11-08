@@ -18,6 +18,7 @@ import { loadRecentFacts, ownedRecentAccount, RecentScopeError } from "@/lib/rec
 import { requireUser } from "@/lib/supabase/server";
 import { loadWeeklyFacts, ownedWeeklyAccount, WeeklyScopeError } from "@/lib/weekly-review-source";
 import { estimateModel } from "./estimate";
+import { monthlySummaryNotice } from "./periodic";
 import type { AiEstimateModel, AiRiskLine } from "./model";
 
 /**
@@ -156,6 +157,8 @@ export interface PeriodicAiData {
   trades: number | null;
   /** Why this period cannot be reviewed now (incomplete period, size limits); null when it can. */
   scopeError: string | null;
+  /** What the review leaves out although it can run (a month reviewed as its summary); null when nothing. */
+  scopeNote: string | null;
   /** Carries `accountArchived`, so `availabilityReason(availability)` words the fix route for an archived account. */
   availability: AiAvailability & { accountArchived: boolean };
   estimate: AiEstimateModel | null;
@@ -214,7 +217,7 @@ function resolvePeriod(kind: PeriodicKind, accountId: string, period: string | n
 type Owner = Awaited<ReturnType<typeof ownedWeeklyAccount>>;
 
 /** The owned account and the trades the review would cover now (or why it cannot run for this period). */
-async function periodScope(kind: PeriodicKind, accountId: string, period: ResolvedPeriod): Promise<{ owner: Owner; trades: number | null; scopeError: string | null }> {
+async function periodScope(kind: PeriodicKind, accountId: string, period: ResolvedPeriod): Promise<{ owner: Owner; trades: number | null; scopeError: string | null; scopeNote?: string | null }> {
   if (kind === "weekly") {
     const owner = await ownedWeeklyAccount(accountId);
     try {
@@ -235,7 +238,8 @@ async function periodScope(kind: PeriodicKind, accountId: string, period: Resolv
   }
   const owner = await ownedMonthlyAccount(accountId);
   try {
-    return { owner, trades: (await loadMonthlyFacts(owner, period.payload.month)).sample.count, scopeError: null };
+    const facts = await loadMonthlyFacts(owner, period.payload.month);
+    return { owner, trades: facts.sample.count, scopeError: null, scopeNote: monthlySummaryNotice(facts) };
   } catch (error) {
     unstable_rethrow(error);
     return { owner, trades: null, scopeError: error instanceof MonthlyScopeError ? error.message : UNAVAILABLE_SOURCE };
@@ -293,7 +297,7 @@ async function accountProfile(accountId: string, fallback: string): Promise<{ na
 export async function loadPeriodicAi(kind: PeriodicKind, accountId: string, period: string | number): Promise<PeriodicAiData> {
   const resolved = resolvePeriod(kind, accountId, period);
   const operation = PERIODIC[kind].operation;
-  const { owner, trades, scopeError } = await periodScope(kind, accountId, resolved);
+  const { owner, trades, scopeError, scopeNote = null } = await periodScope(kind, accountId, resolved);
   const [availability, history, profile] = await Promise.all([
     accountAiAvailability(owner.account.id, operation),
     periodHistory(kind, owner, resolved).then(
@@ -307,7 +311,7 @@ export async function loadPeriodicAi(kind: PeriodicKind, accountId: string, peri
   ]);
   return {
     kind, operation, accountId: owner.account.id, accountName: profile.name, accountArchived: profile.archived, periodLabel: resolved.periodLabel, scopeLabel: resolved.scopeLabel,
-    runLabel: resolved.runLabel, payload: resolved.payload, trades, scopeError, availability: { ...availability, accountArchived: profile.archived },
+    runLabel: resolved.runLabel, payload: resolved.payload, trades, scopeError, scopeNote, availability: { ...availability, accountArchived: profile.archived },
     estimate: estimateModel(aiCostEstimate(operation)),
     history: history.rows, error: history.error,
   };

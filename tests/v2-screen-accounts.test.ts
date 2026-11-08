@@ -68,7 +68,7 @@ import {
   ACTIVE_ACCOUNTS_HEADING, ARCHIVE_COPY, ARCHIVED_DASHBOARD_COPY, ARCHIVED_VALUES_COPY, accountDashboardHref, CONFIRM_UNCHANGED, EXTERNAL_LOSS_HELPER,
   EXTERNAL_LOSSES_TITLE, IMMEDIATE_OPTION_COPY, manageHref, MANUAL_CONNECTION_COPY, parseManageTab, R_UNITS_NOTE, tickValueNote, UPDATE_VALUES, VERSIONING_COPY,
 } from "@/components/accounts/copy";
-import { CreateAccountForm, DEFAULT_PLAN_NOTE } from "@/components/accounts/create-account-form";
+import { CreateAccountForm, DEFAULT_PLAN_NOTE, focusAfterCreated } from "@/components/accounts/create-account-form";
 import { focusElement, restoreFocusAfterDialog, restoreFocusWhenGone } from "@/components/accounts/focus";
 import { type InstrumentDraft, InstrumentForm, instrumentDraftKey } from "@/components/accounts/manage-instrument-form";
 import { ManageView, type ManageViewProps } from "@/components/accounts/manage-view";
@@ -1185,7 +1185,8 @@ describe("Manage account", () => {
     expectClean(markup);
     expect(text).toContain("EURUSD Long · 0.5");
     expect(text).toContain("Entry 1.08512 · Oct 22, 08:00");
-    expect(text).toContain("EURUSD Long · locked Oct 22, 07:50 · entry 1.08500 · suggested");
+    // The plan's instrument and direction are the execution's own; its lock time and entry tell plans apart.
+    expect(text).toContain("Locked Oct 22, 07:50 · entry 1.08500 · suggested");
     expect(text).toContain("Link");
     expect(count(text, "Unlink")).toBe(1);
     expect(text).toContain("Imported trade");
@@ -1335,6 +1336,51 @@ describe("form helpers", () => {
       runFrames(200);
       expect(title.focus).not.toHaveBeenCalled();
       expect(frames).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("hands focus to the new screen once Today's onboarding form has left the page with it (§13.5)", () => {
+    const frames: FrameRequestCallback[] = [];
+    const body = { isConnected: true };
+    const heading = (name: string) => {
+      const element = {
+        name, isConnected: true, tabIndex: -1, hasAttribute: () => false, setAttribute: vi.fn(),
+        focus: vi.fn(() => {
+          doc.activeElement = element;
+        }),
+      };
+      return element;
+    };
+    const status = heading("today-status-title");
+    const title = heading("main h1");
+    const ids = new Map<string, unknown>([["today-status-title", status]]);
+    const doc = { activeElement: null as unknown, body, getElementById: (id: string) => ids.get(id) ?? null, querySelector: (selector: string) => (selector === "main h1" ? title : null) };
+    vi.stubGlobal("window", { requestAnimationFrame: (callback: FrameRequestCallback) => frames.push(callback) });
+    vi.stubGlobal("document", doc);
+    const runFrames = (n: number) => {
+      for (let index = 0; index < n; index += 1) frames.shift()?.(0);
+    };
+    try {
+      // The account was created; the refresh has not replaced the onboarding yet, and its button keeps focus.
+      const form = { isConnected: true };
+      doc.activeElement = { isConnected: true };
+      focusAfterCreated(form as unknown as Element, "today-status-title");
+      runFrames(10);
+      expect(status.focus).not.toHaveBeenCalled();
+      // The normal Today arrives without the form; the browser left focus on the body: the trading status takes it.
+      form.isConnected = false;
+      doc.activeElement = body;
+      runFrames(1);
+      expect(status.focus).toHaveBeenCalledTimes(1);
+      expect(frames).toHaveLength(0);
+      // Without that heading on the new screen, the page's own heading takes focus.
+      ids.clear();
+      doc.activeElement = body;
+      focusAfterCreated(null, "today-status-title");
+      runFrames(1);
+      expect(title.focus).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }

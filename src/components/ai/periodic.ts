@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { PERIODIC_V2_LIMITS } from "@/ai/periodic-limits";
 import type { PeriodicFacts } from "@/domain/ai-summary";
 import { formatR, plural } from "@/domain/format";
 import { sampleCaveat } from "@/domain/performance";
@@ -20,13 +21,33 @@ function netRText(value: unknown): string | null {
   return null;
 }
 
+/**
+ * The stored facts of a periodic review as its card states them. `summary`: a month reviewed as its deterministic
+ * summary (V1 and V2 facts, `mode: "DETERMINISTIC SUMMARY"`), whose plans, journal entries and tags were not sent.
+ */
+export type StoredPeriodicFacts = PeriodicFacts & { summary?: true };
+
+/** What a monthly review sent as its summary left out, said on its card (the facts said it to the model). */
+export const MONTHLY_SUMMARY_NOTE = "Summary review: every trade counts in the results and metrics, but plans, journal entries and tags were not sent.";
+
+/**
+ * What a month that will be reviewed as its deterministic summary leaves out, said before the review runs: every trade
+ * counts in the results and metrics, but no plan, journal entry, event or tag is sent. Null for a detailed month.
+ */
+export function monthlySummaryNotice(facts: { mode?: unknown; sample: { count: number } }): string | null {
+  if (facts.mode !== "DETERMINISTIC SUMMARY") return null;
+  const { detailedTrades, detailedRecords } = PERIODIC_V2_LIMITS.MONTHLY_REVIEW;
+  return `This month is larger than one detailed review (at most ${detailedTrades} trades and ${detailedRecords} journal entries and events, when they fit), so it is reviewed as a summary: all ${plural(facts.sample.count, "trade")} count in the results and metrics, but plans, journal entries and tags are not sent.`;
+}
+
 /** Sample size and net R of stored weekly (`sample.count`), recent (`sample.actual`) or monthly facts; null when unreadable. */
-export function storedPeriodicFacts(facts: unknown): PeriodicFacts | null {
+export function storedPeriodicFacts(facts: unknown): StoredPeriodicFacts | null {
   if (!isRecord(facts) || !isRecord(facts.sample)) return null;
   const { sample } = facts;
   const trades = typeof sample.count === "number" ? sample.count : typeof sample.actual === "number" ? sample.actual : null;
   if (trades === null || !Number.isSafeInteger(trades) || trades < 0) return null;
-  return { trades, netR: isRecord(facts.edge) ? netRText(facts.edge.netR) : null };
+  const stored: StoredPeriodicFacts = { trades, netR: isRecord(facts.edge) ? netRText(facts.edge.netR) : null };
+  return facts.mode === "DETERMINISTIC SUMMARY" ? { ...stored, summary: true } : stored;
 }
 
 /**
@@ -66,9 +87,13 @@ export function periodicRunningBlock(
   return running.sample === running.selected ? periodicRunningReason(kind, runLabel) : recentRunningElsewhereReason(running.sample);
 }
 
-/** "From Trading OS" strip: `Sample 8 trades · Net R +3.40R` with the small-sample caveat (§13.8). */
-export function periodicFactModels(facts: PeriodicFacts): { facts: AiFactModel[]; note: string } {
+/**
+ * "From Trading OS" strip: `Sample 8 trades · Net R +3.40R` with the small-sample caveat (§13.8), and for a month
+ * reviewed as its summary, what the review did not see.
+ */
+export function periodicFactModels(facts: StoredPeriodicFacts): { facts: AiFactModel[]; note: string } {
   const list: AiFactModel[] = [{ label: "Sample", value: plural(facts.trades, "trade") }];
   if (facts.netR !== null && facts.trades > 0) list.push({ label: "Net R", value: formatR(facts.netR) });
-  return { facts: list, note: sampleCaveat(facts.trades) };
+  const caveat = sampleCaveat(facts.trades);
+  return { facts: list, note: facts.summary ? `${caveat} ${MONTHLY_SUMMARY_NOTE}` : caveat };
 }

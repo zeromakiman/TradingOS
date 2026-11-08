@@ -46,6 +46,7 @@ import { RiskPreview } from "@/components/trade/forms/risk-preview";
 import type { FormAccount } from "@/components/trade/forms/types";
 import { TradeHeader } from "@/components/trade/trade-header";
 import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { FilterChips } from "@/components/ui/filter-chips";
 import { PageHeader, SectionHeader } from "@/components/ui/page-header";
 import type { TradeDetail } from "@/lib/trades-data";
 
@@ -118,6 +119,15 @@ describe("100-character account names without spaces where a name is printed who
     const match = new RegExp(`<\\w+\\s[^>]*class="([^"]*)"[^>]*>${escapeRegExp(text)}`).exec(html);
     return match ? match[1].split(/\s+/) : [];
   }
+  /** The built stylesheet's rules: the declarations of the first rule whose whole selector is `selector`. */
+  async function stylesheetRules(): Promise<(selector: string) => string> {
+    const css = (await stylesheetFor([])).replace(/\s+/g, " ");
+    return selector => {
+      const start = css.search(new RegExp(`(?:^|[};]) ?${escapeRegExp(selector)} \\{`));
+      const open = css.indexOf("{", start + 1);
+      return start < 0 ? "" : css.slice(open + 1, css.indexOf("}", open));
+    };
+  }
   /** `wrap-anywhere` builds `overflow-wrap: anywhere`: a word wider than its line breaks, and (unlike `break-word`) it
    * no longer sets the element's smallest width, so a flex item or an inline-flex link can shrink below the name. */
   async function expectWrapAnywhere(classes: readonly string[]) {
@@ -167,6 +177,31 @@ describe("100-character account names without spaces where a name is printed who
     } as unknown as FormAccount;
     const html = renderToStaticMarkup(createElement(RiskPreview, { preview: { kind: "no-account" }, account, now: "2026-10-23T14:00:00Z" }));
     await expectWrapAnywhere(classesOf(html, NO_SPACES));
+  });
+
+  it("wraps a filter chip's label (the Journal's and EDGE's account filter) inside the chip instead of widening the page", async () => {
+    // `?account=all&accountFilter=<id>` shows "Account: <name>" as a removable chip on the Journal and EDGE; with a
+    // 100-character name without spaces it made a 393 px phone 320 px wider. Every chip (src/components/ui/filter-chips,
+    // the Journal's and EDGE's filter rows, the custom tags) is a `.chip` whose label is its first `<span>`.
+    const label = `Account: ${NO_SPACES}`;
+    const html = renderToStaticMarkup(createElement(FilterChips, { chips: [{ key: "account", label, removeHref: "/journal?account=all" }] }));
+    expect(html).toContain(`<li class="chip"><span>${label}</span><a class="chip-remove"`);
+    const rule = await stylesheetRules();
+    // The chip keeps to its row's width, and its label can break anywhere (min-width 0: a flex item never gets narrower
+    // than its content otherwise); the remove button keeps its size.
+    expect(rule(".chip")).toMatch(/max-width: 100%;/);
+    expect(rule(".chip > span")).toMatch(/min-width: 0;/);
+    expect(rule(".chip > span")).toMatch(/overflow-wrap: anywhere;/);
+    expect(rule(".chip-remove")).toMatch(/flex: none;/);
+  });
+
+  it("keeps the header selector's label on one line beside a long account name", async () => {
+    // From 1280 px "Trading Account:" shows beside the name; a long name truncates, and the label no longer breaks into
+    // "Trading / Account:".
+    const rule = await stylesheetRules();
+    expect(rule(".account-trigger-label")).toMatch(/flex: none;/);
+    expect(rule(".account-trigger-label")).toMatch(/white-space: nowrap;/);
+    expect(rule(".account-trigger-value")).toMatch(/text-overflow: ellipsis;/);
   });
 
   it("wraps the name in Settings' AI cards and list of trading accounts instead of widening the page", async () => {

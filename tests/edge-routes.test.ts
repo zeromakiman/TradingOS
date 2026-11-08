@@ -106,7 +106,8 @@ describe("EDGE CSV: authentication and failure boundaries", () => {
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     expect(text.split("\r\n")).toHaveLength(1);
     expect(text.startsWith("instrument,entry_model,direction,status,")).toBe(true);
-    expect(m.tables).toEqual(["accounts", "account_profiles", "trade_ledger"]);
+    // All Accounts reads the ledger one account at a time (`loadLedgerRows`), so the read lists the accounts first.
+    expect(m.tables).toEqual(["accounts", "account_profiles", "accounts", "trade_ledger"]);
   });
 
   it("refuses an account that is not one of the user's (404) and never falls back to another account", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionSyncProvider, ExternalPosition, IngestDecision, IngestOutcome, SyncCandidate, SyncConnection, SyncStore } from "@/domain/sync/contract";
+import { type ExecutionSyncProvider, type ExternalPosition, type IngestDecision, type IngestOutcome, IngestRefused, type SyncCandidate, type SyncConnection, type SyncStore } from "@/domain/sync/contract";
 import { MATCH_WINDOW_MINUTES, type MatchablePosition, matchExecution } from "@/domain/sync/match";
 import { MOCK_POSITIONS, MockSyncProvider } from "@/domain/sync/mock-provider";
 import { canonicalInstant, normalizeExternalPosition, normalizeSymbol, positionHash } from "@/domain/sync/normalize";
@@ -176,6 +176,8 @@ function closesOpenPosition(stored: ExternalPosition, next: ExternalPosition): b
 class MemoryStore implements SyncStore {
   readonly stored = new Map<string, ExternalPosition>();
   readonly ingested: { externalId: string; decision: IngestDecision }[] = [];
+  /** An archived account: ingest_external_execution refuses a new imported trade (ACCOUNT_ARCHIVED) and stores nothing. */
+  archived = false;
   constructor(private readonly candidates: SyncCandidate[] = [], private readonly failOn: string | null = null) {}
 
   async listCandidates(): Promise<readonly SyncCandidate[]> {
@@ -185,6 +187,7 @@ class MemoryStore implements SyncStore {
   async ingest(position: ExternalPosition, decision: IngestDecision): Promise<IngestOutcome> {
     if (position.externalId === this.failOn) throw new Error("database password=secret unavailable");
     const existing = this.stored.get(position.externalId);
+    if (!existing && this.archived && decision.kind === "CREATE") throw new IngestRefused("ACCOUNT_ARCHIVED");
     if (existing) {
       if (existing.payloadHash === position.payloadHash) return "UNCHANGED";
       if (!closesOpenPosition(existing, position)) return "CHANGED";
@@ -326,6 +329,42 @@ describe("runSync", () => {
     const report = await runSync(previous, new MockSyncProvider(), store);
     expect(report).toMatchObject({ status: "ERROR", message: "Sync stopped before finishing. Positions already imported are kept; run the sync again to continue.", created: 2, syncedThrough: "2026-09-01T00:00:00.000000Z" });
     expect(JSON.stringify(report)).not.toContain("secret");
+  });
+
+  it("defers new positions an archived account refuses, keeps syncing the rest and keeps syncedThrough", async () => {
+    const store = new MemoryStore([plannedMatch]);
+    // A gold position no plan matches: imported while the account is active.
+    const gold = { ...raw, externalId: "MOCK-X", symbol: "XAUUSD", entryPrice: "2650.1", exitPrice: "2655.1" };
+    const first = await runSync(connection, new FixedProvider([{ ...gold, exitPrice: null, exitedAt: null, realizedPnl: null }]), store);
+    expect(first).toMatchObject({ created: 1, syncedThrough: "2026-09-15T07:05:00.000000Z" });
+    store.archived = true;
+    const synced = { ...connection, syncedThrough: first.syncedThrough };
+    // MOCK-0 (new, entered first) is refused before the close of MOCK-X and the automatic link of MOCK-1001.
+    const batch = [{ ...raw, externalId: "MOCK-0", enteredAt: "2026-09-15T06:00:00Z", exitedAt: "2026-09-15T06:30:00Z" }, gold, MOCK_POSITIONS[0], MOCK_POSITIONS[2]];
+    const archived = await runSync(synced, new FixedProvider(batch), store);
+    expect(archived).toMatchObject({ status: "SYNCED", created: 0, linked: 1, closed: 1, rejected: [], syncedThrough: "2026-09-15T07:05:00.000000Z" });
+    expect(archived.deferred).toEqual([
+      { externalId: "MOCK-0", reason: "This trading account is archived, so the position was not imported. Restore the account and sync again to import it." },
+      { externalId: "MOCK-1003", reason: "This trading account is archived, so the position was not imported. Restore the account and sync again to import it." },
+    ]);
+    expect(archived.decisions.map(d => [d.externalId, d.outcome])).toEqual([["MOCK-1001", "LINKED"], ["MOCK-X", "CLOSED"]]);
+    expect(archived.message).toBe(
+      "Sync complete: 0 imported, 1 linked, 0 awaiting your confirmation, 1 closed. 2 new positions were not imported because this trading account is archived; restore it and sync again to import them.",
+    );
+    expect(store.stored.has("MOCK-0")).toBe(false);
+    // Restored: the same cursor fetches them again; what was ingested is a no-op now, and the cursor moves on.
+    store.archived = false;
+    const restored = await runSync(synced, new FixedProvider(batch), store);
+    expect(restored).toMatchObject({ status: "SYNCED", created: 2, unchanged: 2, deferred: [], syncedThrough: "2026-09-16T14:05:00.000000Z" });
+    expect(restored.message).toBe("Sync complete: 2 imported, 0 linked, 0 awaiting your confirmation.");
+  });
+
+  it("stops on any other store failure, also after a deferred position", async () => {
+    const store = new MemoryStore([], "MOCK-1003");
+    store.archived = true;
+    const report = await runSync(connection, new MockSyncProvider(), store);
+    expect(report).toMatchObject({ status: "ERROR", message: "Sync stopped before finishing. Positions already imported are kept; run the sync again to continue.", syncedThrough: null });
+    expect(report.deferred.map(d => d.externalId)).toEqual(["MOCK-1001", "MOCK-1002"]);
   });
 
   it("asks the provider only for positions after syncedThrough", async () => {

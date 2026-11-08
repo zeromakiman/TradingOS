@@ -1,12 +1,18 @@
 import { compareInstants, type Instant, instantMicros } from "../time-display";
-import type { ExecutionSyncProvider, ExternalPosition, IngestDecision, IngestOutcome, MatchResult, SyncConnection, SyncReport, SyncStore } from "./contract";
+import {
+  type ExecutionSyncProvider, type ExternalPosition, type IngestDecision, type IngestOutcome, IngestRefused, type MatchResult, type SyncConnection, type SyncReport,
+  type SyncStore,
+} from "./contract";
 import { matchExecution } from "./match";
 import { instantFromMicros, normalizeExternalPosition } from "./normalize";
 
 /**
  * Sync orchestration: fetch → validate → de-duplicate → match → ingest, in a deterministic
  * order (entry time, then external id). Ingest is idempotent on the server, so a failed run
- * can simply be repeated; `syncedThrough` only advances after a complete batch.
+ * can simply be repeated; `syncedThrough` only advances after a complete batch. A position the
+ * account refuses for now (`IngestRefused`: it is archived) does not stop the batch: the other
+ * positions are ingested, the refused one is reported in `deferred`, and `syncedThrough` stays
+ * where it was so that the next sync, after a restore, fetches it again.
  */
 
 const MESSAGES = {
@@ -16,6 +22,7 @@ const MESSAGES = {
   storeFailed: "Sync stopped before finishing. Positions already imported are kept; run the sync again to continue.",
   conflict: "The platform reported conflicting data for the same position in one sync; the first version was kept.",
   currency: "The position currency does not match the trading account.",
+  archived: "This trading account is archived, so the position was not imported. Restore the account and sync again to import it.",
 } as const;
 
 export function decisionFor(match: MatchResult): IngestDecision {
@@ -26,7 +33,7 @@ export function decisionFor(match: MatchResult): IngestDecision {
 function emptyReport(connection: SyncConnection, status: SyncReport["status"], message: string): SyncReport {
   return {
     connectionId: connection.id, status, message, fetched: 0, created: 0, linked: 0, held: 0, unchanged: 0, closed: 0, changed: 0,
-    duplicates: 0, rejected: [], decisions: [], syncedThrough: connection.syncedThrough,
+    duplicates: 0, rejected: [], deferred: [], decisions: [], syncedThrough: connection.syncedThrough,
   };
 }
 
@@ -34,7 +41,10 @@ function summary(report: SyncReport): string {
   const parts = [`${report.created} imported`, `${report.linked} linked`, `${report.held} awaiting your confirmation`];
   if (report.closed) parts.push(`${report.closed} closed`);
   if (report.rejected.length) parts.push(`${report.rejected.length} rejected`);
-  return `Sync complete: ${parts.join(", ")}.`;
+  const deferred = report.deferred.length
+    ? ` ${report.deferred.length === 1 ? "1 new position was" : `${report.deferred.length} new positions were`} not imported because this trading account is archived; restore it and sync again to import ${report.deferred.length === 1 ? "it" : "them"}.`
+    : "";
+  return `Sync complete: ${parts.join(", ")}.${deferred}`;
 }
 
 function countOutcome(report: SyncReport, outcome: IngestOutcome): void {
@@ -103,12 +113,18 @@ export async function runSync(connection: SyncConnection, provider: ExecutionSyn
       if (outcome === "LINKED" && decision.kind === "LINK") linkedInRun.add(decision.tradeId);
       report.decisions.push({ externalId: position.externalId, decision, outcome });
       countOutcome(report, outcome);
-    } catch {
+    } catch (error) {
+      if (error instanceof IngestRefused) {
+        report.deferred.push({ externalId: position.externalId, reason: MESSAGES.archived });
+        continue;
+      }
       return { ...report, status: "ERROR", message: MESSAGES.storeFailed, syncedThrough: connection.syncedThrough };
     }
     const positionLatest = instantMicros(position.exitedAt ?? position.enteredAt);
     if (latest === null || positionLatest > latest) latest = positionLatest;
   }
 
-  return { ...report, message: summary(report), syncedThrough: latest === null ? null : instantFromMicros(latest) };
+  // A deferred position must be fetched again: the cursor stays, and the positions ingested now are no-ops next time.
+  const syncedThrough = report.deferred.length ? connection.syncedThrough : latest === null ? null : instantFromMicros(latest);
+  return { ...report, message: summary(report), syncedThrough };
 }

@@ -1584,6 +1584,46 @@ begin
  return v.id;
 end $$;
 
+-- §3.2 item 4 for the V1 Today's-notes entry point that stays granted (§10.4): a notes revision is a new record of
+-- the account, which an archived account refuses (Today offers no notes form for it). Otherwise the 0001 body,
+-- verbatim: every save is a new revision (no request key). The account row lock is the one archive and restore take.
+-- create or replace keeps the OID and grants.
+create or replace function public.save_daily_context(p_account_id uuid,p_narrative text) returns uuid language plpgsql security definer set search_path = '' as $$
+declare a public.accounts; v_id uuid;
+begin
+  select * into a from public.accounts where id=p_account_id and user_id=auth.uid() for update;
+  if not found then raise exception 'Account not found'; end if;
+  perform private.require_active_account(a.id);
+  insert into public.daily_contexts(user_id,account_id,trading_day,narrative) values(a.user_id,a.id,private.strategy_day(clock_timestamp()),p_narrative) returning id into v_id;
+  return v_id;
+end $$;
+
+-- §3.2 item 4 and §11.2 for the V1 AI-settings entry point that stays granted (§10.4): an archived account's AI
+-- settings change only after it is restored, with one exception: AI can always be turned off. Turning AI off withdraws
+-- the data-sharing consent and stops the account's AI spending (an archived account with AI on can still run AI, §11),
+-- and V1 never blocked it ("Disabling remains available even when the deployment is unavailable", AI_BUDGET_REVIEW).
+-- So on an archived account only the change from on to off with the limit unchanged is written; turning AI on or a new
+-- monthly limit raises ACCOUNT_ARCHIVED. A call that changes nothing still returns without writing, as before. Otherwise
+-- the 0008 body: the same errors and events (the unchanged-call return moved before the checks, which it always passed:
+-- the stored limit is within EUR 1 to 100, and an unchanged call never turns AI on). The account row lock is the one
+-- archive and restore take, so the check never races them. create or replace keeps the OID and grants.
+create or replace function public.set_account_ai_preferences(p_account_id uuid,p_enabled boolean,p_budget_cents integer,p_confirm boolean default false)
+returns void language plpgsql security definer set search_path='' as $$
+declare old_enabled boolean; old_budget integer;
+begin
+ perform 1 from public.accounts where id=p_account_id and user_id=auth.uid() for update;
+ if not found then raise exception 'Account not found'; end if;
+ select enabled,budget_cents into old_enabled,old_budget from public.ai_preference_events where account_id=p_account_id order by id desc limit 1;
+ old_enabled:=coalesce(old_enabled,false); old_budget:=coalesce(old_budget,500);
+ p_enabled:=coalesce(p_enabled,old_enabled); p_budget_cents:=coalesce(p_budget_cents,old_budget);
+ if old_enabled=p_enabled and old_budget=p_budget_cents then return; end if;
+ if p_enabled or p_budget_cents is distinct from old_budget then perform private.require_active_account(p_account_id); end if;
+ if p_budget_cents not between 100 and 10000 then raise exception 'Budget must be EUR 1 to 100'; end if;
+ if p_enabled and not old_enabled and p_confirm is distinct from true then raise exception 'Explicit AI disclosure confirmation required'; end if;
+ insert into public.ai_preference_events(user_id,account_id,previous_enabled,enabled,previous_budget_cents,budget_cents,consent_version)
+ values(auth.uid(),p_account_id,old_enabled,p_enabled,old_budget,p_budget_cents,case when p_enabled then 'AI_DISCLOSURE_V1' else null end);
+end $$;
+
 -- Free deterministic check of the latest revision. Returns the V1 check envelope plus tradeId.
 create function public.check_trade_risk(p_trade_id uuid) returns jsonb
 language plpgsql security definer set search_path = '' as $$

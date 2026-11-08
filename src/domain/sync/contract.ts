@@ -86,7 +86,24 @@ export type IngestOutcome = "CREATED" | "LINKED" | "HELD" | "UNCHANGED" | "CLOSE
 
 export interface SyncStore {
   listCandidates(position: ExternalPosition): Promise<readonly SyncCandidate[]>;
+  /** Throws `IngestRefused` when the account takes no new position for now; any other error stops the run. */
   ingest(position: ExternalPosition, decision: IngestDecision): Promise<IngestOutcome>;
+}
+
+/** Why a store refused one position while the rest of the batch stays valid. */
+export type IngestRefusal = "ACCOUNT_ARCHIVED";
+
+/**
+ * A store's refusal of one new position that the account cannot take now (an archived account takes no new imported
+ * trade). Nothing of that position was stored. `runSync` reports it in `deferred`, keeps ingesting the other positions
+ * (closes of positions already imported, links, holds) and keeps `syncedThrough`, so the next sync after a restore
+ * fetches the position again.
+ */
+export class IngestRefused extends Error {
+  constructor(readonly refusal: IngestRefusal) {
+    super(refusal);
+    this.name = "IngestRefused";
+  }
 }
 
 export interface SyncDecisionRecord {
@@ -117,7 +134,9 @@ export interface SyncReport {
   /** Identical repeats of a position within one fetch. */
   duplicates: number;
   rejected: SyncRejection[];
+  /** New positions the account refused for now (it is archived); fetched again by the next sync. */
+  deferred: SyncRejection[];
   decisions: SyncDecisionRecord[];
-  /** Advances only when the whole batch was processed. */
+  /** Advances only when the whole batch was processed and nothing was deferred. */
   syncedThrough: string | null;
 }

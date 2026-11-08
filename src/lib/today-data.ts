@@ -1,7 +1,7 @@
 import "server-only";
 import Decimal from "decimal.js";
 import { z } from "zod";
-import type { LedgerTrade, Lifecycle } from "@/domain/ledger";
+import type { LedgerTrade } from "@/domain/ledger";
 import { type DayResult, dayResult, isClosed } from "@/domain/performance";
 import type { DailyUsage } from "@/domain/risk";
 import { nextBoundary, type Session, type SessionBoundary, strategyClock } from "@/domain/session";
@@ -9,7 +9,10 @@ import { compareInstants, strategyDay, strategyDayLabel } from "@/domain/time-di
 import type { JournalKind } from "@/domain/timeline";
 import { type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext } from "./account-context";
 import { loadLedgerRows } from "./performance-data";
-import { decorateTrades, inBatches, ledgerSelect, parseLedger, type TradeListRow, type TradeScope } from "./trades-data";
+import {
+  ACCOUNT_READ_CONCURRENCY, accountScopes, decorateTrades, inBatches, ledgerSelect, mapLimited, newestCreatedFirst, openLedgerRows, parseLedger, type TradeListRow,
+  type TradeScope,
+} from "./trades-data";
 import { type AccountWorkspace, getWorkspace, loadDailyUsage } from "./workspace";
 
 /**
@@ -282,14 +285,42 @@ export interface TodayDeps {
   now: string;
 }
 
-/** Trades of one lifecycle, newest first by creation, at most `limit`; `truncated` when more exist. */
-async function tradesIn(db: Db, scope: TradeScope, lifecycle: Lifecycle, limit: number): Promise<{ trades: LedgerTrade[]; truncated: boolean }> {
-  let query = ledgerSelect(db).eq("lifecycle", lifecycle);
-  if (scope.mode === "account") query = query.eq("account_id", scope.accountId);
-  const { data, error } = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit + 1);
-  if (error) throw new Error("Today's trades are unavailable.");
-  const trades = parseLedger(data);
+/** The first `limit` trades of a newest-first list; `truncated` when more exist. */
+function bounded(trades: readonly LedgerTrade[], limit: number): { trades: LedgerTrade[]; truncated: boolean } {
   return { trades: trades.slice(0, limit), truncated: trades.length > limit };
+}
+
+/**
+ * Drafts, newest first by creation, at most `limit`; `truncated` when more exist. Every draft is a planned trade without
+ * a locked plan, so the read names the ledger's plain `origin` and `plan_id` columns next to `lifecycle`: PostgreSQL then
+ * skips every other trade before it derives lifecycles (about 20 ms instead of 1.2 s per account of 15,000 trades), and
+ * the result is the same. All Accounts reads each account on its own (`accountScopes`) and merges.
+ */
+async function draftsIn(db: Db, scope: TradeScope, accounts: readonly ContextAccount[], limit: number): Promise<{ trades: LedgerTrade[]; truncated: boolean }> {
+  const reads = await mapLimited(accountScopes(scope, accounts), ACCOUNT_READ_CONCURRENCY, async reads => {
+    let query = ledgerSelect(db).eq("lifecycle", "DRAFT").eq("origin", "PLANNED").is("plan_id", null);
+    if (reads.mode === "account") query = query.eq("account_id", reads.accountId);
+    const { data, error } = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit + 1);
+    if (error) throw new Error("Today's trades are unavailable.");
+    return parseLedger(data);
+  });
+  return bounded(reads.flat().sort(newestCreatedFirst), limit);
+}
+
+/**
+ * Live trades and locked plans waiting for entry, newest first by creation: the ledger rows of the context's open trades
+ * (`openLedgerRows`, found through the base tables' keys), so neither list costs a pass over every trade of the context.
+ */
+async function openIn(db: Db, userId: string, scope: TradeScope) {
+  try {
+    const open = await openLedgerRows(db, userId, scope, ["LIVE", "LOCKED"]);
+    return {
+      live: bounded(open.filter(trade => trade.lifecycle === "LIVE"), TODAY_LIVE_LIMIT),
+      locked: bounded(open.filter(trade => trade.lifecycle === "LOCKED"), TODAY_WAITING_LIMIT),
+    };
+  } catch {
+    throw new Error("Today's trades are unavailable.");
+  }
 }
 
 export async function loadToday(deps: TodayDeps): Promise<TodayData> {
@@ -297,10 +328,9 @@ export async function loadToday(deps: TodayDeps): Promise<TodayData> {
   const clock = strategyClock(now);
   const day = clock.day;
   const scope: TradeScope = context.selected.mode === "account" ? { mode: "account", accountId: context.selected.account.id } : { mode: "all" };
-  const [live, locked, drafts, closed, dailyContext] = await Promise.all([
-    tradesIn(db, scope, "LIVE", TODAY_LIVE_LIMIT),
-    tradesIn(db, scope, "LOCKED", TODAY_WAITING_LIMIT),
-    tradesIn(db, scope, "DRAFT", TODAY_WAITING_LIMIT),
+  const [{ live, locked }, drafts, closed, dailyContext] = await Promise.all([
+    openIn(db, userId, scope),
+    draftsIn(db, scope, context.accounts, TODAY_WAITING_LIMIT),
     // Every exit of the strategy day: today's result must never be computed from part of the day.
     loadLedgerRows(db, userId, scope, { closedFrom: day, closedTo: day }, { closedOnly: true }),
     scope.mode === "account"

@@ -13,7 +13,8 @@ import { type ActionState, actionError, actionSuccess, FAILED_COPY, formOptional
  * `details?` (JSON object), `requestKey` → `data: { id }`. Phase and the lifecycle at creation are computed by the
  * database from server-side facts, never from the client. A retry with the same `requestKey` returns the same entry.
  * Stop, target and partial-close entries are taken only while the trade is live: the database decides from its own
- * facts (ENTRY_NOT_LIVE), so a page that still shows a closed trade as live gets the sentence below.
+ * facts (ENTRY_NOT_LIVE), so a page that still shows a closed trade as live gets the sentence below. Nothing is managed
+ * after the close, also on a trade recorded after the fact or imported closed: what was done is a Decision or a Note.
  */
 
 const D = Decimal.clone({ precision: 60 });
@@ -36,7 +37,7 @@ const COPY = {
 /** Copy of the database's own refusals; ENTRY_NOT_LIVE is the composer's `JOURNAL_COPY.notLive`. */
 const RPC_COPY = {
   INVALID_INPUT: "The entry was not accepted. Prices must match the instrument's tick size.",
-  ENTRY_NOT_LIVE: "Stop, target and partial-close entries can only be recorded while the trade is live.",
+  ENTRY_NOT_LIVE: "Stop, target and partial-close entries can only be recorded while the trade is live. To keep what happened, write it as a Decision or a Note.",
 } as const;
 
 type Details = Record<string, string>;

@@ -1,4 +1,5 @@
 import "server-only";
+import { z } from "zod";
 import type { Lifecycle, LedgerTrade } from "@/domain/ledger";
 import {
   type AccountContribution, accountContribution, type BreakdownGroup, type BreakdownKey, breakdown, type CalendarDay, type CalendarMode, type CalendarMonth,
@@ -8,8 +9,8 @@ import {
 import { daysInMonth, strategyMonth } from "@/domain/time-display";
 import { ALL_ACCOUNTS_VALUE, type AccountContext, type ContextAccount, type Db } from "./account-context";
 import {
-  applyLedgerFilters, filteredScope, inTradeDateRange, journalHref, ledgerSelect, normalizeFilters, parseLedger, postFilter, resolveAccountFilter,
-  searchSymbol, searchTradeIds, type TradeFilters, type TradeScope,
+  ACCOUNT_READ_CONCURRENCY, accountScopes, applyLedgerFilters, filteredScope, inTradeDateRange, journalHref, ledgerSelect, MAX_ACCOUNT_READS, mapLimited,
+  normalizeFilters, parseLedger, postFilter, resolveAccountFilter, searchSymbol, searchTradeIds, type TradeFilters, type TradeScope,
 } from "./trades-data";
 
 /**
@@ -39,37 +40,148 @@ export interface LoadLedgerOptions {
 }
 
 /**
+ * The scopes one ledger read pages through (`accountScopes`): the account, or in All Accounts each of the user's
+ * accounts as RLS lists them. A keyset page of one account follows the trades' (user, account, id) index and stops after
+ * `limit` rows; a page of the whole scope makes PostgreSQL compute every remaining trade of the user before it can sort
+ * them by id (at 20,000 trades about 2 s per page, so the read grew with the square of the trades, and at 45,000 a page
+ * passed the 8 s statement timeout).
+ */
+async function keysetScopes(db: Db, userId: string, reads: TradeScope): Promise<TradeScope[]> {
+  if (reads.mode === "account") return [reads];
+  const { data, error } = await db.from("accounts").select("id").eq("user_id", userId).order("id", { ascending: true }).limit(MAX_ACCOUNT_READS + 1);
+  if (error) throw new Error("Trades are unavailable.");
+  return accountScopes(reads, z.array(z.object({ id: z.uuid() })).parse(data ?? []));
+}
+
+/** One keyset read in id order within an id range; `rows[next]` is its next unread row. */
+interface KeysetStream {
+  scope: TradeScope;
+  rows: LedgerTrade[];
+  next: number;
+  /** Exclusive lower bound (the last id read, or the range's start). */
+  after: string | null;
+  /** Exclusive upper bound of the range; null: the end of the id space. */
+  before: string | null;
+  done: boolean;
+}
+
+/** Rows of the requested lifecycles read first in one id-ordered pass; the rest of the id space is then read in parallel. */
+const SEQUENTIAL_ROWS = 2_000;
+/** Id ranges the rest of a large read is split into (trade ids are random v4 uuids, so the ranges hold similar shares). */
+const PARALLEL_RANGES = 4;
+const UUID_SPACE = 1n << 128n;
+
+const uuidValue = (id: string) => BigInt(`0x${id.replaceAll("-", "")}`);
+function uuidText(value: bigint): string {
+  const hex = value.toString(16).padStart(32, "0");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** `(after, end of id space)` split into `parts` consecutive ranges, as [exclusive lower, exclusive upper | null]. */
+export function splitIdRange(after: string, parts: number): [string, string | null][] {
+  const start = uuidValue(after) + 1n;
+  const size = UUID_SPACE - start;
+  if (size < BigInt(parts) * 2n) return [[after, null]];
+  const bounds = Array.from({ length: parts - 1 }, (_, index) => start + (size * BigInt(index + 1)) / BigInt(parts));
+  return [after, ...bounds.map(bound => uuidText(bound - 1n))].map((lower, index) => [lower, index < bounds.length ? uuidText(bounds[index]) : null]);
+}
+
+/** At most `max` tasks at once. */
+function limiter(max: number) {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    if (active >= max) await new Promise<void>(resolve => waiting.push(resolve));
+    active += 1;
+    try {
+      return await task();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  };
+}
+
+/**
  * Every ledger row of the scope matching the filters, in id order (keyset pagination by id avoids PostgREST's row cap
  * and shifting offsets). Trade-date range, session, weekday and R bounds are applied to the parsed rows. A read-only
- * account filter narrows an All Accounts scope to that account (`filteredScope`). The read stops once `maxRows` rows
- * are read; it is `truncated` only when another row matches (a scope of exactly `maxRows` trades is read in full).
+ * account filter narrows an All Accounts scope to that account (`filteredScope`). The read keeps the first `maxRows`
+ * rows of the requested lifecycles by id; it is `truncated` only when another such row matches (a scope of exactly
+ * `maxRows` trades is read in full).
+ *
+ * All Accounts merges one keyset stream per account by id (`keysetScopes`). The first SEQUENTIAL_ROWS rows are read in
+ * one pass; a larger scope's remaining id space is split into PARALLEL_RANGES ranges read at the same time (at most
+ * ACCOUNT_READ_CONCURRENCY requests in flight), each up to the rows still needed, and joined in id order. The rows,
+ * their order and `truncated` are those of a single pass (19,900 trades: 1.9 s instead of 5.2 s).
+ *
+ * `lifecycles` is applied to the parsed rows, never sent as a filter: the ledger derives `lifecycle` per row from a
+ * dozen joins, so the planner cannot estimate a filter on it and computes every trade of the scope for each page (at
+ * about 20,000 trades: 0.8 s per page and 27 s per account). Rows of other lifecycles (drafts, waiting, skipped,
+ * cancelled and discarded plans) are read and dropped; they never count toward `maxRows`.
  */
 export async function loadLedgerRows(db: Db, userId: string, scope: TradeScope, raw: TradeFilters, options: LoadLedgerOptions = {}): Promise<LedgerRows> {
   const filters = normalizeFilters(raw);
   const maxRows = options.maxRows ?? MAX_LEDGER_ROWS;
+  const lifecycles = options.lifecycles?.length ? new Set<Lifecycle>(options.lifecycles) : null;
+  const wanted = (trade: LedgerTrade) => lifecycles === null || lifecycles.has(trade.lifecycle);
   const searchIds = filters.q !== undefined ? await searchTradeIds(db, userId, filteredScope(scope, filters), filters.q) : null;
   if (filters.q !== undefined && !searchSymbol(filters.q) && !searchIds?.length) return { rows: [], truncated: false };
-  const page = async (after: string | null, limit: number) => {
-    let query = applyLedgerFilters(ledgerSelect(db), scope, filters, searchIds);
+  const scopes = await keysetScopes(db, userId, filteredScope(scope, filters));
+  const slot = limiter(ACCOUNT_READ_CONCURRENCY);
+  const page = (stream: KeysetStream, limit: number) => slot(async () => {
+    let query = applyLedgerFilters(ledgerSelect(db), stream.scope, filters, searchIds);
     if (options.closedOnly) query = query.not("exited_at", "is", null);
-    if (options.lifecycles?.length) query = query.in("lifecycle", [...options.lifecycles]);
-    if (after !== null) query = query.gt("id", after);
+    if (stream.after !== null) query = query.gt("id", stream.after);
     const { data, error } = await query.order("id", { ascending: true }).limit(limit);
     if (error) throw new Error("Trades are unavailable.");
     return parseLedger(data);
+  });
+  // Reads the next page of an exhausted stream (`limit` rows); a range ends at the first id at or past its upper bound.
+  const fill = async (stream: KeysetStream, limit: number): Promise<void> => {
+    while (stream.next >= stream.rows.length && !stream.done) {
+      const batch = await page(stream, limit);
+      const before = stream.before;
+      const end = before === null ? -1 : batch.findIndex(trade => trade.id >= before);
+      stream.rows = end < 0 ? batch : batch.slice(0, end);
+      stream.next = 0;
+      stream.done = end >= 0 || batch.length < limit;
+      if (stream.rows.length > 0) stream.after = stream.rows[stream.rows.length - 1].id;
+    }
   };
-  const rows: LedgerTrade[] = [];
-  let read = 0;
-  let after: string | null = null;
-  for (;;) {
-    const batch = await page(after, PAGE);
-    read += batch.length;
-    for (const trade of batch) if (inTradeDateRange(trade, filters) && postFilter(trade, filters)) rows.push(trade);
-    if (batch.length < PAGE) return { rows, truncated: false };
-    after = batch[batch.length - 1].id;
-    // At the limit: truncated only if one more row matches.
-    if (read >= maxRows) return { rows, truncated: (await page(after, 1)).length > 0 };
+  /**
+   * The rows of the requested lifecycles in `(after, before)`, in id order, until `cap` are read (`complete` when the
+   * range had no more). One stream per scope, merged by id; with `probe`, the row that proves `truncated` is read with a
+   * one-row page when every lifecycle counts.
+   */
+  const readRange = async (after: string | null, before: string | null, cap: number, probe = true): Promise<{ rows: LedgerTrade[]; complete: boolean; last: string | null }> => {
+    const streams: KeysetStream[] = scopes.map(reads => ({ scope: reads, rows: [], next: 0, after, before, done: false }));
+    const rows: LedgerTrade[] = [];
+    let last: string | null = after;
+    while (rows.length < cap) {
+      const limit = probe && cap - rows.length === 1 && lifecycles === null ? 1 : PAGE;
+      await mapLimited(streams.filter(stream => stream.next >= stream.rows.length && !stream.done), ACCOUNT_READ_CONCURRENCY, stream => fill(stream, limit));
+      let lowest: KeysetStream | null = null;
+      for (const stream of streams) {
+        if (stream.next < stream.rows.length && (lowest === null || stream.rows[stream.next].id < lowest.rows[lowest.next].id)) lowest = stream;
+      }
+      if (lowest === null) return { rows, complete: true, last };
+      const trade = lowest.rows[lowest.next];
+      lowest.next += 1;
+      last = trade.id;
+      if (wanted(trade)) rows.push(trade);
+    }
+    return { rows, complete: false, last };
+  };
+  // One more row than kept proves `truncated`.
+  const needed = maxRows + 1;
+  const first = await readRange(null, null, Math.min(needed, SEQUENTIAL_ROWS), needed <= SEQUENTIAL_ROWS);
+  let read = first.rows;
+  if (!first.complete && read.length < needed && first.last !== null) {
+    const ranges = await Promise.all(splitIdRange(first.last, PARALLEL_RANGES).map(([after, before]) => readRange(after, before, needed - read.length)));
+    read = [...read, ...ranges.flatMap(range => range.rows)];
   }
+  const kept = read.slice(0, maxRows);
+  return { rows: kept.filter(trade => inTradeDateRange(trade, filters) && postFilter(trade, filters)), truncated: read.length > maxRows };
 }
 
 // ---------------------------------------------------------------------------------------------------------

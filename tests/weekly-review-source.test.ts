@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ids, periodicSourcesV2, periodicTables, planId, tradeRecordId } from "./fixtures/periodic-v2";
+import { ids, periodicSourcesV2, periodicTables, planId, tradeRecordId, typicalPeriodicSources } from "./fixtures/periodic-v2";
 import { periodicDb, type PeriodicDbState } from "./helpers/periodic-db";
 
 // WEEKLY_REVIEW_FACTS_V2 loading (src/lib/weekly-review-source.ts): one completed Monday week (fixed UTC−5) of the
@@ -10,7 +10,10 @@ const m = vi.hoisted(() => ({ auth: vi.fn(), state: { rows: {}, queries: [], err
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ requireUser: m.auth }));
 import { operationAllowedSources } from "@/ai/citation-sources";
-import { loadWeeklyFacts, ownedWeeklyAccount, WEEKLY_TOO_LARGE, WeeklyScopeError } from "@/lib/weekly-review-source";
+import { PERIODIC_V2_LIMITS } from "@/ai/periodic-limits";
+import {
+  loadWeeklyFacts, ownedWeeklyAccount, WEEKLY_NEXT_STEP, WEEKLY_TOO_MANY_RECORDS, WEEKLY_TOO_MANY_TRADES, WeeklyScopeError, weeklyTooLarge,
+} from "@/lib/weekly-review-source";
 
 const week = "2026-08-31";
 const WEEK_START = "2026-08-31T05:00:00.000Z";
@@ -130,13 +133,50 @@ describe("bounds refuse, nothing is omitted", () => {
     m.state.rows = periodicTables(sources(21, 0));
     const error = await load().then(() => null, (failure: unknown) => failure);
     expect(error).toBeInstanceOf(WeeklyScopeError);
-    expect((error as Error).message).toMatch(/more than 20 completed trades.*no trades were silently omitted/);
+    expect((error as Error).message).toBe(WEEKLY_TOO_MANY_TRADES);
+    expect(WEEKLY_TOO_MANY_TRADES).toMatch(/more than 20 completed trades, and a weekly review covers at most 20\. Nothing was sent and no trade was left out\./);
     expect(m.state.queries).toHaveLength(2);
   });
 
   it("over 70 journal entries and events is not silently truncated", async () => {
     m.state.rows = periodicTables(sources(3, 24));
-    await expect(load()).rejects.toThrow(/more than 70 journal entries and events.*no record was left out/);
+    await expect(load()).rejects.toThrow(WEEKLY_TOO_MANY_RECORDS);
+    expect(WEEKLY_TOO_MANY_RECORDS).toMatch(/more than 70 journal entries and events, and a weekly review reads at most 70\. Nothing was sent and no record was left out\./);
+  });
+
+  it("every refusal states the bound as a rule of the review, never as what fits, and names what the trader can still do", () => {
+    expect(WEEKLY_NEXT_STEP).toBe("You can still review each of its trades with Review this trade on the trade's page.");
+    expect(weeklyTooLarge(20, 50)).toBe(
+      "This week's 20 trades with 50 journal entries and events hold more text than one weekly review can include; long theses and notes take more room. Nothing was sent and no record was left out. You can still review each of its trades with Review this trade on the trade's page.",
+    );
+    expect(weeklyTooLarge(1, 1)).toContain("This week's 1 trade with 1 journal entry or event hold");
+    for (const copy of [WEEKLY_TOO_MANY_TRADES, WEEKLY_TOO_MANY_RECORDS, weeklyTooLarge(20, 50)]) {
+      expect(copy).toContain("Nothing was sent");
+      expect(copy.endsWith(` ${WEEKLY_NEXT_STEP}`)).toBe(true);
+      // A bound is not a capacity: within 70 records a week of long theses and notes can still be too large.
+      expect(copy).not.toMatch(/the most one review can|more than one review can include|silently/);
+    }
+  });
+
+  it("measured capacity: typically journaled 20-trade weeks fit until the record bound; above it, or above 20 trades, the bound refuses first", async () => {
+    // The seeded traders' journaling (55–110 characters per entry, a thesis of typical length, tags on every trade).
+    const typical = (count: number, records: number) => periodicTables(typicalPeriodicSources(count, records, "2026-09-01T06:00:00.000Z", 300));
+    const { trades, records } = PERIODIC_V2_LIMITS.WEEKLY_REVIEW;
+    for (const perTrade of [1, 2, 3]) {
+      m.state.rows = typical(trades, trades * perTrade);
+      const facts = await load();
+      expect(facts.trades).toHaveLength(trades);
+      expect(facts.trades.reduce((n, trade) => n + (trade.journal?.length ?? 0), 0)).toBe(trades * perTrade);
+    }
+    m.state.rows = typical(trades, records);
+    expect((await load()).trades).toHaveLength(trades);
+    // Four entries per trade would fit the input limit (22.8k of 24k measured on seeded traders) but are above the bound.
+    m.state.rows = typical(trades, trades * 4);
+    await expect(load()).rejects.toThrow(WEEKLY_TOO_MANY_RECORDS);
+    m.state.rows = typical(trades + 1, (trades + 1) * 2);
+    m.state.queries = [];
+    await expect(load()).rejects.toThrow(WEEKLY_TOO_MANY_TRADES);
+    expect(m.state.queries.map(q => q.table)).toEqual(["accounts", "journal_analytics"]);
   });
 
   it("a full week with a note per trade fits; the same week with long journals is refused as a whole before anything is written", async () => {
@@ -148,7 +188,10 @@ describe("bounds refuse, nothing is omitted", () => {
     m.state.rows.trade_tag_sets = m.state.rows.trade_tag_sets.map(row => ({ ...row, tags: Array.from({ length: 12 }, (_, k) => `${k}-${"t".repeat(30)}`) }));
     m.state.rows.trade_plans = m.state.rows.trade_plans.map(row => ({ ...row, proposal: { ...(row.proposal as object), narrative: "Thesis ".repeat(1000) } }));
     m.state.queries = [];
-    await expect(load()).rejects.toThrow(WEEKLY_TOO_LARGE);
+    const records = m.state.rows.trade_journal_entries.length + m.state.rows.trade_events.filter(row => !["PLAN_LOCKED", "TRADE_OPENED", "TRADE_CLOSED"].includes(String(row.event_type))).length;
+    expect(records).toBeLessThanOrEqual(PERIODIC_V2_LIMITS.WEEKLY_REVIEW.records);
+    // The refusal says what the week holds and why it is too much, and what the trader can still do.
+    await expect(load()).rejects.toThrow(weeklyTooLarge(20, records));
     expect(m.state.queries.map(q => q.table)).not.toContain("weekly_ai_reviews");
   });
 });

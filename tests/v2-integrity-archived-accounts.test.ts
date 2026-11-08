@@ -80,7 +80,9 @@ async function activity(accountId: string): Promise<Record<string, number>> {
       (select count(*)::int from public.account_observations where account_id = $1) as observations,
       (select count(*)::int from public.platform_connections where account_id = $1) as connections,
       (select count(*)::int from public.platform_connection_events where account_id = $1) as connection_events,
-      (select count(*)::int from public.external_executions where account_id = $1) as executions`, [accountId]);
+      (select count(*)::int from public.external_executions where account_id = $1) as executions,
+      (select count(*)::int from public.daily_contexts where account_id = $1) as daily_notes,
+      (select count(*)::int from public.ai_preference_events where account_id = $1) as ai_settings`, [accountId]);
   return rows[0];
 }
 
@@ -100,7 +102,39 @@ function newActivity(a: BootstrappedAccount, draft: DraftEnvelope): [string, str
     ["add an external loss", "select public.add_external_loss($1, '10', null, $2)", [a.accountId, randomUUID()]],
     ["record account values", "select public.record_account_values($1, '10000', '10000')", [a.accountId]],
     ["connect a platform", "select public.create_platform_connection($1, 'MOCK', 'Mock platform', $2)", [a.accountId, randomUUID()]],
+    // V1 save_daily_context (Today's plan · notes) and set_account_ai_preferences (Settings → AI) stay granted (§10.4):
+    // a new notes revision, turning AI on and a new monthly limit are new records too. (Turning AI off is not: below.)
+    ["save today's notes through the V1 entry point", "select public.save_daily_context($1, 'Notes after archiving')", [a.accountId]],
+    ["turn AI on through the V1 entry point", "select public.set_account_ai_preferences($1, true, null, true)", [a.accountId]],
+    ["change the AI limit through the V1 entry point", "select public.set_account_ai_preferences($1, null, 1000, false)", [a.accountId]],
   ];
+}
+
+/** V1 `Account not found` (no code prefix) of the V1 entry points that take an account id and no request key. */
+const V1_ACCOUNT_ENTRY = /public\.(save_daily_context|set_account_ai_preferences)\(/;
+
+async function aiSettings(accountId: string, enabled: boolean | null, budgetCents: number | null, confirm = false): Promise<void> {
+  await db.actor(OWNER);
+  await db.query("select public.set_account_ai_preferences($1, $2, $3, $4)", [accountId, enabled, budgetCents, confirm]);
+}
+
+async function aiEvents(accountId: string): Promise<Json[]> {
+  await db.admin();
+  return (await db.query<Json>(`select previous_enabled, enabled, previous_budget_cents, budget_cents, consent_version
+      from public.ai_preference_events where account_id = $1 order by id`, [accountId])).rows;
+}
+
+async function dailyNotes(accountId: string): Promise<string[]> {
+  await db.admin();
+  return (await db.query<{ narrative: string }>("select narrative from public.daily_contexts where account_id = $1 order by recorded_at, id", [accountId]))
+    .rows.map(row => row.narrative);
+}
+
+/** The trusted server's reservation of one AI request (0008): what an account with AI on can still spend. */
+async function reserveAi(accountId: string): Promise<void> {
+  await db.actor(OWNER, "service_role");
+  await db.query("select public.reserve_account_ai_request($1, $2, $3, $4, 'A', $5, 'gpt-6-astra', '{}', 10000, 'TRADE_REVIEW', 'openai')",
+    [randomUUID(), OWNER, accountId, randomUUID(), "a".repeat(64)]);
 }
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
@@ -255,6 +289,7 @@ describe("archived trading accounts take no new activity (§3.2, §14.9)", () =>
     await db.actor(OTHER);
     for (const [what, sql, params] of newActivity(a, draft)) {
       const expected = what.startsWith("save a proposal") ? /^Account not found or missing request key/
+        : V1_ACCOUNT_ENTRY.test(sql) ? /^Account not found$/
         : what.includes("V1") ? /^Proposal not found/ : params[0] === a.accountId ? /^ACCOUNT_NOT_FOUND:/ : /^TRADE_NOT_FOUND:/;
       await expect(db.query(sql, params), what).rejects.toThrow(expected);
     }
@@ -289,5 +324,132 @@ describe("archived trading accounts take no new activity (§3.2, §14.9)", () =>
     // A position held for the trader to link creates no trade.
     expect(await ingest(connection, openPosition({ externalId: "MOCK-2002", enteredAt: ago(30) }), { kind: "HOLD" })).toMatchObject({ outcome: "HELD", tradeId: null });
     expect((await activity(a.accountId)).trades).toBe(before.trades);
+  });
+});
+
+describe("the V1 notes and AI-settings entry points on an archived account (§3.2, §10.4, §11.2)", () => {
+  it("refuses today's notes while archived and saves them again once restored; every save stays a new revision", async () => {
+    const a = await db.bootstrapAccount(OWNER);
+    const save = async (narrative: string) => {
+      await db.actor(OWNER);
+      return value<string>("select public.save_daily_context($1, $2) as value", [a.accountId, narrative]);
+    };
+    // No request key: the same text saved twice is two revisions, as in V1.
+    const first = await save("Bias: short");
+    expect(await save("Bias: short")).not.toBe(first);
+    expect(await dailyNotes(a.accountId)).toEqual(["Bias: short", "Bias: short"]);
+
+    await setStatus(a.accountId, "ARCHIVED");
+    const before = await activity(a.accountId);
+    await expect(save("Bias: long")).rejects.toThrow(ARCHIVED);
+    await expect(save("")).rejects.toThrow(ARCHIVED);
+    expect(await activity(a.accountId)).toEqual(before);
+
+    await setStatus(a.accountId, "ACTIVE");
+    expect(await save("Bias: long")).toEqual(expect.any(String));
+    expect(await dailyNotes(a.accountId)).toEqual(["Bias: short", "Bias: short", "Bias: long"]);
+  });
+
+  it("lets an archived account turn AI off, and changes nothing else of its AI settings until it is restored", async () => {
+    const a = await db.bootstrapAccount(OWNER);
+    await aiSettings(a.accountId, true, 500, true);
+    await aiSettings(a.accountId, null, 1000);
+    await setStatus(a.accountId, "ARCHIVED");
+    // An archived account with AI on can still run AI (§11): its trader must be able to stop that.
+    await reserveAi(a.accountId);
+    const before = await activity(a.accountId);
+
+    // A call that changes nothing still answers and writes nothing, as before (the form submitted twice).
+    await aiSettings(a.accountId, true, null, true);
+    await aiSettings(a.accountId, null, 1000);
+    // Any other change is new activity: refused, also when it is combined with turning AI off.
+    await expect(aiSettings(a.accountId, null, 300)).rejects.toThrow(ARCHIVED);
+    await expect(aiSettings(a.accountId, false, 300)).rejects.toThrow(ARCHIVED);
+    expect(await activity(a.accountId)).toEqual(before);
+
+    // Turning AI off withdraws the consent and stops the spending; the limit stays as it was.
+    await aiSettings(a.accountId, false, null);
+    expect((await aiEvents(a.accountId)).at(-1)).toEqual({ previous_enabled: true, enabled: false, previous_budget_cents: 1000, budget_cents: 1000, consent_version: null });
+    await expect(reserveAi(a.accountId)).rejects.toThrow(/Account AI is OFF/);
+    await aiSettings(a.accountId, false, null);
+    // Turning it on again, with or without a new limit, waits for the restore.
+    await expect(aiSettings(a.accountId, true, null, true)).rejects.toThrow(ARCHIVED);
+    await expect(aiSettings(a.accountId, true, 1000, true)).rejects.toThrow(ARCHIVED);
+    await expect(aiSettings(a.accountId, null, 500)).rejects.toThrow(ARCHIVED);
+    expect(await aiEvents(a.accountId)).toHaveLength(3);
+    await db.actor(OWNER);
+    expect(await value<Json>("select public.get_account_ai_budget($1) as value", [a.accountId])).toMatchObject({ enabled: false, budgetCents: 1000 });
+
+    // Restored, every setting changes again, under the same consent rule as before.
+    await setStatus(a.accountId, "ACTIVE");
+    await expect(aiSettings(a.accountId, true, null, false)).rejects.toThrow(/^Explicit AI disclosure confirmation required/);
+    await aiSettings(a.accountId, true, null, true);
+    await aiSettings(a.accountId, null, 300);
+    expect((await aiEvents(a.accountId)).slice(3)).toEqual([
+      { previous_enabled: false, enabled: true, previous_budget_cents: 1000, budget_cents: 1000, consent_version: "AI_DISCLOSURE_V1" },
+      { previous_enabled: true, enabled: true, previous_budget_cents: 1000, budget_cents: 300, consent_version: "AI_DISCLOSURE_V1" },
+    ]);
+  });
+
+  it("checks ownership before the archive: another user's turn-off is not found", async () => {
+    const a = await db.bootstrapAccount(OWNER);
+    await aiSettings(a.accountId, true, 500, true);
+    await setStatus(a.accountId, "ARCHIVED");
+    await db.bootstrapAccount(OTHER);
+    await db.actor(OTHER);
+    await expect(db.query("select public.set_account_ai_preferences($1, false, null, false)", [a.accountId])).rejects.toThrow(/^Account not found$/);
+    await expect(db.query("select public.save_daily_context($1, 'x')", [a.accountId])).rejects.toThrow(/^Account not found$/);
+    expect(await aiEvents(a.accountId)).toHaveLength(1);
+  });
+});
+
+describe("every V1 entry point still granted to authenticated has its archived-account rule (§3.2, §10.4)", () => {
+  /**
+   * The RPCs migrations 0001–0014 grant to authenticated that the final schema still grants, and what each does on an
+   * archived account: REFUSES new records (ACCOUNT_ARCHIVED, redefined in 0015; set_account_ai_preferences still turns
+   * AI off), FINISHES the trades the account already holds (like the V2 entry, close, skip, journal, screenshot and
+   * tag RPCs), READS, or creates a NEW account (no account to be archived). A V1 RPC granted again later fails here
+   * until its rule is decided.
+   */
+  const V1_GRANTED: Readonly<Record<string, "REFUSES" | "FINISHES" | "READS" | "NEW_ACCOUNT">> = {
+    save_setup_proposal: "REFUSES", check_setup_risk: "REFUSES", save_daily_context: "REFUSES", set_account_ai_preferences: "REFUSES",
+    open_journal_trade: "FINISHES", close_journal_trade: "FINISHES", set_journal_disposition: "FINISHES", tag_journal_trade: "FINISHES",
+    append_plan_note: "FINISHES", remove_setup_screenshot: "FINISHES",
+    get_account_ai_budget: "READS",
+    bootstrap_demo_account: "NEW_ACCOUNT",
+  };
+  const grantedToAuthenticated = async (database: TestDatabase) => {
+    await database.admin();
+    const { rows } = await database.query<{ name: string }>(`select distinct p.proname as name from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and has_function_privilege('authenticated', p.oid, 'EXECUTE') order by 1`);
+    return rows.map(row => row.name);
+  };
+
+  it("lists exactly the V1 RPCs the final schema still grants", async () => {
+    const v1 = await createTestDatabase();
+    try {
+      await v1.applyMigrations({ upTo: "0014" });
+      const before = new Set(await grantedToAuthenticated(v1));
+      expect((await grantedToAuthenticated(db)).filter(name => before.has(name))).toEqual(Object.keys(V1_GRANTED).sort());
+    } finally {
+      await v1.close();
+    }
+  }, 60_000);
+
+  it("lets the V1 entry points finish a plan the archived account already holds", async () => {
+    const a = await db.bootstrapAccount(OWNER);
+    const taken = await createDraft(a);
+    const takenPlan = (await lock(taken.tradeId)).planId;
+    const skipped = await createDraft(a, randomUUID(), SECOND);
+    const skippedPlan = (await lock(skipped.tradeId)).planId;
+    await setStatus(a.accountId, "ARCHIVED");
+    await db.actor(OWNER);
+    await db.query("select public.open_journal_trade($1, '1.1', '0.25', clock_timestamp())", [takenPlan]);
+    await db.query("select public.append_plan_note($1, 'Managed after archiving', $2)", [takenPlan, randomUUID()]);
+    await db.query("select public.tag_journal_trade($1, 'A', null, null)", [takenPlan]);
+    await db.query("select public.close_journal_trade($1, '1.104', clock_timestamp(), '0')", [takenPlan]);
+    await db.query("select public.set_journal_disposition($1, 'SKIPPED', 'Account archived')", [skippedPlan]);
+    expect(await lifecycle(taken.tradeId)).toBe("CLOSED");
+    expect(await lifecycle(skipped.tradeId)).toBe("SKIPPED");
   });
 });

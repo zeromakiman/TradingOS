@@ -10,7 +10,7 @@ vi.mock("@/lib/supabase/admin", () => ({ trustedServer: m.trustedServer }));
 
 import {
   accountConnectionStates, connectionErrorCode, connectionErrorMessage, connectMockPlatform, type Db, disconnectPlatform, isMockSyncEnabled,
-  linkPlatformExecution, listConnections, listLinkCandidates, listLinkedExecutions, listUnmatchedExecutions, loadAccountConnectionStates,
+  linkCandidatesFor, linkPlatformExecution, listConnections, listLinkedExecutions, listUnmatchedExecutions, loadAccountConnectionStates, loadLinkablePlans,
   MOCK_SYNC_UNAVAILABLE, type PlatformConnection, platformOptions, SupabaseSyncStore, simulateMockSync, syncConnection, unlinkPlatformExecution,
 } from "@/lib/sync-service";
 
@@ -91,6 +91,8 @@ class FakePlatform {
   readonly statuses: Row[] = [];
   readonly closes = new Map<string, string>();
   failIngestOf: string | null = null;
+  /** The account is archived: a CREATE for a new position is refused (0015 private.require_active_account) and stores nothing. */
+  archived = false;
   failStatus: string | null = null;
   private sequence = 0;
 
@@ -112,6 +114,9 @@ class FakePlatform {
         return this.envelope("CLOSED", known.id, known.tradeId);
       }
       return this.envelope("CHANGED", known.id, known.tradeId);
+    }
+    if (this.archived && decision.kind === "CREATE") {
+      return { data: null, error: { message: "ACCOUNT_ARCHIVED: This trading account is archived; restore it to add new trades or records" } };
     }
     this.sequence += 1;
     const executionId = id(7, this.sequence);
@@ -314,7 +319,7 @@ describe("read models (RLS client)", () => {
     const { db } = fakeClient(tables);
     const [execution] = await listUnmatchedExecutions(fakeClient({ external_execution_status: [executionRow(5, { entered_at: "2026-09-15T07:05:00+00:00" })] }).db);
     if (execution === undefined) throw new Error("fixture");
-    const candidates = await listLinkCandidates(db, execution);
+    const candidates = linkCandidatesFor(execution, await loadLinkablePlans(db, ACCOUNT));
     // Trade 1 is an automatic match; 7 is closed (trader links only); 8 was locked too early to match; 9 was locked after the entry;
     // 10 is already linked; 11 is short; drafts, live-first trades and other accounts are never offered.
     expect(candidates.map(c => [c.tradeId, c.suggested])).toEqual([[trade(1), true], [trade(7), false], [trade(8), false]]);
@@ -417,6 +422,25 @@ describe("sync store and orchestration", () => {
     expect(result.ok && result.tradeIds).toEqual([trade(1)]);
     expect(platform.statuses.at(-1)).toEqual({ status: "ERROR", message: "Sync stopped before finishing. Positions already imported are kept; run the sync again to continue.", syncedThrough: null });
     expect(JSON.stringify(result)).not.toContain("secret detail");
+  });
+
+  it("defers a new position an archived account refuses, records the sync as complete with the reason and keeps the cursor", async () => {
+    const { platform, sync } = syncSetup();
+    platform.archived = true;
+    const result = await sync({ target: connection({ syncedThrough: "2026-09-01T00:00:00+00:00" }) });
+    const message = "Sync complete: 0 imported, 1 linked, 1 awaiting your confirmation. 1 new position was not imported because this trading account is archived; restore it and sync again to import it.";
+    expect(result).toMatchObject({ ok: true, message, tradeIds: [trade(1)] });
+    expect(result.ok && result.report).toMatchObject({ status: "SYNCED", linked: 1, held: 1, created: 0, syncedThrough: "2026-09-01T00:00:00+00:00" });
+    expect(result.ok && result.report.deferred.map(item => item.externalId)).toEqual(["MOCK-1003"]);
+    expect(platform.statuses).toEqual([
+      { status: "SYNCING", message: null, syncedThrough: null },
+      { status: "SYNCED", message, syncedThrough: "2026-09-01T00:00:00+00:00" },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("restore it to add new trades");
+    // Restored: the next sync imports it.
+    platform.archived = false;
+    const restored = await sync({ target: connection({ syncedThrough: "2026-09-01T00:00:00+00:00" }) });
+    expect(restored.ok && restored.report).toMatchObject({ status: "SYNCED", created: 1, unchanged: 2, deferred: [], syncedThrough: "2026-09-16T14:05:00.000000Z" });
   });
 
   it("treats unreadable candidates as a store failure", async () => {

@@ -1142,9 +1142,22 @@ describe("trade workspace · journal kinds", () => {
     const plan = sectionOf(await render(locked()), "journal");
     expect(visibleText(plan)).toContain("Stop moves, target changes and partial closes can be journaled once the entry is recorded.");
     expect(plan).not.toContain("/edit");
-    // Live: nothing to explain. Closed, skipped or discarded: no position is left to manage.
-    for (const detail of [plannedLive(), closedPlanned(), skipped(), discarded()]) {
+    // Live: nothing to explain. Skipped or discarded: there never was a position to manage.
+    for (const detail of [plannedLive(), skipped(), discarded()]) {
       expect(sectionOf(await render(detail), "journal"), detail.state.lifecycle).not.toContain("journal-composer-kinds-note");
+    }
+  });
+
+  it("tells a closed trade how to keep the management that happened: as a Decision or a Note, recorded after close", async () => {
+    // add_journal_entry refuses stop, target and partial entries once the trade is closed (ENTRY_NOT_LIVE, §3.6), also on
+    // a live-first trade recorded after the fact; the close keeps its one exit price.
+    for (const detail of [closedPlanned(), reviewedLiveFirstWithoutRisk()]) {
+      const journal = sectionOf(await render(detail), "journal");
+      expect(visibleText(journal), detail.state.lifecycle).toContain(
+        "Entry type Note Decision Lesson This trade is closed. To keep a stop move, target change or partial close you made, write it as a Decision or a Note: it is saved as recorded after close and doesn't change the result.",
+      );
+      expect(journal).toMatch(/<fieldset[^>]*aria-describedby="journal-composer-kinds-note"/);
+      expect(journal).not.toContain("/edit");
     }
   });
 });

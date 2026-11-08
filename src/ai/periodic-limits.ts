@@ -3,15 +3,21 @@ import type { PeriodicTradeSource } from "./periodic-facts";
 
 /**
  * Bounds of the compact V2 periodic facts (WEEKLY_REVIEW_FACTS_V2, RECENT_TRADES_FACTS_V2, MONTHLY_REVIEW_FACTS_V2).
- * `trades` and `records` (journal entries plus events) bound what one review reads: a period or sample above them is
- * refused as a whole, nothing is omitted. Whether a sample within them fits is decided by the conservative estimate of
- * the whole request (src/ai/request-estimate.ts) before anything is written or reserved: a sample that would not fit is
- * refused with its review's copy, and a month falls back to its deterministic summary. How much fits depends on the
- * trade count and on how much each trade records; with the densest realistic content (database ids and server times,
- * every text at its bound, two strategy and two risk versions) the tests pin it at 139, 94 and 49 records for 10, 20 and
- * 30 recent trades, 85 and 42 records for a 10- and a 20-trade week, and 130 and 38 records for a 10- and a 30-trade
- * month (a detailed month reads at most `detailedRecords`). Typically journaled trades fit far more: the last 30 with
- * up to 110 journal entries (the seeded traders' 80–95 measure 28.8k–30.1k of the 32k tokens).
+ * `trades` and `records` (journal entries plus events) are reading bounds, rules of the review rather than promises
+ * that everything below them fits: a period or sample above them is refused as a whole (its copy states the rule),
+ * nothing is omitted. Whether a sample within them fits is decided by the conservative estimate of the whole request
+ * (src/ai/request-estimate.ts) before anything is written or reserved: a sample that would not fit is refused with its
+ * review's copy (what it holds and the next step), and a month falls back to its deterministic summary. A week has no
+ * fallback: it is reviewed whole or not at all, and the spec allows no subset of a period.
+ * How much fits depends on the trade count and on how much each trade records. With the densest realistic content
+ * (database ids and server times, every text at its bound, two strategy and two risk versions) the tests pin it at 139,
+ * 94 and 49 records for 10, 20 and 30 recent trades, 85 and 42 records for a 10- and a 20-trade week, and 130 and 38
+ * records for a 10- and a 30-trade month (a detailed month reads at most `detailedRecords`). Typically journaled trades
+ * fit far more. Measured with the real loaders and estimator on seeded synthetic traders: the last 30 trades with
+ * 80–95 journal entries take 28.8k–30.1k of the 32k tokens; a 20-trade week with 1, 2, 3 or 4 entries per trade
+ * 17.0k, 18.9k, 20.8k or 22.8k of the 24k (so a typically journaled 20-trade week reaches the 70-record bound before
+ * the input limit, and the 80 entries of the last are refused at that bound), a 21-trade week with 2 each 19.5k
+ * (refused at the 20-trade bound), and a 30-trade month with 3 each 30.9k of the 32k, still detailed.
  * `bytes` is 4 × the operation's input limit: the facts alone can never be larger than the request may be.
  */
 export const PERIODIC_V2_LIMITS = Object.freeze({

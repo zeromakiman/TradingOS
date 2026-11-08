@@ -3,8 +3,8 @@
  * drops to the page body). When the control that had focus goes away after doing its job (a confirmation succeeds and
  * the page update that follows replaces its trigger, a filter chip removes itself), focus moves to a stable element
  * instead. Focus that the person moved somewhere else in the meantime is left alone. Browser-only: call these from
- * event handlers and effects of client components. (Generalised from src/components/accounts/focus.ts, which still
- * holds restoreFocusAfterDialog and restoreFocusWhenGone for the Accounts and Today screens.)
+ * event handlers and effects of client components. src/components/accounts/focus.ts builds the Accounts and Today waits
+ * (restoreFocusAfterDialog, restoreFocusWhenGone) on these primitives.
  */
 
 /** Whether focus is lost: on the page body (where browsers leave it when the focused element is removed) or nowhere. */
@@ -40,7 +40,8 @@ export function onceReady(ready: () => boolean, then: () => void, frames = FOCUS
   window.requestAnimationFrame(() => attempt(frames));
 }
 
-const noDialogOpen = () => !document.querySelector(OPEN_DIALOG);
+/** Whether no dialog is open (an open one traps focus and returns it to its trigger when it closes). */
+export const noDialogOpen = (): boolean => !document.querySelector(OPEN_DIALOG);
 
 /**
  * After a dialog's action succeeded: watches for a short while (no dialog open any more) and, if focus drops to the page

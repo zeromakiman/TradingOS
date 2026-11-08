@@ -2,9 +2,9 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { LIFECYCLES, type Lifecycle, TRADE_ORIGINS } from "@/domain/ledger";
-import type {
-  Direction, ExecutionSyncProvider, ExternalPosition, IngestDecision, IngestOutcome, SyncCandidate, SyncConnection, SyncProviderId,
-  SyncReport, SyncStore,
+import {
+  type Direction, type ExecutionSyncProvider, type ExternalPosition, type IngestDecision, type IngestOutcome, IngestRefused, type SyncCandidate,
+  type SyncConnection, type SyncProviderId, type SyncReport, type SyncStore,
 } from "@/domain/sync/contract";
 import { matchExecution } from "@/domain/sync/match";
 import { MockSyncProvider } from "@/domain/sync/mock-provider";
@@ -358,6 +358,17 @@ async function plannedCandidates(db: Db, accountId: string, lifecycles: readonly
   }));
 }
 
+/** The lifecycle of each given trade the session can read (`trade_ledger`, RLS scoped); unreadable ids are absent. */
+export async function loadTradeLifecycles(db: Db, tradeIds: readonly string[]): Promise<Map<string, Lifecycle>> {
+  const lifecycles = new Map<string, Lifecycle>();
+  for (const ids of chunks([...new Set(tradeIds)], IN_FILTER_CHUNK)) {
+    const { data, error } = await db.from("trade_ledger").select("id,lifecycle").in("id", ids);
+    if (error) throw new Error("Trades are unavailable.");
+    for (const row of z.array(z.object({ id: z.uuid(), lifecycle: z.enum(LIFECYCLES) })).parse(data)) lifecycles.set(row.id, row.lifecycle);
+  }
+  return lifecycles;
+}
+
 /** A trader may link any locked plan that was not skipped or cancelled; automatic links need LOCKED or LIVE. */
 export const USER_LINK_LIFECYCLES: readonly Lifecycle[] = Object.freeze(["LOCKED", "LIVE", "CLOSED", "REVIEWED"]);
 const AUTO_LINK_LIFECYCLES: readonly Lifecycle[] = Object.freeze(["LOCKED", "LIVE"]);
@@ -369,16 +380,24 @@ export interface LinkCandidate extends SyncCandidate {
 }
 
 /**
- * Planned trades the trader can link a stored execution to, under the rules the database enforces:
- * same account, instrument and direction, locked at or before the execution's entry, not linked yet.
- * Suggested candidates first, then the latest lock.
+ * Every planned trade of one account a trader may link (LOCKED, LIVE, CLOSED or REVIEWED, with its link state), read
+ * once for any number of that account's executions; `linkCandidatesFor` picks each execution's candidates.
  */
-export async function listLinkCandidates(db: Db, execution: ExternalExecution): Promise<LinkCandidate[]> {
+export function loadLinkablePlans(db: Db, accountId: string): Promise<SyncCandidate[]> {
+  return plannedCandidates(db, accountId, USER_LINK_LIFECYCLES);
+}
+
+/**
+ * The planned trades the trader can link a stored execution to, among its account's linkable plans
+ * (`loadLinkablePlans`), under the rules the database enforces: same account, instrument and direction, locked at or
+ * before the execution's entry, not linked yet. Suggested candidates first, then the latest lock.
+ */
+export function linkCandidatesFor(execution: ExternalExecution, plans: readonly SyncCandidate[]): LinkCandidate[] {
   const position = { accountId: execution.accountId, symbol: execution.symbol, direction: execution.direction, entryPrice: execution.entryPrice, enteredAt: execution.enteredAt };
   const eligible: LinkCandidate[] = [];
-  for (const candidate of await plannedCandidates(db, execution.accountId, USER_LINK_LIFECYCLES)) {
+  for (const candidate of plans) {
     const { lockedAt, symbol } = candidate;
-    if (candidate.linked || lockedAt === null || symbol === null || candidate.direction !== execution.direction) continue;
+    if (candidate.accountId !== execution.accountId || candidate.linked || lockedAt === null || symbol === null || candidate.direction !== execution.direction) continue;
     if (normalizeSymbol(symbol) !== normalizeSymbol(execution.symbol) || compareInstants(lockedAt, execution.enteredAt) > 0) continue;
     eligible.push({ ...candidate, lockedAt, suggested: matchExecution(position, [candidate]).kind === "UNIQUE" });
   }
@@ -419,8 +438,13 @@ export class SupabaseSyncStore implements SyncStore {
     const { data, error } = await admin.rpc("ingest_external_execution", {
       p_user_id: userId, p_connection_id: connection.id, p_execution: position, p_decision: decision,
     });
-    // runSync reports a fixed message; the database text never leaves the server.
-    if (error) throw new Error(connectionErrorCode(error.message) ?? "INGEST_FAILED");
+    // runSync reports a fixed message; the database text never leaves the server. An archived account refuses only a
+    // new imported trade (0017 CREATE path), so that position is deferred and the rest of the batch keeps syncing.
+    if (error) {
+      const code = connectionErrorCode(error.message);
+      if (code === "ACCOUNT_ARCHIVED") throw new IngestRefused("ACCOUNT_ARCHIVED");
+      throw new Error(code ?? "INGEST_FAILED");
+    }
     const { outcome, tradeId } = ingestEnvelope.parse(data);
     if ((outcome === "CREATED" || outcome === "LINKED" || outcome === "CLOSED") && tradeId !== null) this.affected.add(tradeId);
     return outcome;

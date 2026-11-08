@@ -10,8 +10,8 @@ vi.mock("next/navigation", async (importOriginal) => ({
 
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { chipFocusAfterRemoval, FilterChips } from "@/components/ui/filter-chips";
-// The Accounts and Today screens restore focus with the helpers of accounts/focus (the design-system module had unused
-// copies of them, now gone).
+// The Accounts and Today screens restore focus with the waits of accounts/focus, built on the design system's primitives.
+import * as accountsFocus from "@/components/accounts/focus";
 import { restoreFocusAfterDialog, restoreFocusWhenGone } from "@/components/accounts/focus";
 import { FOCUS_WAIT_FRAMES, focusElement, focusLost, restoreFocusWhenLost } from "@/components/ui/focus";
 
@@ -69,6 +69,22 @@ afterEach(() => {
 const element = (name: string, focusable = true) => new FakeElement(name, focusable) as unknown as HTMLElement;
 
 describe("focus helpers", () => {
+  it("has one copy of each primitive: accounts/focus re-exports the design system's focusLost and focusElement", () => {
+    expect(accountsFocus.focusLost).toBe(focusLost);
+    expect(accountsFocus.focusElement).toBe(focusElement);
+  });
+
+  it("gives up waiting for a dialog after the shared frame budget, then restores focus once", () => {
+    const target = element("section", false);
+    page.dialogOpen = true;
+    restoreFocusAfterDialog(() => target);
+    step(FOCUS_WAIT_FRAMES);
+    expect(page.activeElement).toBe(page.body);
+    step(1);
+    expect(page.activeElement).toBe(target);
+    expect(frames).toHaveLength(0);
+  });
+
   it("knows when focus is lost: on the body, nowhere, or on an element that left the page", () => {
     expect(focusLost()).toBe(true);
     const button = element("button");

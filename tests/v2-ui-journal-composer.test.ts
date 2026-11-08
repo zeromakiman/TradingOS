@@ -64,14 +64,25 @@ describe("journal kinds", () => {
     expect(LIFECYCLES.filter(lifecycle => journalKindsFor(timingHintForLifecycle(lifecycle)).includes("STOP_CHANGE"))).toEqual(["LIVE"]);
   });
 
-  it("says why on a draft (its stop and target change with Edit draft) and on a locked plan, and nowhere else", () => {
+  it("says why on a draft (its stop and target change with Edit draft), on a locked plan and on a closed trade, and nowhere else", () => {
     expect(liveKindsNote("DRAFT", true)).toEqual({ text: "The stop and target are part of the plan: change them with Edit draft.", editDraft: true });
     expect(JOURNAL_COPY.draftKinds.split("Edit draft")).toHaveLength(2);
     // A draft of an archived account can't be edited: no pointer to an edit it can't take.
     expect(liveKindsNote("DRAFT", false)).toBeNull();
     expect(liveKindsNote("LOCKED", false)).toEqual({ text: "Stop moves, target changes and partial closes can be journaled once the entry is recorded.", editDraft: false });
-    for (const lifecycle of ["LIVE", "CLOSED", "REVIEWED", "SKIPPED", "CANCELLED", "DISCARDED"] as const) expect(liveKindsNote(lifecycle, true), lifecycle).toBeNull();
-    expect(JOURNAL_COPY.notLive).toBe("Stop, target and partial-close entries can only be recorded while the trade is live.");
+    // Closed (also a live-first trade recorded after the fact, or an import closed between syncs): add_journal_entry
+    // refuses stop, target and partial entries after the close (ENTRY_NOT_LIVE), so the composer says how to keep what
+    // happened instead, whatever the account's state.
+    const closed = {
+      text: "This trade is closed. To keep a stop move, target change or partial close you made, write it as a Decision or a Note: it is saved as recorded after close and doesn't change the result.",
+      editDraft: false,
+    };
+    for (const lifecycle of ["CLOSED", "REVIEWED"] as const) for (const editable of [true, false]) expect(liveKindsNote(lifecycle, editable), lifecycle).toEqual(closed);
+    // Every kind the note names is one the composer offers after a close.
+    expect(journalKindsFor(timingHintForLifecycle("CLOSED")).map(kind => JOURNAL_KIND_LABELS[kind])).toEqual(expect.arrayContaining(["Decision", "Note"]));
+    // Live: nothing to explain. A plan that ended without an entry never had a position to manage.
+    for (const lifecycle of ["LIVE", "SKIPPED", "CANCELLED", "DISCARDED"] as const) expect(liveKindsNote(lifecycle, true), lifecycle).toBeNull();
+    expect(JOURNAL_COPY.notLive).toBe("Stop, target and partial-close entries can only be recorded while the trade is live. To keep what happened, write it as a Decision or a Note.");
   });
 });
 

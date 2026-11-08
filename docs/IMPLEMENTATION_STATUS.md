@@ -23,7 +23,8 @@ and migrations: [DEPLOYMENT.md](DEPLOYMENT.md). Overview and local setup: [READM
   journal records; the close still records one exit price, which the close form works out from the partial closes
   journaled while the trade was live when each has a price and an amount (V2_ARCHITECTURE.md §3.6).
 - **Known gaps for V2.1**: [V2_1_GAPS.md](V2_1_GAPS.md) (held or unlinked platform executions and daily limits, imported
-  trades without a contract, accounts above 20,000 trades).
+  trades without a contract, accounts above 20,000 trades and chart payloads of large histories, ledger reads ordered
+  by computed columns).
 
 The final V2 report and its verification records are added when verification completes.
 

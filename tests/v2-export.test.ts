@@ -19,7 +19,7 @@ const EMAIL = "trader@example.test";
 const NOW = "2026-10-17T12:00:00.000Z";
 
 type Row = Record<string, unknown>;
-interface Call { table: string; select: string; order: string[]; gt: [string, string] | null; or: string | null; in: [string, string[]] | null; limit: number }
+interface Call { table: string; select: string; order: string[]; gt: [string, string] | null; or: string | null; in: [string, string[]] | null; eq: [string, string] | null; limit: number }
 
 /** PostgREST over in-memory rows of the signed-in user: `*` sends NUMERIC columns as (lossy) JSON numbers. */
 class FakePostgrest {
@@ -33,11 +33,12 @@ class FakePostgrest {
   constructor(readonly tables: Record<string, { rows: Row[]; numeric?: string[] }> = {}) {}
 
   from(table: string) {
-    const call: Call = { table, select: "", order: [], gt: null, or: null, in: null, limit: Number.POSITIVE_INFINITY };
+    const call: Call = { table, select: "", order: [], gt: null, or: null, in: null, eq: null, limit: Number.POSITIVE_INFINITY };
     this.calls.push(call);
     const builder = {
       select: (columns: string) => { call.select = columns; return builder; },
       in: (column: string, values: readonly unknown[]) => { call.in = [column, values.map(String)]; return builder; },
+      eq: (column: string, value: unknown) => { call.eq = [column, String(value)]; return builder; },
       order: (column: string, options: { ascending: boolean }) => {
         if (!options.ascending) throw new Error("Keyset reads must be ascending.");
         call.order.push(column);
@@ -63,6 +64,10 @@ class FakePostgrest {
     if (call.in) {
       const [column, values] = call.in;
       rows = rows.filter((row) => values.includes(String(row[column])));
+    }
+    if (call.eq) {
+      const [column, value] = call.eq;
+      rows = rows.filter((row) => String(row[column]) === value);
     }
     rows.sort((a, b) => {
       for (const column of call.order) {
@@ -241,7 +246,7 @@ describe("GET /api/export", () => {
     client.from = ((table: string) => {
       const rows = table === "trades" ? client.tables.trades.rows : [];
       const builder = {
-        select: () => builder, in: () => builder, order: () => builder, gt: () => builder, or: () => builder, limit: async () => ({ data: rows, error: null }),
+        select: () => builder, in: () => builder, eq: () => builder, order: () => builder, gt: () => builder, or: () => builder, limit: async () => ({ data: rows, error: null }),
       };
       return builder;
     }) as FakePostgrest["from"];
@@ -291,7 +296,26 @@ describe("GET /api/export", () => {
     const cells = (line: string) => Object.fromEntries(LEDGER_COLUMNS.map((column, i) => [column, line.split(/,(?=")/)[i]]));
     expect(cells(lines[1])).toMatchObject({ id: '"00000000-0000-4000-8000-000000000002"', net_pnl: '"-12.5"', realized_r: '"-1"', tags: '"a-grade; news"', oversize: '"false"', disposition_reason: `"'=HYPERLINK(""http://evil.example"")"` });
     expect(cells(lines[2])).toMatchObject({ symbol: `"'-cmd|' /C calc'!A0"`, disposition_reason: `"'@SUM(1+1)"`, entry_model: `"'+1"`, currency: `"'\tUSD"`, net_pnl: '"3.4"', exit_price: '""' });
-    expect(client.calls[0].select).toBe(LEDGER_COLUMNS.join(","));
+    expect(client.calls.find((call) => call.table === "trade_ledger")?.select).toBe(LEDGER_COLUMNS.join(","));
+  });
+
+  it("reads the trades CSV one account at a time, never as a keyset over every account's ledger", async () => {
+    // The ledger derives most columns per row: a page over every account computes every remaining trade of the user
+    // before it can sort by id (19,900 trades: 29-43 s; 45,000: past the statement timeout). One account's pages do not.
+    const base = Object.fromEntries(LEDGER_COLUMNS.map((column) => [column, null])) as Row;
+    const accounts = ["20000000-0000-4000-8000-000000000002", "20000000-0000-4000-8000-000000000001"];
+    const ids = uuids(2500);
+    const ledger = ids.map((id, index) => ({ ...base, id, account_id: accounts[index % 2], created_at: `2026-10-01T09:${String(index % 60).padStart(2, "0")}:00.${String(index).padStart(6, "0")}+00:00` }));
+    client = new FakePostgrest({ accounts: { rows: accounts.map((id) => ({ id, user_id: UID })) }, trade_ledger: { rows: ledger } });
+    mock.client = client;
+    const response = await GET(exportRequest("part=trades-csv"));
+    const lines = new TextDecoder("utf-8", { ignoreBOM: true }).decode(await response.arrayBuffer()).slice(1).split(/\r\n/);
+    expect(lines.slice(1, -1).map((line) => line.split(",")[0].replaceAll('"', ""))).toEqual(
+      [...ledger].sort((a, b) => (String(a.created_at) < String(b.created_at) ? -1 : String(a.created_at) > String(b.created_at) ? 1 : String(a.id) < String(b.id) ? -1 : 1)).map((row) => row.id),
+    );
+    const reads = client.calls.filter((call) => call.table === "trade_ledger");
+    expect(reads.length).toBeGreaterThan(2);
+    expect(reads.every((call) => call.eq !== null && call.eq[0] === "account_id" && accounts.includes(call.eq[1]))).toBe(true);
   });
 
   it.each([

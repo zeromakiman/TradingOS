@@ -186,3 +186,31 @@ describe("PeriodicReviewPanel run button", () => {
     expect(text).not.toContain("is still running. Its result");
   });
 });
+
+describe("PeriodicReviewPanel scope notes", () => {
+  const monthly = async (facts: object) => {
+    m.monthlyOwner.mockResolvedValue(owner({ monthly_ai_reviews: [], monthly_ai_review_results: [], ...accounting }));
+    m.monthlyFacts.mockResolvedValue(facts);
+    return html(PeriodicReviewPanel({ kind: "monthly", accountId: ACCOUNT, period: "2026-09" }));
+  };
+
+  it("a month reviewed as its summary says before it runs what the review leaves out, and still runs", async () => {
+    const markup = await monthly({ mode: "DETERMINISTIC SUMMARY", sample: { count: 45 } });
+    expect(visibleText(markup)).toContain(
+      "Summary review This month is larger than one detailed review (at most 30 trades and 90 journal entries and events, when they fit), so it is reviewed as a summary: all 45 trades count in the results and metrics, but plans, journal entries and tags are not sent.",
+    );
+    expect(runButton(markup, "monthly-review")).not.toContain("aria-disabled");
+  });
+
+  it("a detailed month, a week and a month that cannot be read carry no summary note", async () => {
+    expect(visibleText(await monthly({ mode: "DETAILED", sample: { count: 12 } }))).not.toContain("Summary review");
+    m.monthlyFacts.mockRejectedValue(new m.ScopeError("This month has more than 120 completed trades."));
+    m.monthlyOwner.mockResolvedValue(owner({ monthly_ai_reviews: [], monthly_ai_review_results: [], ...accounting }));
+    const refused = visibleText(await html(PeriodicReviewPanel({ kind: "monthly", accountId: ACCOUNT, period: "2026-09" })));
+    expect(refused).toContain("This month has more than 120 completed trades.");
+    expect(refused).not.toContain("Summary review");
+    m.weeklyOwner.mockResolvedValue(owner({ weekly_ai_reviews: [], weekly_ai_review_results: [], ...accounting }));
+    m.weeklyFacts.mockResolvedValue({ sample: { count: 4 } });
+    expect(visibleText(await html(PeriodicReviewPanel({ kind: "weekly", accountId: ACCOUNT, period: "2026-10-12" })))).not.toContain("Summary review");
+  });
+});

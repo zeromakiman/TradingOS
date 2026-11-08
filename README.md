@@ -111,7 +111,7 @@ refused, mock or not, until the pricing is reviewed.
 | `npx pnpm@11.19.0 test` | Vitest: domain, engine parity (TypeScript ↔ SQL), database (PGlite applies every migration), actions, routes, UI (server-rendered markup) |
 | `npx pnpm@11.19.0 build` | Production build |
 | `npx pnpm@11.19.0 run acceptance` | Browser acceptance against the running local app |
-| `node scripts/check-unused-exports.mjs` | Dead-code check: every exported value under `src/` needs a caller in the app or the scripts (tests never count; deliberate exceptions are listed with a reason in its `KEPT`). Part of `lint`; `tests/v2-unused-exports.test.ts` also runs it with the suite |
+| `node scripts/check-unused-exports.mjs` | Dead-code check: every exported value under `src/` needs a caller in the app or the scripts (tests never count; deliberate exceptions are listed with a reason in its `KEPT`, and an entry that no longer applies fails). Callers are resolved per module (imports, namespaces, re-exports, and the modules the seed loads by path), so a same-named identifier elsewhere does not count. Part of `lint`; `tests/v2-unused-exports.test.ts` also runs it with the suite |
 | `npx pnpm@11.19.0 check` | lint, typecheck, test and build in sequence |
 
 Tests need no credentials and never call a paid provider: `tests/no-live-ai.ts` blocks OpenAI hosts for the whole

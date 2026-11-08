@@ -11,14 +11,15 @@ import { Field } from "@/components/ui/field";
 import { Input, Select } from "@/components/ui/input";
 import { ActionFeedback } from "./action-feedback";
 import { ACCOUNT_CURRENCIES, ACCOUNT_TYPE_HINTS, ACCOUNT_TYPES, accountDashboardHref, accountTypeLabel, PLATFORM_HINT, PLATFORMS, platformLabel } from "./copy";
+import { restoreFocusWhenGone } from "./focus";
 import { type FieldRule, MONEY_COPY } from "./form-checks";
 import { fieldError, useAccountAction } from "./use-account-action";
 
 /**
  * Create a trading account (docs/V2_ARCHITECTURE.md §3.2, §14.12). Used by /accounts/new and by the Today onboarding
- * card, so it takes no props: on /accounts/new a created account opens its dashboard as the trading-account context
- * (the header then names it); anywhere else the page refreshes
- * (the action revalidates the whole app, so onboarding gives way to the normal screen).
+ * card: on /accounts/new a created account opens its dashboard as the trading-account context (the header then names
+ * it); anywhere else the page refreshes (the action revalidates the whole app, so onboarding gives way to the normal
+ * screen) and focus, which left with the form's button, moves to the new screen (`focusAfterId`, §13.5).
  *
  * The request key is created on the first submission and kept until one succeeds, so a retry after a dropped
  * connection replays the same request instead of creating a second account.
@@ -43,9 +44,24 @@ function newRequestKey(): string {
   return globalThis.crypto.randomUUID();
 }
 
-export function CreateAccountForm() {
+/**
+ * Once the form that created an account has left the page (the refreshed page no longer shows it), moves focus that
+ * went with it to the element `focusAfterId` names, else to the page's heading, so keyboard and screen-reader users
+ * continue on the new screen instead of the page body. Focus the person moved elsewhere meanwhile is left alone.
+ */
+export function focusAfterCreated(form: Element | null, focusAfterId?: string): void {
+  restoreFocusWhenGone(form, () => (focusAfterId ? document.getElementById(focusAfterId) : null) ?? document.querySelector<HTMLElement>("main h1"));
+}
+
+export interface CreateAccountFormProps {
+  /** Where focus goes when the page refreshes in place after the account is created (Today's trading status heading). */
+  focusAfterId?: string;
+}
+
+export function CreateAccountForm({ focusAfterId }: CreateAccountFormProps = {}) {
   const router = useRouter();
   const pathname = usePathname();
+  const formRef = useRef<HTMLFormElement>(null);
   const requestKey = useRef<string | null>(null);
   const [currency, setCurrency] = useState("USD");
   const [accountType, setAccountType] = useState<AccountType>("EVALUATION");
@@ -56,7 +72,10 @@ export function CreateAccountForm() {
     const accountId = result.data?.accountId;
     // The new account's dashboard makes it the context, so the header names the account on screen (§9.2).
     if (pathname?.startsWith("/accounts") && accountId) router.push(accountDashboardHref({ id: accountId, status: "ACTIVE" }));
-    else router.refresh();
+    else {
+      router.refresh();
+      focusAfterCreated(formRef.current, focusAfterId);
+    }
   });
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -72,7 +91,7 @@ export function CreateAccountForm() {
   const unit = <span aria-hidden="true">{currency}</span>;
 
   return (
-    <form noValidate onSubmit={submit} className="flex flex-col gap-5" aria-label="Create trading account" aria-busy={pending}>
+    <form ref={formRef} noValidate onSubmit={submit} className="flex flex-col gap-5" aria-label="Create trading account" aria-busy={pending}>
       <ActionFeedback key={`feedback-${feedbackKey}`} state={state} />
       <Field label="Account name" required error={error("name")} hint="How the account appears everywhere, for example “FTMO 100K”.">
         <Input name="name" maxLength={100} autoComplete="off" disabled={pending} />

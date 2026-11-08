@@ -199,6 +199,30 @@ export default async function ux(run) {
     s.check(await visible(menu, 5_000), "the account selector opens its menu");
     await page.keyboard.press("Escape");
     s.check(await hidden(menu), "Escape closes the menu");
+    // The close of a trade is recorded once (spec §57): submitting the form only opens its confirmation, which starts
+    // on "Keep editing" (a second Enter records nothing), and going back records nothing and returns focus to the field
+    // the trader was in. The seeded live trade stays live for the flows after this one.
+    if (trades.todayPlannedLive) {
+      await openTrade(page, trades.todayPlannedLive);
+      const form = page.getByRole("form", { name: "Close trade" });
+      const price = form.getByRole("textbox", { name: /exit price/i }).first();
+      const entry = /Entry\s+([0-9]+(?:\.[0-9]+)?)/.exec(await textOf(region(page, "Plan")))?.[1] ?? "";
+      await price.fill(entry);
+      if (tap) await press(form.getByRole("button", { name: "Close trade" }), { tap });
+      else await price.press("Enter");
+      const confirm = page.getByRole("alertdialog", { name: "Close this trade?" });
+      s.check(await visible(confirm, 10_000), tap ? "Close trade opens the confirmation" : "Enter in the exit price opens the close confirmation");
+      const keepEditing = confirm.getByRole("button", { name: "Keep editing" });
+      if (tap) await press(keepEditing, { tap });
+      else {
+        s.check(await until(() => keepEditing.evaluate(el => el === document.activeElement), { timeout: 3_000, interval: 50 }), "focus starts on Keep editing, so Enter alone records nothing");
+        await page.keyboard.press("Escape");
+      }
+      s.check(await hidden(confirm), tap ? "Keep editing closes the confirmation" : "Escape closes the confirmation");
+      if (!tap) s.check(await until(() => price.evaluate(el => el === document.activeElement), { timeout: 3_000, interval: 50 }), "focus returns to the exit price field");
+      s.check((await price.inputValue()) === entry, "the exit price typed is kept", entry);
+      s.check((await tradeState(page)) === "Live", "the trade is still live: nothing was recorded");
+    }
   });
 
   // The seeded blocked draft has two blocking reasons at any time of day (more text in the editor's sticky verdict bar
@@ -291,9 +315,10 @@ export default async function ux(run) {
     // Account names run up to 100 characters (the create form, the profile rename and the database all allow them), the
     // seeded ones are short. For this step two of the user's accounts carry 100-character names (renamed the way the
     // profile form does it), one of them without a single space (nothing to wrap at but the name itself), so Today, a
-    // live trade, Plan Trade, the account's dashboard and Manage pages and Settings are measured with them; their scans
-    // count in "phone-width" below. The seeded names are put back afterwards, whatever happened.
-    await run.step("long-account-names", `Phone: Today, a live trade, Plan Trade, the account pages, Review, AI history and Settings fit ${run.vp.width} px with 100-character account names`, async s => {
+    // live trade, Plan Trade, the account's dashboard and Manage pages, Review, the Journal's and EDGE's account filter
+    // chips and Settings are measured with them; their scans count in "phone-width" below. The seeded names are put back
+    // afterwards, whatever happened.
+    await run.step("long-account-names", `Phone: Today, a live trade, Plan Trade, the account pages, Review, AI history, the Journal's and EDGE's account filter and Settings fit ${run.vp.width} px with 100-character account names`, async s => {
       const p = run.page;
       const { ftmo, personal } = user.showcase.accounts;
       const long = {
@@ -341,6 +366,9 @@ export default async function ux(run) {
           ["Manage account (name without spaces)", `/accounts/${personal}/manage`],
           ["Review (one account, name without spaces)", `/review?account=${personal}`],
           ["AI history (one account, name without spaces)", `/review/history?account=${personal}`],
+          // All Accounts narrowed by a link to one account: the filter row's "Account: <name>" chip wraps inside itself.
+          ["the Journal's account filter chip (name without spaces)", `/journal?account=all&accountFilter=${personal}`],
+          ["EDGE's account filter chip (name without spaces)", `/edge?account=all&accountFilter=${personal}`],
           ["Settings", "/settings"],
         ]) {
           await goto(p, path);
@@ -352,7 +380,7 @@ export default async function ux(run) {
           }
         }
         await s.shot("long-account-names-settings");
-        s.evidence(18, `Today, the live trade, Plan Trade, the account pages, Review, AI history and Settings fit ${run.vp.width} px with two 100-character account names, one without spaces; the tab bar stays on the screen`);
+        s.evidence(18, `Today, the live trade, Plan Trade, the account pages, Review, AI history, the Journal's and EDGE's account filter chips and Settings fit ${run.vp.width} px with two 100-character account names, one without spaces; the tab bar stays on the screen`);
       } finally {
         // Back to All Accounts (the account links above stored a single account as the context), then the seeded names.
         await goto(p, "/today?account=all").catch(() => null);

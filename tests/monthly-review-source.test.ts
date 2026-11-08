@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ids, periodicSourcesV2, periodicTables, planId, tradeRecordId } from "./fixtures/periodic-v2";
+import { ids, periodicSourcesV2, periodicTables, planId, tradeRecordId, typicalPeriodicSources } from "./fixtures/periodic-v2";
 import { periodicDb, type PeriodicDbState } from "./helpers/periodic-db";
 
 // MONTHLY_REVIEW_FACTS_V2 loading (src/lib/monthly-review-source.ts): one completed calendar month (fixed UTC−5) of
@@ -10,7 +10,8 @@ const m = vi.hoisted(() => ({ auth: vi.fn(), state: { rows: {}, queries: [], err
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ requireUser: m.auth }));
 import { operationAllowedSources } from "@/ai/citation-sources";
-import { loadMonthlyFacts, MonthlyScopeError, ownedMonthlyAccount } from "@/lib/monthly-review-source";
+import { monthlySummaryNotice } from "@/components/ai/periodic";
+import { loadMonthlyFacts, MONTHLY_NEXT_STEP, MONTHLY_TOO_LARGE, MONTHLY_TOO_MANY_TRADES, MonthlyScopeError, ownedMonthlyAccount } from "@/lib/monthly-review-source";
 
 const month = "2026-08";
 const MONTH_START = "2026-08-01T05:00:00.000Z";
@@ -119,8 +120,19 @@ describe("bounds: refuse or summarize explicitly, nothing is omitted", () => {
     m.state.rows = periodicTables(periodicSourcesV2(121, { start: "2026-08-02T06:00:00.000Z", stepMinutes: 300, journal: 0 }));
     const error = await load().then(() => null, (failure: unknown) => failure);
     expect(error).toBeInstanceOf(MonthlyScopeError);
-    expect((error as Error).message).toMatch(/120-trade/);
+    expect((error as Error).message).toBe(MONTHLY_TOO_MANY_TRADES);
     expect(m.state.queries).toHaveLength(2);
+  });
+
+  it("every refusal states the bound as a rule and names what the trader can still do", () => {
+    expect(MONTHLY_TOO_MANY_TRADES).toBe(
+      "This month has more than 120 completed trades, and a monthly review covers at most 120. Nothing was sent and no trade was left out. You can still review each of its trades with Review this trade on the trade's page.",
+    );
+    for (const copy of [MONTHLY_TOO_MANY_TRADES, MONTHLY_TOO_LARGE]) {
+      expect(copy).toContain("Nothing was sent");
+      expect(copy.endsWith(` ${MONTHLY_NEXT_STEP}`)).toBe(true);
+      expect(copy).not.toMatch(/silently|deterministic/);
+    }
   });
 
   it("a few trades with more records than one detailed review are summarized from exact counts, never truncated", async () => {
@@ -197,5 +209,21 @@ describe("bounds: refuse or summarize explicitly, nothing is omitted", () => {
     const facts = await load();
     expect(facts.mode).toBe("DETERMINISTIC SUMMARY");
     expect(JSON.stringify(facts)).not.toContain("Detailed management note");
+  });
+
+  it("before it runs, a summary month says what the review will leave out; a detailed month says nothing", async () => {
+    m.state.rows = periodicTables(sources(31, 1));
+    expect(monthlySummaryNotice(await load())).toBe(
+      "This month is larger than one detailed review (at most 30 trades and 90 journal entries and events, when they fit), so it is reviewed as a summary: all 31 trades count in the results and metrics, but plans, journal entries and tags are not sent.",
+    );
+    m.state.rows = periodicTables(sources(3, 3));
+    expect(monthlySummaryNotice(await load())).toBeNull();
+  });
+
+  it("measured capacity: a typically journaled 30-trade month with 3 entries per trade stays detailed (30.9k of 32k on seeded traders)", async () => {
+    m.state.rows = periodicTables(typicalPeriodicSources(30, 90, "2026-08-03T06:00:00.000Z", 600));
+    const facts = await load();
+    expect(facts.mode).toBe("DETAILED");
+    expect(monthlySummaryNotice(facts)).toBeNull();
   });
 });
