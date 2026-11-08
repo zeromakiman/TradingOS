@@ -13,9 +13,9 @@
 | Deployment state | Not deployed. No hosted database has the V2 migrations. No paid AI call was made. |
 
 **Reading this report.** Paths are relative to the repository root; test files live in `tests/`. Values that come
-from verification are enclosed in labelled FINAL markers (double square brackets): they are the results of the
-verification gate of 2026-11-08 (browser acceptance run ⟦FINAL: acceptance run⟧20261108-165555-478b32⟦/FINAL⟧) and are replaced by the
-final verification run. The gate's step outputs are kept on the build machine, not in the repository; the browser
+from verification are the results of the final verification of 2026-11-08 (browser acceptance run
+20261108-202941-7c51f8), recorded machine-readably in
+[V2_VERIFICATION.json](V2_VERIFICATION.json). The step outputs themselves stay on the build machine; the browser
 acceptance output is in the git-ignored `.local/acceptance/<run-id>/` (`results.json`, `summary.md`), and its pass
 matrix is reproduced in [v2-screens/README.md](v2-screens/README.md).
 
@@ -53,24 +53,26 @@ account. Users can export their data and delete their Trading OS account.
 
 | Check | Result |
 |---|---|
-| TypeScript (`tsc --noEmit`) | ⟦FINAL: tsc⟧PASS, no diagnostics⟦/FINAL⟧ |
-| Lint (Biome, then `scripts/check-unused-exports.mjs`) | ⟦FINAL: lint⟧PASS: 713 files, 0 errors, 0 warnings; no unused exports⟦/FINAL⟧ |
-| Vitest, full suite | ⟦FINAL: vitest⟧157 files, 4,371 tests passed, 0 failed⟦/FINAL⟧ |
-| Production build (`next build`) | ⟦FINAL: build⟧PASS⟦/FINAL⟧ |
-| Migrations from a fresh database (local PostgreSQL 17) | ⟦FINAL: fresh migrations⟧PASS: 19/19 applied; `status.mjs`: no public table granted to `anon`; `verify.mjs` 10/10⟦/FINAL⟧ |
-| Catalog of the working database vs a fresh one | ⟦FINAL: catalog diff⟧identical (0 differing lines)⟦/FINAL⟧ |
-| Upgrade from a representative V1 database | ⟦FINAL: V1 upgrade⟧PASS (item 27)⟦/FINAL⟧ |
-| Secret scan (client and server build output, working tree) | ⟦FINAL: secret scan⟧0 secret or personal hits⟦/FINAL⟧ |
-| Browser acceptance, 7 flows × 2 viewports | ⟦FINAL: acceptance verdict⟧PASS, no failed step⟦/FINAL⟧ (item 41) |
-| Objective UX criteria (spec §60) | ⟦FINAL: §60 summary⟧20 of 20 PASS⟦/FINAL⟧ (item 42) |
+| TypeScript (`tsc --noEmit`) | PASS, exit 0, no diagnostics |
+| Lint (Biome, then `scripts/check-unused-exports.mjs`) | PASS: 715 files, 0 errors, 0 warnings, 63 infos; "Unused exports: none" |
+| Vitest, full suite | 158 files, 4,392 tests passed, 0 failed |
+| Production build (`next build`) | PASS, exit 0 |
+| Migrations from a fresh database (local PostgreSQL 17) | reset 19/19 applied, no public table granted to `anon`, verify 10/10 |
+| Catalog of the working database vs a fresh one | identical: the live database and a fresh apply of 0001–0019 give byte-identical catalog dumps (8,186 lines: columns, constraints, policies, triggers, indexes, views, grants and every function's definition) |
+| Upgrade from a representative V1 database | PASS (item 27; source: round-2 verification replay) |
+| Secret scan (client and server build output, working tree) | 0 secret or personal hits (client build 0 hits; working tree only the 5 documented test fixtures) |
+| Browser acceptance, 7 flows × 2 viewports | PASS, no failed step, no browser console errors, failed requests or dev-overlay issues (item 41) |
+| Objective UX criteria (spec §60) | 20 of 20 PASS (item 42) |
 | Paid AI calls | None: tests use mocks and fixtures; browser acceptance used the local mock provider (`scripts/local-stack/mock-openai.mjs`) |
 
 **Known-limitation headline** (item 43).
 - No Vercel Preview URL exists (item 47); with the missing URL the deliverable set is incomplete.
 - The daily limits do not yet see platform executions that are held, unlinked, or whose close was not recorded on a
   trade (GAPS §1.2). No effect in V2, which accepts only the MOCK provider; it must be closed before any real provider.
-- Very large histories: the Journal takes 7.9–8.7 s at about 45,000 trades (GAPS §4.1), and the account dashboard and
-  EDGE load slowly near 20,000 trades (item 43).
+- Very large histories: the Journal takes 7.9–8.7 s at about 45,000 trades (GAPS §4.1), and EDGE across three accounts
+  of 15,000 trades 8.2–8.4 s (item 43), above the 5 s budget. The account dashboard at 19,900 trades loads in 4.6–5.2 s.
+- The final browser run was inside Dead Pool, so Analyze Setup on a ready draft, locking a new plan and Challenge My
+  Bias were not exercised in the browser by it (item 41); earlier runs on 2026-11-08 passed them.
 - Two hosted-project checks are open before release: the recovery `amr` claim and PostgREST 11 or later (DEPLOY).
 - AI requests are refused from 2026-11-12T00:00:00Z until the pricing profile is re-verified (`src/ai/pricing.ts`).
 
@@ -502,7 +504,13 @@ Every chart:
 | Account contribution | Which account contributes most? | EDGE (All Accounts) |
 | Balance from trades (own currency) | How has this account's recorded balance moved? | Account dashboard |
 
-Tests: `v2-ui-charts.test.ts`. Rendering of very long series is covered in item 43 (GAPS §3).
+Long series stay light (ARCH §13.6, `src/components/charts/thinning.ts`): above 300 points a line chart keeps marks,
+tooltips, links and table rows only for one point per run of ⌈count / 300⌉ plus the first, the last and the deepest
+drawdown, and draws min/max-decimated paths, so every swing keeps its depth; the table says which points it lists and
+that the Journal lists every trade. Daily bars show the last 30 (dashboard) or 120 (EDGE) trading days with exits.
+
+Tests: `v2-ui-charts.test.ts`, `v2-ui-chart-thinning.test.ts`, `v2-screen-edge.test.ts` (long history). Load times of
+very long histories are in item 43 (GAPS §3).
 
 ## 20. Performance calendar
 
@@ -593,7 +601,7 @@ ARCH §0.9, §13.9, §15.
 
 Tests: `v2-screen-trade.test.ts` ("keeps ids, versions and raw reports inside Technical details, opened by developer
 mode"); raw-id scans of rendered markup in `v2-screen-*.test.ts`; `v2-domain-strategy-card.test.ts`. Browser text scan:
-⟦FINAL: text scan⟧577 scans of 42 distinct screens (per viewport and theme), 0 with raw internals⟦/FINAL⟧.
+574 scans of 18 screens (42 screen, viewport and theme combinations), 0 with raw internals.
 
 ## 24. Trading Accounts architecture
 
@@ -690,7 +698,7 @@ only), snapshots every table, applies 0015+, and checks the mapping, the counts,
 changed. `v2-ledger-parity.test.ts` checks lifecycles of V1 history after the upgrade.
 
 **Upgrade-path evidence from the gate** on local PostgreSQL 17 (procedure in DEPLOY "Procedure" step 3):
-- ⟦FINAL: V1 upgrade start⟧Started from `reset.mjs --through=0014`⟦/FINAL⟧. V1 data was created through the V1 RPCs,
+- Source: the full replay of the round-2 verification on 2026-11-08 (16:47 UTC, in the Kill zone, so the V1 locks were allowed), with migrations identical to the final ones except the `linked_disposition_guard` trigger appended to 0017 afterwards, which the final fresh-apply catalog comparison covers. Started from `reset.mjs --through=0014`. V1 data was created through the V1 RPCs,
   as two synthetic users:
   - a plan locked, filled, journaled twice, marked TAKEN, closed at +1.97R and tagged;
   - a plan locked and skipped;
@@ -698,12 +706,12 @@ changed. `v2-ledger-parity.test.ts` checks lifecycles of V1 history after the up
   - a filled plan left open;
   - AI on with a budget, and a stored V1 weekly review produced by the V1 code at `bc5441c`;
   - for the second user, one closed loss.
-- ⟦FINAL: V1 upgrade apply⟧`start.mjs` applied 0015–0019 (exit 0)⟦/FINAL⟧.
-- ⟦FINAL: V1 upgrade rows⟧All 92 V1 rows in 25 tables and the stored screenshot object were unchanged after the upgrade (0-line snapshot diff)⟦/FINAL⟧.
-- ⟦FINAL: V1 upgrade links⟧5 plans → 5 trade links; every plan and proposal maps to exactly one trade; V1 statuses and numbers agree with the V2 ledger (CLOSED → CLOSED with equal R and net P&L, SKIPPED → SKIPPED, TAKEN with fill → LIVE)⟦/FINAL⟧.
-- ⟦FINAL: V1 upgrade carry-over⟧The V1 decision, journal counts and tags carry over; the blocked draft is Draft/Blocked with its V1 screenshot; all 3 accounts got a MIGRATION profile; the AI budget and the V1 weekly review are preserved⟦/FINAL⟧.
-- ⟦FINAL: V1 upgrade RLS⟧RLS still isolates the users (5 trades for the owner, 1 for the other user)⟦/FINAL⟧.
-- ⟦FINAL: V1 upgrade app⟧The V2 app read the upgraded data: 9 pages answered 200 with 0 console errors (closed trade with its full V1 timeline, Journal without the other user's trade, blocked draft with its V1 image, live trade, Review › Weekly with the V1 review)⟦/FINAL⟧.
+- `start.mjs` applied 0015–0019 (exit 0).
+- All 92 V1 rows in 25 tables and the stored screenshot object were unchanged after the upgrade (0-line snapshot diff).
+- 5 plans → 5 trade links; every plan and proposal maps to exactly one trade; V1 statuses and numbers agree with the V2 ledger (CLOSED → CLOSED with equal R and net P&L, SKIPPED → SKIPPED, TAKEN with fill → LIVE).
+- The V1 decision, journal counts and tags carry over; the blocked draft is Draft/Blocked with its V1 screenshot; all 3 accounts got a MIGRATION profile; the AI budget and the V1 weekly review are preserved.
+- RLS still isolates the users (5 trades for the owner, 1 for the other user).
+- The V2 app read the upgraded data: 9 pages answered 200 with 0 console errors (closed trade with its full V1 timeline, Journal without the other user's trade, blocked draft with its V1 image, live trade, Review › Weekly with the V1 review).
 
 ## 28. Review workspace
 
@@ -968,7 +976,7 @@ ARCH §13.3, §14; spec §51.
   - the gallery is 2-up, hit targets are at least 44 px, and long account names wrap instead of widening the page.
 
 Evidence: acceptance at 393×852 with touch for every flow (item 41), and the phone-width check
-⟦FINAL: phone width⟧every phone screen reached fits 393 px⟦/FINAL⟧. `v2-ui-account-name-chips.test.ts`,
+every phone screen reached fits 393 px. `v2-ui-account-name-chips.test.ts`,
 `v2-screen-today-model.test.ts`. Phone screens in item 45.
 
 ## 38. Database migrations
@@ -988,19 +996,24 @@ new file; every file ends with `notify pgrst, 'reload schema'`; `0019` must stay
 **Verification:**
 - Every database test applies all 19 migrations to an in-memory PostgreSQL 18 (PGlite, `tests/helpers/pglite.ts`).
 - The local stack applies them to PostgreSQL 17 (`scripts/local-stack/reset.mjs`, `status.mjs`, `verify.mjs`).
-- Gate results: ⟦FINAL: fresh migrations⟧reset 19/19, no public table granted to `anon`, verify 10/10⟦/FINAL⟧, and
+- Gate results: reset 19/19 applied, no public table granted to `anon`, verify 10/10, and
   the catalog of the working database and of a fresh one compared over the migration ledger, grants, RLS flags,
   columns, constraints, policies, triggers, indexes, views and every function definition:
-  ⟦FINAL: catalog diff⟧identical (0 differing lines; 820 columns, 478 constraints, 88 policies, 147 triggers, 208 indexes and views, 150 functions)⟦/FINAL⟧.
+  identical: the live database and a fresh apply of 0001–0019 give byte-identical catalog dumps (8,186 lines: columns, constraints, policies, triggers, indexes, views, grants and every function's definition).
 
 **Release note.** `0015_canonical_trades.sql` and `0017_platform_connections.sql` were edited after they had been
 applied to the local development database, and to no other database:
 - 0015 (commit `87e8d2f`) added the archived-account rules of `save_daily_context` and `set_account_ai_preferences`;
-- 0017 added `linked_disposition_guard`.
+- 0017 (commit `4cbd03d`) added `linked_disposition_guard`.
 
 No hosted database has any V2 migration (DEPLOY, first line). A database that ran an earlier version of either file
 would lack these changes and would need them as a new migration (`0020_…`), because applied files are never re-run
-(DEPLOY "Hard rules").
+(DEPLOY "Hard rules", which now carries this release note).
+
+**Line endings.** `.gitattributes` keeps every `.sql` file at LF on checkout. A CRLF copy of a migration (a Windows
+checkout with `core.autocrlf`) stores carriage returns in function bodies, so its catalog no longer equals that of a
+database that applied the LF file; the final verification found exactly this for a CRLF copy of 0017 and was re-run
+with the LF file (catalog identical).
 
 ## 39. RLS/security changes
 
@@ -1042,8 +1055,8 @@ ARCH §0.5, §10.1–§10.3.
 Tests: `v2-schema-catalog.test.ts` (every public table and function of the final schema), `v2-erasure-database.test.ts`,
 `v2-integrity-archived-accounts.test.ts`, `v2-trades-database.test.ts` (ownership denials), `v2-proxy.test.ts`,
 `v2-supabase-server-cookies.test.ts`, `v2-routes-evidence.test.ts`. Gate results:
-- grants to `anon`: ⟦FINAL: anon grants⟧no public table granted to `anon`⟦/FINAL⟧;
-- secret scan of the client build output, the server build output and the working tree: ⟦FINAL: secret scan⟧0 secret or personal hits⟦/FINAL⟧.
+- grants to `anon`: no public table granted to `anon`;
+- secret scan of the client build output, the server build output and the working tree: 0 secret or personal hits (client build 0 hits; working tree only the 5 documented test fixtures).
 
 ## 40. Test results
 
@@ -1051,16 +1064,16 @@ Tests: `v2-schema-catalog.test.ts` (every public table and function of the final
 
 | Check | Result |
 |---|---|
-| `tsc --noEmit -p .` (TypeScript 7.0.2) | ⟦FINAL: tsc⟧PASS, exit 0, no diagnostics⟦/FINAL⟧ |
-| `pnpm lint` (Biome 2.5, warnings fail; then `scripts/check-unused-exports.mjs`) | ⟦FINAL: lint⟧PASS: 713 files, 0 errors, 0 warnings, 63 infos; "Unused exports: none"⟦/FINAL⟧ |
-| `vitest run` (all of `tests/**/*.test.ts`) | ⟦FINAL: vitest⟧157 files, 4,371 tests passed, 0 failed⟦/FINAL⟧ |
-| `next build` | ⟦FINAL: build⟧PASS, exit 0⟦/FINAL⟧ |
-| Migrations from a fresh database (PostgreSQL 17) | ⟦FINAL: fresh migrations⟧PASS (item 38)⟦/FINAL⟧ |
-| Upgrade from a V1 database | ⟦FINAL: V1 upgrade⟧PASS (item 27)⟦/FINAL⟧ |
-| Secret scan | ⟦FINAL: secret scan⟧0 hits⟦/FINAL⟧ |
-| Dev-server log over the acceptance run | ⟦FINAL: dev log⟧0 HTTP 4xx/5xx, 0 failed reads or writes, 0 hydration errors out of 1,208 requests (the only error lines are the deliberate wrong password on Delete account)⟦/FINAL⟧ |
+| `tsc --noEmit -p .` (TypeScript 7.0.2) | PASS, exit 0, no diagnostics |
+| `pnpm lint` (Biome 2.5, warnings fail; then `scripts/check-unused-exports.mjs`) | PASS: 715 files, 0 errors, 0 warnings, 63 infos; "Unused exports: none" |
+| `vitest run` (all of `tests/**/*.test.ts`) | 158 files, 4,392 tests passed, 0 failed |
+| `next build` | PASS, exit 0 |
+| Migrations from a fresh database (PostgreSQL 17) | reset 19/19 applied, no public table granted to `anon`, verify 10/10 |
+| Upgrade from a V1 database | PASS (item 27; source: round-2 verification replay) |
+| Secret scan | 0 secret or personal hits (client build 0 hits; working tree only the 5 documented test fixtures) |
+| Dev-server log over the acceptance run | 0 HTTP 4xx/5xx, 0 failed reads or writes, 0 hydration errors, 0 unhandled errors out of 1,190 requests (the only error lines are the run's deliberate wrong password on Delete account) |
 
-**Inventory** (counted from the repository): ⟦FINAL: test files⟧157 tracked test files at `87e8d2f`: 116 `tests/v2-*.test.ts` and 41 V1-era files⟦/FINAL⟧,
+**Inventory** (counted from the repository): 158 tracked test files: 117 `tests/v2-*.test.ts` and 41 V1-era files,
 plus fixtures and helpers in `tests/fixtures/` and `tests/helpers/`. All run without credentials; `tests/no-live-ai.ts`
 (Vitest setup file) blocks OpenAI hosts, and tests pin the clock instead of reading it (ARCH §16.1).
 
@@ -1085,9 +1098,9 @@ plus fixtures and helpers in `tests/fixtures/` and `tests/helpers/`. All run wit
 | Responsive, keyboard, accessibility | `v2-ui-shell.test.ts`, `v2-ui-focus.test.ts`, `v2-ui-primitives.test.ts`, `v2-ui-account-name-chips.test.ts`; browser flow `ux` (item 41) |
 | Secret scan | gate step (item 39); static client scan in `v2-proxy.test.ts` |
 
-**V1 test replacement record** (ARCH §12.3 and §16.1 require it here). Tests whose subject was V1-only code removed in
+**V1 test replacement record** (ARCH §12.3 and §16.1 require it here; the full intent-by-intent table is [V2_TEST_REPLACEMENTS.md](V2_TEST_REPLACEMENTS.md)). Tests whose subject was V1-only code removed in
 V2 were deleted; their intents are asserted by the V2 tests below, whose header comments name the V1 file they replace.
-`git diff --name-status bc5441c HEAD -- tests` shows ⟦FINAL: test changes⟧14 deleted test files, 7 deleted browser bench entries, 27 V1-era test files changed in place and 119 added⟦/FINAL⟧.
+`git diff --name-status bc5441c HEAD -- tests` shows 14 deleted test files, 7 deleted browser bench entries, 27 V1-era test files changed in place and 120 added.
 
 | Deleted V1 test (present at `bc5441c`) | V1 subject (deleted) | Intents now asserted in |
 |---|---|---|
@@ -1115,23 +1128,23 @@ acceptance"):
 - **How it checks:** controls are found by role and accessible name, never by test ids. Every Dead Pool answer is
   checked against the strategy clock before a step is accepted as clock-limited.
 
-Run ⟦FINAL: acceptance run⟧20261108-165555-478b32⟦/FINAL⟧, verdict ⟦FINAL: acceptance verdict⟧PASS, no failed step, no browser console errors, failed requests or dev-overlay issues⟦/FINAL⟧,
-strategy clock ⟦FINAL: acceptance clock⟧11:55 UTC−5 (Kill zone) → 12:12 UTC−5 (Dead Pool)⟦/FINAL⟧.
+Run 20261108-202941-7c51f8, verdict PASS, no failed step, no browser console errors, failed requests or dev-overlay issues,
+strategy clock 15:29 UTC−5 (Dead Pool) → 15:42 UTC−5 (Dead Pool).
 
 | Flow (spec §64) | Desktop 1440×1000 | Phone 393×852 (touch) |
 |---|---|---|
-| Planned workflow | ⟦FINAL: acceptance planned desktop⟧PASS 18/18⟦/FINAL⟧ | ⟦FINAL: acceptance planned mobile⟧PASS 16/19 (1 clock-limited, 2 skipped; continued on a seeded locked plan)⟦/FINAL⟧ |
-| Live-first workflow | ⟦FINAL: acceptance live-first desktop⟧PASS 10/10⟦/FINAL⟧ | ⟦FINAL: acceptance live-first mobile⟧PASS 10/10⟦/FINAL⟧ |
-| Analytics drill-down | ⟦FINAL: acceptance analytics desktop⟧PASS 8/8⟦/FINAL⟧ | ⟦FINAL: acceptance analytics mobile⟧PASS 8/8⟦/FINAL⟧ |
-| Trading accounts | ⟦FINAL: acceptance accounts desktop⟧PASS 10/10⟦/FINAL⟧ | ⟦FINAL: acceptance accounts mobile⟧PASS 10/10⟦/FINAL⟧ |
-| AI (local mock provider) | ⟦FINAL: acceptance ai desktop⟧PASS 10/12 (2 clock-limited)⟦/FINAL⟧ | ⟦FINAL: acceptance ai mobile⟧PASS 10/12 (2 clock-limited)⟦/FINAL⟧ |
-| Settings, export, erasure | ⟦FINAL: acceptance settings desktop⟧PASS 8/8⟦/FINAL⟧ | ⟦FINAL: acceptance settings mobile⟧PASS 8/8⟦/FINAL⟧ |
-| UX criteria, keyboard, themes | ⟦FINAL: acceptance ux desktop⟧PASS 12/12⟦/FINAL⟧ | ⟦FINAL: acceptance ux mobile⟧PASS 14/14⟦/FINAL⟧ |
+| Planned workflow | PASS 16/19 (1 clock-limited, 2 skipped) | PASS 16/19 (1 clock-limited, 2 skipped) |
+| Live-first workflow | PASS 10/10 | PASS 10/10 |
+| Analytics drill-down | PASS 8/8 | PASS 8/8 |
+| Trading accounts | PASS 10/10 | PASS 10/10 |
+| AI (local mock provider) | PASS 10/12 (2 clock-limited) | PASS 10/12 (2 clock-limited) |
+| Settings, export, erasure | PASS 8/8 | PASS 8/8 |
+| UX criteria, keyboard, themes | PASS 12/12 | PASS 14/14 |
 
-- **Text scan:** ⟦FINAL: text scan⟧577 scans of 42 distinct screens, 0 with raw internals⟦/FINAL⟧.
-- **Phone width:** ⟦FINAL: phone width⟧every phone screen fits 393 px⟦/FINAL⟧.
+- **Text scan:** 574 scans of 18 screens (42 screen, viewport and theme combinations), 0 with raw internals.
+- **Phone width:** every phone screen reached fits 393 px.
 - **Clock-limited steps:**
-  ⟦FINAL: clock-limited⟧the run crossed into Dead Pool (12:00–18:00 UTC−5), where the Risk Engine correctly blocks every lock. Not exercised in the browser: Challenge My Bias (desktop and phone), and on the phone Analyze Setup on a ready draft and the lock of a new draft (the AI flow's Analyze Setup ran as "Analyze blocked setup anyway" at both viewports; on the desktop the planned flow ran Analyze Setup on its ready draft and locked it before 12:00 UTC−5)⟦/FINAL⟧.
+  Analyze Setup on a ready draft, locking a new plan and Challenge My Bias were not exercised in the browser at either viewport: the run was inside Dead Pool (12:00–18:00 UTC−5), where the Risk Engine correctly refuses every lock, and the runner checked those answers against the clock. The planned flow continued on a seeded locked plan. Their database and unit coverage is listed in items 4, 21 and 40; the last browser passes were run 20261108-165555-478b32 (desktop Analyze Setup and lock, before 12:00 UTC−5) and run 20261108-144139-cd12b9 (Challenge My Bias).
   These paths are covered by `v2-ai-pretrade.test.ts`, `v2-ai-actions.test.ts` and `v2-trades-database.test.ts`.
 - **Steps per flow:** `.local/acceptance/<run-id>/summary.md` lists every step, its evidence and its screenshots.
 
@@ -1142,26 +1155,26 @@ Spec §60, verdicts from the browser run above. Step ids are `flow/step` in `sum
 
 | # | Criterion | Verdict | Browser evidence | Screenshot | Tests |
 |---|---|---|---|---|---|
-| 1 | Next action identifiable within seconds | ⟦FINAL: §60.1⟧PASS⟦/FINAL⟧ | `ux/next-actions`: every state's next action in the first viewport (blocked → Edit draft, ready → Lock plan, locked → Record entry, live → Add to journal) | [trade-draft-blocked-desktop.png](v2-screens/trade-draft-blocked-desktop.png) | `v2-domain-trade-state.test.ts`, `v2-screen-trade.test.ts` |
-| 2 | Live note without leaving the trade | ⟦FINAL: §60.2⟧PASS⟦/FINAL⟧ | `planned/live-note`, `live-first/note`: added in place, URL unchanged | [trade-planned-live-desktop.png](v2-screens/trade-planned-live-desktop.png) | `v2-ui-journal-composer.test.ts` |
-| 3 | Screenshot pasted with Ctrl+V | ⟦FINAL: §60.3⟧PASS⟦/FINAL⟧ | `planned/paste-screenshot` (Plan Trade) and `planned/live-note` (journal composer), real key press | [plan-trade-blocked-desktop.png](v2-screens/plan-trade-blocked-desktop.png) | `v2-ui-evidence-stager.test.ts`, `v2-ui-journal-composer.test.ts` |
-| 4 | Drag/drop evidence | ⟦FINAL: §60.4⟧PASS⟦/FINAL⟧ | `planned/drop-screenshot`, `live-first/screenshot` (saved as While live) | [plan-trade-blocked-desktop.png](v2-screens/plan-trade-blocked-desktop.png) | `v2-ui-evidence-stager.test.ts`, `v2-ui-evidence-upload.test.ts` |
-| 5 | Unlocked draft edited without recreating it | ⟦FINAL: §60.5⟧PASS⟦/FINAL⟧ | `planned/edit-draft`: same trade, revision 1 → 2, revision 1 kept | — | `v2-trades-database.test.ts` (`DRAFT_CHANGED`), `v2-actions-trades.test.ts` |
-| 6 | BLOCKED reasons in primary UI | ⟦FINAL: §60.6⟧PASS⟦/FINAL⟧ | `planned/save-blocked`: "Requested risk 1.00% exceeds your configured maximum of 0.50%." in the Plan section | [trade-draft-blocked-desktop.png](v2-screens/trade-draft-blocked-desktop.png) | `v2-domain-risk-explain.test.ts`, `v2-screen-trade.test.ts` |
-| 7 | No raw UUIDs, provider ids or prompts in default UI | ⟦FINAL: §60.7⟧PASS⟦/FINAL⟧ | ⟦FINAL: text scan⟧577 scans of 42 distinct screens, 0 hits⟦/FINAL⟧ | all of item 45 | raw-id scans in `v2-screen-*.test.ts`; scan rules in `v2-acceptance-runner.test.ts` |
-| 8 | Live-first trade with minimal mandatory fields | ⟦FINAL: §60.8⟧PASS⟦/FINAL⟧ | `live-first/record`: account, instrument, direction, entry price only | [record-live-trade-mobile.png](v2-screens/record-live-trade-mobile.png) | `v2-screen-forms.test.ts`, `v2-trades-database.test.ts` |
-| 9 | Post-trade note cannot pass as pre-entry evidence | ⟦FINAL: §60.9⟧PASS⟦/FINAL⟧ | `planned/lesson-after-close`, `planned/timeline`, `live-first/not-pre-entry` | [trade-closed-timeline-desktop.png](v2-screens/trade-closed-timeline-desktop.png), [mobile-live-first-timeline-mobile.png](v2-screens/mobile-live-first-timeline-mobile.png) | `v2-domain-timeline.test.ts`, `v2-integrity-plan-end.test.ts` |
-| 10 | Paid AI not the default on a blocked draft | ⟦FINAL: §60.10⟧PASS⟦/FINAL⟧ | `ai/blocked-draft`: primary "Edit draft"; AI only as secondary "Analyze blocked setup anyway · ≈ €0.02"; nothing sent on load | [trade-draft-blocked-desktop.png](v2-screens/trade-draft-blocked-desktop.png) | `v2-domain-trade-state.test.ts`, `v2-ui-ai-panels.test.ts` |
-| 11 | Selected Trading Account always obvious | ⟦FINAL: §60.11⟧PASS⟦/FINAL⟧ | `accounts/switch-context`; ⟦FINAL: §60.11 screens⟧selector visible on all 34 app screens scanned⟦/FINAL⟧ | [accounts-desktop.png](v2-screens/accounts-desktop.png) | `v2-ui-shell.test.ts`, `v2-ui-context-sync.test.ts` |
-| 12 | All Accounts is an aggregation context | ⟦FINAL: §60.12⟧PASS⟦/FINAL⟧ | `accounts/all-accounts`, `analytics/edge`: R aggregated and labelled; money per currency, never summed | [accounts-desktop.png](v2-screens/accounts-desktop.png), [edge-desktop.png](v2-screens/edge-desktop.png) | `v2-domain-performance.test.ts`, `v2-domain-account-metrics.test.ts` |
-| 13 | Core flow independent of hidden debug accordions | ⟦FINAL: §60.13⟧PASS⟦/FINAL⟧ | `ux/core-actions-visible`; no Technical details opened during any core flow | [trade-planned-live-desktop.png](v2-screens/trade-planned-live-desktop.png) | `v2-screen-trade.test.ts` |
-| 14 | All Accounts → Account → Day/statistic → Trade → Evidence | ⟦FINAL: §60.14⟧PASS⟦/FINAL⟧ | `analytics/drill-down`, `analytics/statistic-to-trades`, `analytics/calendar-day`, by clicking only | [edge-calendar-day-desktop.png](v2-screens/edge-calendar-day-desktop.png), [evidence-viewer-desktop.png](v2-screens/evidence-viewer-desktop.png) | `v2-screen-edge.test.ts`, `v2-screen-journal.test.ts`, `v2-ui-charts.test.ts` |
-| 15 | No developer knowledge needed to create, journal, close, review | ⟦FINAL: §60.15⟧PASS⟦/FINAL⟧ | `planned/review`, `live-first/timeline`: both flows created, journaled, closed and reviewed through labelled controls only, developer mode off | [trade-closed-timeline-desktop.png](v2-screens/trade-closed-timeline-desktop.png) | `v2-screen-trade.test.ts`, `v2-screen-forms.test.ts` |
-| 16 | No core workflow requires reading huge AI output | ⟦FINAL: §60.16⟧PASS⟦/FINAL⟧ | ⟦FINAL: §60.16 sizes⟧concise cards (Analyze Setup 1,383 visible characters, Weekly 860, Recent 972); full analysis only on request⟦/FINAL⟧ | [ai-analyze-setup-concise-desktop.png](v2-screens/ai-analyze-setup-concise-desktop.png), [review-weekly-concise-desktop.png](v2-screens/review-weekly-concise-desktop.png) | `v2-domain-ai-summary.test.ts`, `v2-ui-ai-components.test.ts` |
-| 17 | No manual input duplicates known information | ⟦FINAL: §60.17⟧PASS⟦/FINAL⟧ | `planned/plan-blocked`, `planned/record-entry`, `settings/general`: account, contract and risk plan pre-filled; entry pre-filled from the plan; daily losses computed | [plan-trade-blocked-desktop.png](v2-screens/plan-trade-blocked-desktop.png) | `v2-screen-forms-data.test.ts`, `v2-domain-daily-status.test.ts` |
-| 18 | Mobile live note without desktop-only interactions | ⟦FINAL: §60.18⟧PASS⟦/FINAL⟧ | `ux/mobile-live-note`, `planned/live-note` (phone), `live-first/screenshot` (phone, Take photo): taps and system pickers only | [mobile-today-live-note-mobile.png](v2-screens/mobile-today-live-note-mobile.png), [trade-planned-live-mobile.png](v2-screens/trade-planned-live-mobile.png) | `v2-screen-today-model.test.ts`, `v2-ui-evidence-stager.test.ts` |
-| 19 | Locked plan immutability intact | ⟦FINAL: §60.19⟧PASS⟦/FINAL⟧ | `planned/locked-immutable`: no editor; the owner's own `revise_trade_draft` / `discard_trade_draft` refused with `DRAFT_NOT_EDITABLE` | — | `v2-trades-database.test.ts`, `v2-schema-catalog.test.ts` |
-| 20 | Historical records keep their original strategy/risk versions | ⟦FINAL: §60.20⟧PASS⟦/FINAL⟧ | `analytics/historical-versions`: a trade locked under Risk Plan V1.0 still shows V1.0 while the account's active plan is V1.2 | — | `v2-risk-engine-usage.test.ts`, `v2-domain-risk-explain.test.ts` |
+| 1 | Next action identifiable within seconds | PASS | `ux/next-actions`: every state's next action in the first viewport (blocked → Edit draft, ready → Lock plan, locked → Record entry, live → Add to journal) | [trade-draft-blocked-desktop.png](v2-screens/trade-draft-blocked-desktop.png) | `v2-domain-trade-state.test.ts`, `v2-screen-trade.test.ts` |
+| 2 | Live note without leaving the trade | PASS | `planned/live-note`, `live-first/note`: added in place, URL unchanged | [trade-planned-live-desktop.png](v2-screens/trade-planned-live-desktop.png) | `v2-ui-journal-composer.test.ts` |
+| 3 | Screenshot pasted with Ctrl+V | PASS | `planned/paste-screenshot` (Plan Trade) and `planned/live-note` (journal composer), real key press | [plan-trade-blocked-desktop.png](v2-screens/plan-trade-blocked-desktop.png) | `v2-ui-evidence-stager.test.ts`, `v2-ui-journal-composer.test.ts` |
+| 4 | Drag/drop evidence | PASS | `planned/drop-screenshot`, `live-first/screenshot` (saved as While live) | [plan-trade-blocked-desktop.png](v2-screens/plan-trade-blocked-desktop.png) | `v2-ui-evidence-stager.test.ts`, `v2-ui-evidence-upload.test.ts` |
+| 5 | Unlocked draft edited without recreating it | PASS | `planned/edit-draft`: same trade, revision 1 → 2, revision 1 kept | — | `v2-trades-database.test.ts` (`DRAFT_CHANGED`), `v2-actions-trades.test.ts` |
+| 6 | BLOCKED reasons in primary UI | PASS | `planned/save-blocked`: "Requested risk 1.00% exceeds your configured maximum of 0.50%." in the Plan section | [trade-draft-blocked-desktop.png](v2-screens/trade-draft-blocked-desktop.png) | `v2-domain-risk-explain.test.ts`, `v2-screen-trade.test.ts` |
+| 7 | No raw UUIDs, provider ids or prompts in default UI | PASS | 574 scans of 18 screens (42 screen, viewport and theme combinations), 0 with raw internals | all of item 45 | raw-id scans in `v2-screen-*.test.ts`; scan rules in `v2-acceptance-runner.test.ts` |
+| 8 | Live-first trade with minimal mandatory fields | PASS | `live-first/record`: account, instrument, direction, entry price only | [record-live-trade-mobile.png](v2-screens/record-live-trade-mobile.png) | `v2-screen-forms.test.ts`, `v2-trades-database.test.ts` |
+| 9 | Post-trade note cannot pass as pre-entry evidence | PASS | `planned/lesson-after-close`, `planned/timeline`, `live-first/not-pre-entry` | [trade-closed-timeline-desktop.png](v2-screens/trade-closed-timeline-desktop.png), [mobile-live-first-timeline-mobile.png](v2-screens/mobile-live-first-timeline-mobile.png) | `v2-domain-timeline.test.ts`, `v2-integrity-plan-end.test.ts` |
+| 10 | Paid AI not the default on a blocked draft | PASS | `ai/blocked-draft`: primary "Edit draft"; AI only as secondary "Analyze blocked setup anyway · ≈ €0.02"; nothing sent on load | [trade-draft-blocked-desktop.png](v2-screens/trade-draft-blocked-desktop.png) | `v2-domain-trade-state.test.ts`, `v2-ui-ai-panels.test.ts` |
+| 11 | Selected Trading Account always obvious | PASS | `accounts/switch-context`; Trading Account selector was visible on all 34 app screens scanned (desktop and phone) | [accounts-desktop.png](v2-screens/accounts-desktop.png) | `v2-ui-shell.test.ts`, `v2-ui-context-sync.test.ts` |
+| 12 | All Accounts is an aggregation context | PASS | `accounts/all-accounts`, `analytics/edge`: R aggregated and labelled; money per currency, never summed | [accounts-desktop.png](v2-screens/accounts-desktop.png), [edge-desktop.png](v2-screens/edge-desktop.png) | `v2-domain-performance.test.ts`, `v2-domain-account-metrics.test.ts` |
+| 13 | Core flow independent of hidden debug accordions | PASS | `ux/core-actions-visible`; no Technical details opened during any core flow | [trade-planned-live-desktop.png](v2-screens/trade-planned-live-desktop.png) | `v2-screen-trade.test.ts` |
+| 14 | All Accounts → Account → Day/statistic → Trade → Evidence | PASS | `analytics/drill-down`, `analytics/statistic-to-trades`, `analytics/calendar-day`, by clicking only | [edge-calendar-day-desktop.png](v2-screens/edge-calendar-day-desktop.png), [evidence-viewer-desktop.png](v2-screens/evidence-viewer-desktop.png) | `v2-screen-edge.test.ts`, `v2-screen-journal.test.ts`, `v2-ui-charts.test.ts` |
+| 15 | No developer knowledge needed to create, journal, close, review | PASS | `planned/review`, `live-first/timeline`: both flows created, journaled, closed and reviewed through labelled controls only, developer mode off | [trade-closed-timeline-desktop.png](v2-screens/trade-closed-timeline-desktop.png) | `v2-screen-trade.test.ts`, `v2-screen-forms.test.ts` |
+| 16 | No core workflow requires reading huge AI output | PASS | concise cards (Analyze Setup 1,181, Weekly Review 755, Recent Trades 971, Monthly Review 718, Analyze Setup 1,360, Weekly Review 755, Recent Trades 971, Monthly Review 718 visible characters); full analysis only on request | [ai-analyze-setup-concise-desktop.png](v2-screens/ai-analyze-setup-concise-desktop.png), [review-weekly-concise-desktop.png](v2-screens/review-weekly-concise-desktop.png) | `v2-domain-ai-summary.test.ts`, `v2-ui-ai-components.test.ts` |
+| 17 | No manual input duplicates known information | PASS | `planned/plan-blocked`, `planned/record-entry`, `settings/general`: account, contract and risk plan pre-filled; entry pre-filled from the plan; daily losses computed | [plan-trade-blocked-desktop.png](v2-screens/plan-trade-blocked-desktop.png) | `v2-screen-forms-data.test.ts`, `v2-domain-daily-status.test.ts` |
+| 18 | Mobile live note without desktop-only interactions | PASS | `ux/mobile-live-note`, `planned/live-note` (phone), `live-first/screenshot` (phone, Take photo): taps and system pickers only | [mobile-today-live-note-mobile.png](v2-screens/mobile-today-live-note-mobile.png), [trade-planned-live-mobile.png](v2-screens/trade-planned-live-mobile.png) | `v2-screen-today-model.test.ts`, `v2-ui-evidence-stager.test.ts` |
+| 19 | Locked plan immutability intact | PASS | `planned/locked-immutable`: no editor; the owner's own `revise_trade_draft` / `discard_trade_draft` refused with `DRAFT_NOT_EDITABLE` | — | `v2-trades-database.test.ts`, `v2-schema-catalog.test.ts` |
+| 20 | Historical records keep their original strategy/risk versions | PASS | `analytics/historical-versions`: a trade locked under Risk Plan V1.0 still shows V1.0 while the account's active plan is V1.2 | — | `v2-risk-engine-usage.test.ts`, `v2-domain-risk-explain.test.ts` |
 
 ## 43. Known limitations
 
@@ -1171,7 +1184,7 @@ Spec §60, verdicts from the browser run above. Step ids are `flow/step` in `sum
 | 2 | A held or unlinked execution can only be linked to a planned trade: no "Import as a new trade", no dismissal | Such a position appears in no Journal, EDGE or CSV view until linked | GAPS §1.1, §1.4 |
 | 3 | Imported trades may have no contract (only the latest exact-symbol version whose grid fits is attached) | Risk basis and R unknown unless a risk was recorded while open; positions closed at import never get R | GAPS §2 |
 | 4 | Accounts above 20,000 trades | Dashboard and Accounts show "—" with the reason instead of a partial figure; EDGE reads at most 20,000 matching closed trades | GAPS §3.1; ARCH §9.4, §14.6 |
-| 5 | Chart rendering of large histories (production build, 1440×1000) | Account dashboard: ⟦FINAL: perf dashboard⟧30.8–34.3 s at 19,900 trades; 23.0–24.2 s at 15,000⟦/FINAL⟧. EDGE: ⟦FINAL: perf EDGE⟧34.7–38.1 s for one account of 19,900 trades; 40.2–42.8 s for All Accounts at 3 × 15,000; 20.3–25.0 s filtered⟦/FINAL⟧ | GAPS §3.1, §3.2 |
+| 5 | Large histories (production build, 1440×1000) | Chart payloads are bounded (ARCH §13.6) and exit sorts parse each timestamp once, so page weight no longer grows with history (2.5–3.1 MB of HTML at 15,000–19,900 trades). Account dashboard: 4.6–5.2 s at 19,900 trades, 3.6–4.0 s at 15,000. EDGE: 5.5–5.8 s for one account of 19,900 trades (5.7–9.4 s filtered); 8.2–8.4 s for All Accounts at 3 × 15,000 (7.4–7.9 s filtered), above the 5 s budget: the rest is server time over up to 20,000 trades | GAPS §3.1, §3.2 |
 | 6 | Journal at about 45,000 trades | 7.9–8.7 s for All Accounts (7.3–7.9 s filtered), over the 5 s budget; one account of 19,900 trades 3.3–3.4 s. Reads sorted by a computed trade date risk the 8 s statement timeout under PostgREST's generic plan | GAPS §4.1 |
 | 7 | Hosted pre-deployment checks not yet run | Recovery sessions must carry a timestamped `recovery` method in `amr` (otherwise every password recovery is refused); PostgREST must be 11 or later (open-trade anti-joins) | DEPLOY "Pre-deployment checks"; PASSWORD_RECOVERY.md "Session/security design" |
 | 8 | AI pricing profile validity | `GPT_5_4_MINI_EUR_2026_10_13` is valid until `2026-11-12T00:00:00Z` (`src/ai/pricing.ts`, `validUntil`); from then on every AI request is refused before any provider call until the pricing is re-verified. The legacy setup evaluator's profile expired on 2026-10-22 and V2 does not offer it | ARCH §11.6, §11.7; README "AI without a provider" |
@@ -1184,8 +1197,8 @@ Spec §60, verdicts from the browser run above. Step ids are `flow/step` in `sum
 | 15 | Verified on a local Supabase-compatible stack only | Emulated gateway, GoTrue and Storage; PostgREST v13.0.8; migrations run as superuser; `C.UTF-8` collation | scripts/local-stack/README.md "Known differences from hosted Supabase" |
 | 16 | AI verified with the local mock provider only | Real-provider acceptance follows the independent audit; `AI_ENABLED=false` on Preview and production until then | IMPLEMENTATION_STATUS.md; DEPLOY "Hard rules" |
 | 17 | Cost estimate of the timeline review | `REVIEW_TRADE_TIMELINE` uses REVIEW_TRADE's measured typical cost until it is measured itself | ARCH §11.2 |
-| 18 | Browser coverage of the clock-dependent steps | ⟦FINAL: clock-limited summary⟧Challenge My Bias (both viewports), and the phone's Analyze Setup on a ready draft and lock of a new draft, were not exercised in the browser run (Dead Pool)⟦/FINAL⟧ | item 41 |
-| 19 | Open cosmetic findings | ⟦FINAL: cosmetic findings⟧the phone composer's kind-chip row scrolled sideways at "Partial" (the page itself fit); changed in `src/components/trade/journal/composer.tsx` after the run⟦/FINAL⟧ | item 41 |
+| 18 | Browser coverage of the clock-dependent steps | Analyze Setup on a ready draft, locking a new plan and Challenge My Bias were not exercised in the browser at either viewport: the run was inside Dead Pool (12:00–18:00 UTC−5), where the Risk Engine correctly refuses every lock, and the runner checked those answers against the clock. The planned flow continued on a seeded locked plan. Their database and unit coverage is listed in items 4, 21 and 40; the last browser passes were run 20261108-165555-478b32 (desktop Analyze Setup and lock, before 12:00 UTC−5) and run 20261108-144139-cd12b9 (Challenge My Bias) | item 41 |
+| 19 | Open cosmetic findings | none open: the phone composer's kind chips, which had scrolled sideways at "Partial", wrap onto two rows | item 41 |
 
 ## 44. Explicit V2.1/V2.2 deferred work
 
@@ -1199,7 +1212,7 @@ Spec §60, verdicts from the browser run above. Step ids are `flow/step` in `sum
 2. Contract attachment by normalized symbol and the newest fitting version; platform contract specification as an
    instrument version with `source 'PLATFORM'`; the platform's stop at entry as the initial stop (GAPS §2.3).
 3. Per-account totals in SQL for accounts above 20,000 trades, with parity tests against the TypeScript metrics
-   (GAPS §3.2). ⟦FINAL: chart bounding⟧Bounded chart payloads on the dashboard and EDGE (GAPS §3.2) are a TypeScript change; their state is recorded in GAPS §3 at the final commit⟦/FINAL⟧.
+   (GAPS §3.2). The same SQL totals for EDGE across accounts, which is still above the 5 s budget at 20,000 trades (GAPS §3.1); bounded chart payloads already shipped in V2 (ARCH §13.6).
 4. A stored, indexed trade date and plain open-state facts, so the Journal and every open-trade list become index
    range reads (GAPS §4.2).
 
@@ -1214,7 +1227,7 @@ cost figure for `REVIEW_TRADE_TIMELINE` (ARCH §11.2).
 
 ## 45. Screenshots of major V2 screens
 
-29 curated screens from browser acceptance run ⟦FINAL: acceptance run⟧20261108-165555-478b32⟦/FINAL⟧ (synthetic users,
+29 curated screens from browser acceptance run 20261108-202941-7c51f8 (synthetic users,
 local mock AI; charts inside screenshots are stamped "Synthetic chart"). Index with captions:
 [v2-screens/README.md](v2-screens/README.md).
 
@@ -1252,7 +1265,8 @@ local mock AI; charts inside screenshots are stamped "Synthetic chart"). Index w
 
 ## 46. Final commit
 
-⟦FINAL: commit⟧pending⟦/FINAL⟧ on `ui/claude-v2`.
+⟦FINAL: commit⟧pending⟦/FINAL⟧ on `ui/claude-v2` holds everything delivered. The branch tip is the commit after it, which only
+records this hash and the bundle path here and in [V2_VERIFICATION.json](V2_VERIFICATION.json).
 
 History since the base (`git log --oneline bc5441c..HEAD`):
 
@@ -1266,6 +1280,7 @@ History since the base (`git log --oneline bc5441c..HEAD`):
 | `088dc29` | 2026-10-28 | Integration fixes after review |
 | `4215b24` | 2026-11-08 | Review findings fixed and verified |
 | `87e8d2f` | 2026-11-08 | Archived-account guards, connections, weekly-review capacity, UI audit fixes, performance |
+| `4cbd03d` | 2026-11-08 | Archived-account AI off, linked-plan guard, bounded charts and exit sorts, report draft |
 | ⟦FINAL: commit⟧pending⟦/FINAL⟧ | ⟦FINAL: commit date⟧pending⟦/FINAL⟧ | ⟦FINAL: commit content⟧pending⟦/FINAL⟧ |
 
 **Delivery.** The build environment has no push rights to `github.com/zeromakiman/TradingOS`; its stored credential can
@@ -1325,21 +1340,24 @@ URLs"):
 ## Readiness
 
 **Complete:**
-- Deliverables 1–45 are documented above, each with files, migration objects and tests an auditor can open.
+- Deliverables 1–46 are documented above, each with files, migration objects and tests an auditor can open.
 - The V2 implementation (migrations 0015–0019, domain, data layer, screens) and its test suite are in the tree.
-- The verification gate of 2026-11-08 passed every step: type check, lint, full suite, build, fresh and V1-upgrade
-  migrations, catalog comparison, secret scan, browser acceptance at both viewports, and all 20 spec §60 criteria
-  (the FINAL-marked values above).
+- The final verification of 2026-11-08 passed every step it ran: type check, lint, the full suite (158 files, 4,392
+  tests), production build, secret scan, migrations from a fresh database with a catalog identical to the working
+  database's, browser acceptance at both viewports with no failed step, and all 20 spec §60 criteria
+  ([V2_VERIFICATION.json](V2_VERIFICATION.json)). The V1 → V2 upgrade was verified by the replay of the same day
+  (item 27).
 - No paid AI call was made, nothing was merged into `main`, and production was not touched.
 
-**Missing or pending:**
-- **Deliverable 47, the Vercel Preview URL:** not created, for the environmental reasons in item 47. This alone keeps
-  the deliverable set incomplete.
-- **Deliverable 46:** the final commit and its bundle are pending the final verification run.
-- **Final verification run:** to run outside Dead Pool (from 18:00 UTC−5) and before the AI pricing expires on
-  2026-11-12T00:00:00Z, so that Challenge My Bias, and the phone's Analyze Setup on a ready draft and lock of a new
-  draft, are exercised in the browser. Its results replace every FINAL-marked value.
-- **Before any release** (not needed for the audit): the hosted pre-deployment checks (item 43 #7) and the
-  migration release note (item 38).
+**Missing:**
+- **Deliverable 47, the Vercel Preview URL:** not created, for the reasons in item 47. This alone keeps the deliverable
+  set incomplete.
+- **Browser coverage of the lock path in the final run:** the run was inside Dead Pool (12:00–18:00 UTC−5), so Analyze
+  Setup on a ready draft, locking a new plan and Challenge My Bias were not exercised in the browser by it. They passed
+  in the browser earlier that day (runs 20261108-165555-478b32 and 20261108-144139-cd12b9) and are covered by the tests
+  in item 40. To close it, run `node scripts/local-stack/acceptance/run.mjs --flows=planned,ai --viewport=both` outside
+  Dead Pool (from 18:00 UTC−5) and before the AI pricing expires on 2026-11-12T00:00:00Z.
+- **Before any release** (not needed for the audit): the hosted pre-deployment checks (item 43 #7) and the migration
+  release note (item 38).
 
-⟦FINAL: verdict⟧TRADING OS V2 NOT READY FOR INDEPENDENT AUDIT⟦/FINAL⟧
+TRADING OS V2 NOT READY FOR INDEPENDENT AUDIT

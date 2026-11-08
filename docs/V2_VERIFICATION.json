@@ -1,0 +1,312 @@
+{
+  "report": "docs/V2_REPORT.md",
+  "branch": "ui/claude-v2",
+  "base": "bc5441c09caf215de8e77d9e6f670af7266cca56",
+  "commit": null,
+  "generatedAt": null,
+  "checks": {
+    "typecheck": {
+      "command": "tsc --noEmit -p .",
+      "result": "pass"
+    },
+    "lint": {
+      "command": "pnpm lint (Biome + scripts/check-unused-exports.mjs)",
+      "result": "pass",
+      "files": 715,
+      "errors": 0,
+      "warnings": 0,
+      "infos": 63,
+      "unusedExports": 0
+    },
+    "tests": {
+      "command": "vitest run",
+      "result": "pass",
+      "files": 158,
+      "tests": 4392,
+      "failed": 0
+    },
+    "build": {
+      "command": "next build",
+      "result": "pass"
+    },
+    "secretScan": {
+      "result": "pass",
+      "clientBuildHits": 0,
+      "workingTreeHits": 5,
+      "workingTreeHitsAre": "documented fake keys and loopback test fixtures"
+    },
+    "migrations": {
+      "fresh": {
+        "applied": 19,
+        "of": 19,
+        "anonTableGrants": 0,
+        "verify": "10/10"
+      },
+      "catalogLiveVsFresh": {
+        "differingLines": 0,
+        "dumpLines": 8186
+      }
+    },
+    "v1Upgrade": {
+      "result": "pass",
+      "source": "the full replay of the round-2 verification on 2026-11-08 (16:47 UTC, in the Kill zone, so the V1 locks were allowed), with migrations identical to the final ones except the `linked_disposition_guard` trigger appended to 0017 afterwards, which the final fresh-apply catalog comparison covers"
+    },
+    "devServerLog": {
+      "requests": 1190,
+      "http5xx": 0,
+      "http4xx": 0,
+      "hydration": 0,
+      "readFailed": 0,
+      "writeFailed": 0,
+      "requestFailed": 0,
+      "nextError": 0,
+      "unhandled": 0
+    }
+  },
+  "acceptance": {
+    "runId": "20261108-202941-7c51f8",
+    "verdict": "pass",
+    "startedAt": "2026-11-08T20:29:41.494Z",
+    "finishedAt": "2026-11-08T20:42:44.750Z",
+    "strategyClock": "15:29 UTC−5 (Dead Pool) → 15:42 UTC−5 (Dead Pool)",
+    "browser": {
+      "name": "msedge",
+      "version": "157.0.4341.42"
+    },
+    "matrix": {
+      "planned": {
+        "desktop": {
+          "status": "pass",
+          "passed": 16,
+          "failed": 0,
+          "skipped": 2,
+          "clock": 1,
+          "total": 19
+        },
+        "mobile": {
+          "status": "pass",
+          "passed": 16,
+          "failed": 0,
+          "skipped": 2,
+          "clock": 1,
+          "total": 19
+        }
+      },
+      "live-first": {
+        "desktop": {
+          "status": "pass",
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 10
+        },
+        "mobile": {
+          "status": "pass",
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 10
+        }
+      },
+      "analytics": {
+        "desktop": {
+          "status": "pass",
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 8
+        },
+        "mobile": {
+          "status": "pass",
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 8
+        }
+      },
+      "accounts": {
+        "desktop": {
+          "status": "pass",
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 10
+        },
+        "mobile": {
+          "status": "pass",
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 10
+        }
+      },
+      "ai": {
+        "desktop": {
+          "status": "pass",
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 2,
+          "total": 12
+        },
+        "mobile": {
+          "status": "pass",
+          "passed": 10,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 2,
+          "total": 12
+        }
+      },
+      "settings": {
+        "desktop": {
+          "status": "pass",
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 8
+        },
+        "mobile": {
+          "status": "pass",
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 8
+        }
+      },
+      "ux": {
+        "desktop": {
+          "status": "pass",
+          "passed": 12,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 12
+        },
+        "mobile": {
+          "status": "pass",
+          "passed": 14,
+          "failed": 0,
+          "skipped": 0,
+          "clock": 0,
+          "total": 14
+        }
+      }
+    },
+    "textScan": {
+      "scans": 574,
+      "screens": 18,
+      "combinations": 42,
+      "withRawInternals": 0
+    },
+    "clockLimitedOrSkipped": [
+      "planned/desktop/ready (clock)",
+      "planned/desktop/analyze-ready (skipped)",
+      "planned/desktop/lock (skipped)",
+      "ai/desktop/ready-draft (clock)",
+      "ai/desktop/challenge-bias (clock)",
+      "planned/mobile/ready (clock)",
+      "planned/mobile/analyze-ready (skipped)",
+      "planned/mobile/lock (skipped)",
+      "ai/mobile/ready-draft (clock)",
+      "ai/mobile/challenge-bias (clock)"
+    ],
+    "warnings": 0,
+    "section60": [
+      {
+        "id": 1,
+        "verdict": "pass"
+      },
+      {
+        "id": 2,
+        "verdict": "pass"
+      },
+      {
+        "id": 3,
+        "verdict": "pass"
+      },
+      {
+        "id": 4,
+        "verdict": "pass"
+      },
+      {
+        "id": 5,
+        "verdict": "pass"
+      },
+      {
+        "id": 6,
+        "verdict": "pass"
+      },
+      {
+        "id": 7,
+        "verdict": "pass"
+      },
+      {
+        "id": 8,
+        "verdict": "pass"
+      },
+      {
+        "id": 9,
+        "verdict": "pass"
+      },
+      {
+        "id": 10,
+        "verdict": "pass"
+      },
+      {
+        "id": 11,
+        "verdict": "pass"
+      },
+      {
+        "id": 12,
+        "verdict": "pass"
+      },
+      {
+        "id": 13,
+        "verdict": "pass"
+      },
+      {
+        "id": 14,
+        "verdict": "pass"
+      },
+      {
+        "id": 15,
+        "verdict": "pass"
+      },
+      {
+        "id": 16,
+        "verdict": "pass"
+      },
+      {
+        "id": 17,
+        "verdict": "pass"
+      },
+      {
+        "id": 18,
+        "verdict": "pass"
+      },
+      {
+        "id": 19,
+        "verdict": "pass"
+      },
+      {
+        "id": 20,
+        "verdict": "pass"
+      }
+    ]
+  },
+  "notExercisedInBrowser": "Analyze Setup on a ready draft, locking a new plan and Challenge My Bias were not exercised in the browser at either viewport: the run was inside Dead Pool (12:00–18:00 UTC−5), where the Risk Engine correctly refuses every lock, and the runner checked those answers against the clock. The planned flow continued on a seeded locked plan. Their database and unit coverage is listed in items 4, 21 and 40; the last browser passes were run 20261108-165555-478b32 (desktop Analyze Setup and lock, before 12:00 UTC−5) and run 20261108-144139-cd12b9 (Challenge My Bias)",
+  "vercelPreview": {
+    "created": false,
+    "reason": "No Vercel credentials or push rights in the build environment, and the project's Preview environment uses the staging database with AI enabled and a live key (paid calls are forbidden by spec §65). Owner steps: docs/V2_REPORT.md item 47."
+  },
+  "verdict": "TRADING OS V2 NOT READY FOR INDEPENDENT AUDIT"
+}

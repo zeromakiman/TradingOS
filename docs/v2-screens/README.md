@@ -1,13 +1,13 @@
 # Trading OS V2 screens
 
-Curated from the scripted browser acceptance run `20261108-165555-478b32` (2026-11-08, strategy clock 11:55 UTC−5, Kill zone; verdict PASS),
+Curated from the scripted browser acceptance run `20261108-202941-7c51f8` (2026-11-08, strategy clock 15:29 UTC−5, Dead Pool; verdict PASS),
 captured from the local Supabase-compatible stack with the dev server's local mock AI provider. Every account, trade,
 screenshot and AI result shown belongs to synthetic users the run created at the reserved domain `example.test`
 (seeded with `scripts/local-stack/seed-v2.mjs`); charts inside the screenshots are stamped "Synthetic chart".
 
 Pass matrix of that run:
 
-- Planned workflow: desktop PASS 18/18, mobile PASS 16/19 (1 clock-limited, 2 skipped)
+- Planned workflow: desktop PASS 16/19 (1 clock-limited, 2 skipped), mobile PASS 16/19 (1 clock-limited, 2 skipped)
 - Live-first workflow: desktop PASS 10/10, mobile PASS 10/10
 - Analytics drill-down: desktop PASS 8/8, mobile PASS 8/8
 - Trading accounts: desktop PASS 10/10, mobile PASS 10/10
