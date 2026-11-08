@@ -393,6 +393,21 @@ end $$;
 create trigger execution_links_guard before insert on public.trade_execution_links
   for each row execute function private.guard_execution_links();
 
+-- A plan with a linked platform position is never skipped or cancelled: the position's result would then count in no
+-- result and no daily limit (V2_1_GAPS.md §1.2). Linking already refuses a skipped or cancelled plan (its lifecycle);
+-- this covers the other order, for every writer of trade_dispositions (set_planned_disposition and the V1 RPC).
+create function private.guard_linked_disposition() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if exists (select 1 from public.trade_plan_links pl
+              where pl.plan_id = new.plan_id and (private.active_trade_link(pl.trade_id)).id is not null) then
+    raise exception 'EXECUTION_LINKED: A platform position is linked to this plan; unlink it before marking the plan skipped or cancelled';
+  end if;
+  return new;
+end $$;
+create trigger linked_disposition_guard before insert on public.trade_dispositions
+  for each row execute function private.guard_linked_disposition();
+
 create function private.link_envelope(p_link public.trade_execution_links, p_replayed boolean) returns jsonb
 language sql immutable set search_path = '' as $$
   select jsonb_build_object('linkId', p_link.id, 'tradeId', p_link.trade_id, 'executionId', p_link.external_execution_id,
@@ -776,7 +791,7 @@ revoke all on function
   private.execution_warning(public.external_executions, text, text),
   private.close_imported_trade(public.trades, numeric, timestamptz, numeric, numeric, numeric),
   private.check_execution_link(public.trades, public.external_executions, text[]),
-  private.guard_execution_links(), private.link_envelope(public.trade_execution_links, boolean)
+  private.guard_execution_links(), private.guard_linked_disposition(), private.link_envelope(public.trade_execution_links, boolean)
   from public, anon, authenticated, service_role;
 
 revoke all on function

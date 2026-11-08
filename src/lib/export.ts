@@ -2,7 +2,7 @@ import "server-only";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { z } from "zod";
 import { LEDGER_COLUMNS, LIFECYCLES, TRADE_ORIGINS } from "@/domain/ledger";
-import { compareInstants } from "@/domain/time-display";
+import { compareInstants, instantComparer } from "@/domain/time-display";
 import { classifyTiming, type EvidenceLabel, inferStoredPhase, legacyEvidenceLabel, type StoredPhase, type Timing } from "@/domain/timeline";
 import { planEndedAt } from "@/domain/trade-state";
 import { RequestError } from "./route-security";
@@ -559,7 +559,8 @@ export function csvCell(value: unknown): string {
 
 /** UTF-8 BOM (spreadsheets otherwise guess a legacy code page), CRLF rows, one row per trade by creation time. */
 export function ledgerCsv(rows: readonly Row[]): string {
-  const sorted = [...rows].sort((a, b) => compareInstants(String(a.created_at), String(b.created_at)) || (String(a.id) < String(b.id) ? -1 : 1));
+  const compare = instantComparer();
+  const sorted = [...rows].sort((a, b) => compare(String(a.created_at), String(b.created_at)) || (String(a.id) < String(b.id) ? -1 : 1));
   const lines = [LEDGER_COLUMNS.join(","), ...sorted.map((row) => LEDGER_COLUMNS.map((column) => csvCell(row[column])).join(","))];
   return `﻿${lines.join("\r\n")}\r\n`;
 }

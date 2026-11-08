@@ -66,7 +66,9 @@ export function SourceChip({ chip }: { chip: SourceChipModel }) {
       </span>
     );
   }
-  if (href.startsWith("#")) {
+  // A V1 chip's /journal/<plan>#event:<id> redirects on the server, which never sees the fragment: a full page load
+  // keeps it across the 307, a client-side navigation drops it. So those links, like in-page ones, stay plain anchors.
+  if (href.startsWith("#") || (href.startsWith("/journal/") && href.includes("#"))) {
     return (
       <a href={href} className={cx(CHIP, LINK)} data-kind={chip.kind}>
         {content}

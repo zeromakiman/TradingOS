@@ -789,9 +789,10 @@ describe("Accounts loaders", () => {
   }
   /**
    * PostgREST double of the ledger reads, for the real loadLedgerRows: the account and lifecycle filters, the id keyset
-   * and the page size it asks for, rows in id order. Every other table answers no rows.
+   * and the page size it asks for, rows in id order. Every other table answers no rows. `ledgerEq` collects the columns
+   * of every equality filter sent to the ledger.
    */
-  function ledgerDb(rows: readonly LedgerTrade[]) {
+  function ledgerDb(rows: readonly LedgerTrade[], ledgerEq: string[] = []) {
     const sorted = [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const query = (table: string) => {
       const keep: ((row: LedgerTrade) => boolean)[] = [];
@@ -802,9 +803,14 @@ describe("Accounts loaders", () => {
       };
       const chain: Record<string, unknown> = {
         select: () => chain,
-        eq: (column: keyof LedgerTrade, value: unknown) => filter(row => row[column] === value),
+        eq: (column: keyof LedgerTrade, value: unknown) => {
+          if (table === "trade_ledger") ledgerEq.push(column);
+          return filter(row => row[column] === value);
+        },
         in: (column: keyof LedgerTrade, values: readonly unknown[]) => filter(row => values.includes(row[column])),
         gt: (column: keyof LedgerTrade, value: string) => filter(row => String(row[column]) > value),
+        // The open-trade anti-joins (`is.null` on embedded outcomes and closes) of the dashboard's live list.
+        is: () => chain,
         order: () => chain,
         limit: (count: number) => {
           limit = count;
@@ -901,7 +907,10 @@ describe("Accounts loaders", () => {
     m.workspace.mockResolvedValue(workspace(ftmo, observation(TODAY)));
     m.ledgerPage.mockResolvedValue({ rows: [], nextCursor: null, scanned: 0 });
     m.decorate.mockResolvedValue([]);
-    const atLimit = await loadAccountDashboard(ledgerDb(exact), "user", context, ftmo, NOW);
+    const ledgerEq: string[] = [];
+    const atLimit = await loadAccountDashboard(ledgerDb(exact, ledgerEq), "user", context, ftmo, NOW);
+    // The live list comes from the open trades' keys: no ledger read filters on the lifecycle the view derives per row.
+    expect(ledgerEq).not.toContain("lifecycle");
     expect(atLimit.truncated).toBe(false);
     expect(atLimit.metrics).toMatchObject({ tradesUnknown: null, closedCount: MAX_LEDGER_ROWS });
     expect(atLimit.curve).toHaveLength(MAX_LEDGER_ROWS + 1);
@@ -1070,6 +1079,9 @@ describe("Manage account", () => {
     expect(text).toContain(EXTERNAL_LOSSES_TITLE);
     expect(text).toContain("Add external loss");
     expect(text).toContain(EXTERNAL_LOSS_HELPER);
+    // A synced position counts only once its close is on a trade (V2_1_GAPS.md §1.2): the note must not say every synced loss is counted.
+    expect(text).toContain("Don't add losses already recorded on a trade in Trading OS (imported trades included): they are counted. A synced platform position counts only once its close is recorded on a trade.");
+    expect(text).not.toContain("recorded or synced");
     expect(text).toContain("$75.00");
     expect(text).toContain("cTrader scalp");
     expect(markup).toContain('aria-label="Remove the external loss of $75.00"');

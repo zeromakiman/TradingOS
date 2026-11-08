@@ -233,7 +233,7 @@ describe("Manage → Connection panel", () => {
       manage: MANAGE, display: { mode: "strategy" }, tab: "connection", connection: { unmatched: [waiting], moreUnmatched: false, linked: [] }, instrumentDraft: null,
     }));
     const text = panel({ unmatched: [waiting], moreUnmatched: false, linked: [] });
-    expect(text).toContain("Until a position is linked to a trade and its close is recorded there, it does not count toward this account's daily limits. To count the loss of a closed position now, add it under External losses .");
+    expect(text).toContain("Until a position is linked to a trade and its close is recorded there, it does not count toward this account's daily limits. To count the loss of a closed position now, add it under External losses . If you later record its close on a trade, remove that external loss.");
     expect(html).toMatch(new RegExp(`add it under <a [^>]*href="/accounts/${ACCOUNT}/manage\\?tab=external-losses"[^>]*>External losses</a>`));
     // An archived account takes no external loss, so the hint is not offered there.
     const archived = renderToStaticMarkup(createElement(ManageView, {

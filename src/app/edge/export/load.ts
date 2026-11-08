@@ -8,7 +8,7 @@ import { loadLedgerRows } from "@/lib/performance-data";
 import { RequestError } from "@/lib/route-security";
 import { filteredScope, inBatches, type TradeFilters, type TradeScope } from "@/lib/trades-data";
 import {
-  byExit, closedTradesCsv, dailySequences, type EntryRecord, type ExportScope, exportFilename, parseExportRequest, TOO_MANY_TRADES,
+  closedTradesCsv, dailySequences, type EntryRecord, type ExportScope, exitOrder, exportFilename, parseExportRequest, TOO_MANY_TRADES,
 } from "./contract";
 
 /**
@@ -115,7 +115,7 @@ export async function closedTradesExport(db: Db, userId: string, params: URLSear
   const resolved = await resolveScope(db, userId, requested, storedContext);
   const loaded = await loadLedgerRows(db, userId, resolved.scope, filters, { closedOnly: true });
   if (loaded.truncated) throw new RequestError(TOO_MANY_TRADES, 422);
-  const matching = (withoutEntryTime ? loaded.rows.filter(trade => trade.entered_at === null) : loaded.rows).sort(byExit);
+  const matching = (withoutEntryTime ? loaded.rows.filter(trade => trade.entered_at === null) : loaded.rows).sort(exitOrder());
   const trades = last === null ? matching : matching.slice(-last);
   const [entries, percents] = await Promise.all([entryRecords(db, trades), riskPercents(db, trades)]);
   const csv = closedTradesCsv(trades, {

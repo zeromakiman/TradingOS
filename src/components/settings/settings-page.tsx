@@ -14,7 +14,7 @@ import { Disclosure } from "../ui/disclosure";
 import { EmptyState } from "../ui/empty-state";
 import { PageHeader } from "../ui/page-header";
 import { TechnicalDetails } from "../ui/technical-details";
-import { AiAccountControls } from "./ai-account-controls";
+import { AiAccountControls, ArchivedAiControls } from "./ai-account-controls";
 import { ChangePasswordForm } from "./change-password-form";
 import { DeleteAccount } from "./delete-account";
 import { DeveloperModeSwitch, MockSyncControls } from "./developer-settings";
@@ -129,9 +129,14 @@ function AiSection({ data }: { data: SettingsPageData }) {
           {/* Account names of up to 100 characters, maybe without spaces, break instead of widening the list. */}
           <div className="flex flex-col gap-2 wrap-anywhere">
             {archived.map(entry => (
-              <AiBudgetSummary key={entry.account.id} accountName={entry.account.name} budget={entry.budget} compact now={new Date(data.nowIso)} />
+              <div key={entry.account.id} className="flex flex-col gap-2">
+                <AiBudgetSummary accountName={entry.account.name} budget={entry.budget} compact now={new Date(data.nowIso)} />
+                {entry.budget.snapshot && (
+                  <ArchivedAiControls accountId={entry.account.id} accountName={entry.account.name} enabled={entry.budget.snapshot.enabled} />
+                )}
+              </div>
             ))}
-            <p className="t-meta">Archived accounts keep their AI history. Restore an account to change its AI settings.</p>
+            <p className="t-meta">Archived accounts keep their AI history. AI can be turned off here; restore an account to turn AI on or change its limit.</p>
           </div>
         </Disclosure>
       )}

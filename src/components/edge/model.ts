@@ -193,19 +193,35 @@ export function curveData(view: PerformanceView, rows: readonly LedgerTrade[], c
 
 export interface DailyData {
   r: ChartDatum[];
-  money: { currency: string; data: ChartDatum[] }[];
+  /** "Last 120 of 983 trading days · exit day (UTC−5)" once the bars are cut to the window, else every day. */
+  rSample: string;
+  money: { currency: string; data: ChartDatum[]; sample: string }[];
+  /** Trading days with exits on the page (the Net R chart shows the last `DAILY_WINDOW` of them). */
   days: number;
 }
 
 /**
- * Daily net R and net P&L per currency (strategy day of the exit). A money bar describes one currency only (§9.3): its
- * trade count, the trades without risk, its R (the sum over that currency's trades with a recorded risk, omitted when
- * none has one) and its link (the Journal of exactly those trades) never include another currency's trades.
+ * The daily bars stay readable and the page light: the most recent trading days with exits, as on the account
+ * dashboard (its last 30). Older days stay in the calendar and the Journal; the headline and the other charts still
+ * cover every day.
+ */
+export const DAILY_WINDOW = 120;
+
+/** "Last 120 of 983 trading days", or "45 trading days" when every day is drawn. */
+function dayWindowLabel(shown: number, total: number): string {
+  return shown < total ? `Last ${shown.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} trading days` : plural(total, "trading day");
+}
+
+/**
+ * Daily net R and net P&L per currency (strategy day of the exit), each for its last `DAILY_WINDOW` trading days. A
+ * money bar describes one currency only (§9.3): its trade count, the trades without risk, its R (the sum over that
+ * currency's trades with a recorded risk, omitted when none has one) and its link (the Journal of exactly those trades)
+ * never include another currency's trades; its window is that currency's last trading days.
  */
 export function dailyData(view: PerformanceView, rows: readonly LedgerTrade[]): DailyData {
   const byId = new Map(rows.map(row => [row.id, row]));
   const currencies = [...new Set(view.money.map(total => total.currency))];
-  const r = view.daily.map(point => ({
+  const r = view.daily.slice(-DAILY_WINDOW).map(point => ({
     key: point.day,
     label: formatDay(point.day),
     value: point.netR,
@@ -213,24 +229,26 @@ export function dailyData(view: PerformanceView, rows: readonly LedgerTrade[]): 
     detail: [plural(point.closed, "trade"), ...(point.excluded ? [`${point.excluded} without risk`] : []), formatSignedMoneyList(point.money.map(money => ({ currency: money.currency, amount: money.netPnl })))].join(" · "),
     href: point.href,
   }));
-  const money = currencies.map(currency => ({
-    currency,
-    data: view.daily.flatMap(point => {
+  const money = currencies.map(currency => {
+    const days = view.daily.flatMap(point => {
       const amount = point.money.find(entry => entry.currency === currency);
-      if (!amount) return [];
+      return amount ? [{ point, amount }] : [];
+    });
+    const data = days.slice(-DAILY_WINDOW).map(({ point, amount }) => {
       const trades = point.tradeIds.flatMap(id => {
         const trade = byId.get(id);
         return trade?.currency === currency ? [trade] : [];
       });
       const metrics = rMetrics(trades);
       const excluded = withoutRiskLabel(metrics.excludedNoRiskBasis);
-      return [{
+      return {
         key: point.day, label: formatDay(point.day), value: amount.netPnl, valueLabel: formatSignedMoney(amount.netPnl, currency),
         detail: [plural(metrics.closed, "trade"), ...(excluded ? [excluded] : []), ...(metrics.netR !== null ? [formatR(metrics.netR)] : [])].join(" · "), href: amount.href,
-      }];
-    }),
-  }));
-  return { r, money, days: view.daily.length };
+      };
+    });
+    return { currency, data, sample: `${dayWindowLabel(data.length, days.length)} with ${currency} trades · exit day (UTC−5)` };
+  });
+  return { r, rSample: `${dayWindowLabel(r.length, view.daily.length)} · exit day (UTC−5)`, money, days: view.daily.length };
 }
 
 /**

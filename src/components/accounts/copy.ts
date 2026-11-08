@@ -10,7 +10,14 @@ export const RESTORE_COPY = "Restoring makes the account available for new trade
 export const EXTERNAL_LOSSES_TITLE = "External realized losses today";
 export const ADD_EXTERNAL_LOSS = "Add external loss";
 export const EXTERNAL_LOSS_HELPER = "Losses from trades not recorded in Trading OS today, for example on another platform.";
-export const EXTERNAL_LOSS_SYNC_NOTE = "Don't add losses of trades that are recorded or synced in Trading OS: they are already counted.";
+/**
+ * Synced platform positions count only once their close is recorded on a trade (V2_1_GAPS.md §1.2): until then the
+ * Connection tab sends their loss here, and the trader removes it once the close is recorded.
+ */
+export const EXTERNAL_LOSS_SYNC_NOTE =
+  "Don't add losses already recorded on a trade in Trading OS (imported trades included): they are counted. A synced platform position counts only once its close is recorded on a trade.";
+/** The Connection tab's pointer to External losses for a closed position that is not on a trade yet. */
+export const UNMATCHED_LOSS_REMOVE_NOTE = "If you later record its close on a trade, remove that external loss.";
 export const UPDATE_VALUES = "Update account values";
 export const CONFIRM_UNCHANGED = "Confirm unchanged";
 export const STARTS_TOMORROW = "Starts tomorrow";

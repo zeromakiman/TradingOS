@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome lint src tests scripts --error-on-warnings && node scripts/check-unused-exports.mjs",
     "test": "vitest run",
-    "test:live": "node scripts/verify-live.mjs",
     "acceptance": "node scripts/local-stack/acceptance/run.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },

@@ -30,7 +30,7 @@ const SERVICE_RPCS: Record<string, string[]> = {
   record_platform_sync_status: ["uuid", "uuid", "text", "text", "timestamptz"],
 };
 const PRIVATE_FUNCTIONS = ["connection_status", "active_execution_link", "active_trade_link", "normalized_symbol", "external_execution_hash",
-  "external_execution_input", "execution_label", "execution_warning", "close_imported_trade", "check_execution_link", "guard_execution_links", "link_envelope"];
+  "external_execution_input", "execution_label", "execution_warning", "close_imported_trade", "check_execution_link", "guard_execution_links", "guard_linked_disposition", "link_envelope"];
 const nullCall = (name: string, types: string[]) => `select public.${name}(${types.map((t) => `null::${t}`).join(", ")})`;
 
 let db: TestDatabase;
@@ -853,6 +853,32 @@ describe("trader links (link_external_execution / unlink_external_execution)", (
     // A position entered before the plan was locked cannot belong to it.
     await expect(link(second.tradeId, (await ingest(connection, openPosition({ externalId: "MOCK-C4", enteredAt: ago(240) }), { kind: "HOLD" })).executionId))
       .rejects.toThrow(/^LINK_MISMATCH: The execution was entered before the plan was locked/);
+  });
+
+  it("refuses to skip or cancel a plan while a platform position is linked to it, through every writer, and allows it once unlinked", async () => {
+    const a = await db.bootstrapAccount(OWNER);
+    const connection = await connect(a);
+    const plan = await lockedTrade(a);
+    const held = await ingest(connection, openPosition({ externalId: "MOCK-DISP", enteredAt: plan.lockedAt }), { kind: "HOLD" });
+    await link(plan.tradeId, held.executionId);
+    await db.actor(OWNER);
+    const planId = await value<string>("select plan_id as value from public.trade_plan_links where trade_id = $1", [plan.tradeId]);
+    // The V2 RPC passes the code through; the V1 RPC (still granted) meets the same trigger.
+    await expect(db.query("select public.set_planned_disposition($1, 'SKIPPED', 'Missed it')", [plan.tradeId])).rejects.toThrow(/^EXECUTION_LINKED:/);
+    await expect(db.query("select public.set_journal_disposition($1, 'CANCELLED', 'News')", [planId])).rejects.toThrow(/^EXECUTION_LINKED:/);
+    expect(await count("select 1 from public.trade_dispositions where plan_id = $1", [planId])).toBe(0);
+    expect((await ledger(plan.tradeId)).lifecycle).toBe("LOCKED");
+    // An automatic match is refused the same way.
+    const auto = await lockedTrade(a, { target: "1.10601" });
+    await ingest(connection, openPosition({ externalId: "MOCK-DISP-AUTO", enteredAt: auto.lockedAt }), { kind: "LINK", tradeId: auto.tradeId });
+    await db.actor(OWNER);
+    await expect(db.query("select public.set_planned_disposition($1, 'CANCELLED', 'News')", [auto.tradeId])).rejects.toThrow(/^EXECUTION_LINKED:/);
+    // Unlinked, the plan is the trader's to skip; a skipped plan can no longer be linked.
+    await unlink(plan.tradeId, held.executionId);
+    await db.actor(OWNER);
+    await db.query("select public.set_planned_disposition($1, 'SKIPPED', 'Missed it')", [plan.tradeId]);
+    expect((await ledger(plan.tradeId)).lifecycle).toBe("SKIPPED");
+    await expect(link(plan.tradeId, held.executionId)).rejects.toThrow(/^LINK_NOT_ALLOWED: A skipped trade/);
   });
 
   it("never changes a locked plan, a trade's result or daily usage when linking or unlinking, in any linkable state", async () => {

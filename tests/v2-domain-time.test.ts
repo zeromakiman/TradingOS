@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addDays, compareInstants, daysInMonth, differsByMoreThan, displayDay, formatDateTime, formatDay, formatDuration, formatMonth, formatRelative,
-  formatTime, instantMicros, isCalendarDay, isInstant, resolveTimeDisplay, STRATEGY_TIME, strategyDay, strategyDayLabel, strategyMonth,
+  formatTime, instantComparer, instantMicros, isCalendarDay, isInstant, resolveTimeDisplay, STRATEGY_TIME, strategyDay, strategyDayLabel, strategyMonth,
   type TimeDisplay, toDate, weekdayIndex, zoneLabel,
 } from "@/domain/time-display";
 
@@ -17,6 +17,28 @@ describe("microsecond-exact instants", () => {
     expect(compareInstants(earlier, later)).toBe(-1);
     expect(compareInstants("2026-09-01T09:00:00.000001Z", "2026-09-01T11:00:00.000001+02:00")).toBe(0);
     expect(instantMicros(later) - instantMicros(earlier)).toBe(1n);
+  });
+
+  it("sorts with a per-sort comparer exactly as compareInstants does, parsing each instant once, with the same errors", () => {
+    // Exits spread over four years in mixed spellings, with ties across zone representations and microseconds.
+    const instants = Array.from({ length: 2000 }, (_, index) => {
+      const ms = Date.UTC(2022, 10, 1) + ((index * 7919) % 1500) * 86_400_000 + (index % 7) * 1000;
+      const iso = new Date(ms).toISOString();
+      if (index % 5 === 0) return iso.replace("Z", "000+00:00");
+      if (index % 5 === 1) return `${iso.slice(0, 19)}.${String(index % 1_000_000).padStart(6, "0")}Z`;
+      if (index % 5 === 2) return new Date(ms + 2 * 3_600_000).toISOString().replace("Z", "+02:00");
+      return iso;
+    });
+    const rows = instants.map((at, index) => ({ at, id: String(index).padStart(5, "0") }));
+    const compare = instantComparer();
+    const fast = [...rows].sort((a, b) => compare(a.at, b.at) || (a.id < b.id ? -1 : 1));
+    const exact = [...rows].sort((a, b) => compareInstants(a.at, b.at) || (a.id < b.id ? -1 : 1));
+    expect(fast.map(row => row.id)).toEqual(exact.map(row => row.id));
+    expect(compare("2026-09-01T09:00:00.000001Z", "2026-09-01T11:00:00.000001+02:00")).toBe(0);
+    expect(compare(new Date("2026-09-01T11:00:00.001Z"), "2026-09-01T11:00:00.000999Z")).toBe(1);
+    // An invalid instant fails as it does in compareInstants, and is never cached as valid.
+    expect(() => compare("2026-02-30T00:00:00Z", "2026-09-01T11:00:00Z")).toThrow(RangeError);
+    expect(() => compare("2026-02-30T00:00:00Z", "2026-09-01T11:00:00Z")).toThrow(RangeError);
   });
 
   it("accepts PostgreSQL text forms and Dates", () => {

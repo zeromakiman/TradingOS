@@ -416,7 +416,7 @@ export function finalCriteria(env) {
   const record = (criterion, ok, message) => recorder.criterion({ criterion, ok, flow: "all", viewport: "all", step: null, message });
   const hits = scans.filter(scan => scan.hits.length > 0);
   record(7, hits.length === 0, hits.length === 0
-    ? `${recorder.results.scanCount} scans of ${new Set(scans.map(scan => scan.screen)).size} screens (both viewports, light and dark): no UUID, hash, provider id, rule code, enum, raw JSON or prompt text`
+    ? `${recorder.results.scanCount} scans of ${new Set(scans.map(scan => scan.screen)).size} screens (${new Set(scans.map(scan => `${scan.screen}|${scan.viewport}|${scan.theme}`)).size} screen, viewport and theme combinations): no UUID, hash, provider id, rule code, enum, raw JSON or prompt text`
     : `raw internals on ${hits.length} screens: ${hits.slice(0, 5).map(scan => `${scan.screen} (${scan.viewport}) "${scan.hits[0].match}"`).join("; ")}`);
   const app = scans.filter(scan => !/^\/(login|forgot-password|update-password)/.test(scan.screen));
   const missing = app.filter(scan => !scan.selector);

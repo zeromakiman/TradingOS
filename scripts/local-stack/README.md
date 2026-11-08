@@ -205,7 +205,7 @@ reports to tracked `docs/*.json` files by default:
   legacy evaluator route must then refuse a request without a valid body (the check requires status 400 with the route's
   exact error message) and create no evaluation, instead of answering DISABLED.
   Checks that need V1-only rows (legacy screenshots, failed evaluator history) print SKIPPED when the user has none.
-- `verify-live.mjs` (`test:live`) is the V1 live check. It calls `lock_trade_plan` and `evaluate_trade_plan`, which
+- `verify-live.mjs` is the V1 live check, kept as the record of the V1 run (no package script since V2). It calls `lock_trade_plan` and `evaluate_trade_plan`, which
   0019 revokes from `authenticated`, and the unkeyed `append_plan_note(uuid,text)` that 0007 revoked, so it fails on a
   V2 database exactly as it would on the hosted project.
 

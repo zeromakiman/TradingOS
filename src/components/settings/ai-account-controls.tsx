@@ -56,6 +56,31 @@ function Result({ state, focus = false }: { state: LegacyActionState; focus?: bo
   return null;
 }
 
+/**
+ * Settings → AI, one archived trading account: only turning AI off (§11.2). Turning AI off withdraws the consent and
+ * stops the account's AI spending, so it never waits for a restore (V1's "disabling remains available"); turning AI on
+ * and limit changes do (the database refuses them with ACCOUNT_ARCHIVED).
+ */
+export function ArchivedAiControls({ accountId, accountName, enabled }: Pick<AiAccountControlsProps, "accountId" | "accountName" | "enabled">) {
+  const [state, turnOff, turningOff] = useActionState(saveAiActivation, INITIAL);
+  const resultKey = useResultKey(state);
+  // The button is gone once AI is off, so the confirmation takes focus instead of the page body.
+  const result = <Result key={resultKey} state={state} focus />;
+  if (!enabled) return state.success ? result : null;
+  return (
+    <form action={turnOff} className="flex flex-col gap-2" aria-busy={turningOff}>
+      <input type="hidden" name="accountId" value={accountId} />
+      <input type="hidden" name="enabled" value="false" />
+      <div>
+        <Button type="submit" variant="secondary" icon={<PowerOff aria-hidden="true" />} loading={turningOff} loadingText="Turning off…">
+          Turn off AI<span className="sr-only"> for {accountName}</span>
+        </Button>
+      </div>
+      {result}
+    </form>
+  );
+}
+
 export type ActivationControl = "enable" | "turnOff";
 
 /**

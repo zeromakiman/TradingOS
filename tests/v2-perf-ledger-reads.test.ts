@@ -14,7 +14,7 @@ import type { ContextAccount } from "@/lib/account-context";
 import type { LedgerTrade, Lifecycle } from "@/domain/ledger";
 import { loadLedgerRows, splitIdRange } from "@/lib/performance-data";
 import { loadToday } from "@/lib/today-data";
-import { loadPaletteTrades } from "@/lib/trades-data";
+import { loadPaletteTrades, openTradeIds } from "@/lib/trades-data";
 
 type Row = Record<string, unknown>;
 type Predicate = (row: Row) => boolean;
@@ -111,6 +111,7 @@ const accountsTable = (...ids: string[]) => ids.map(id => ({ id, user_id: USER }
 const openTables = (rows: readonly Row[]) => ({
   trade_plans: rows.filter(row => row.plan_id !== null).map(row => ({
     id: row.plan_id, user_id: USER, account_id: row.account_id, trade_plan_links: [{ trade_id: row.id }], trade_outcomes: row.exited_at === null ? null : [{ id: row.id }],
+    trade_dispositions: row.lifecycle === "SKIPPED" || row.lifecycle === "CANCELLED" ? [{ id: row.id }] : null,
   })),
   trades: rows.map(row => ({
     id: row.id, user_id: USER, account_id: row.account_id, origin: row.origin, created_at: row.created_at,
@@ -228,12 +229,21 @@ describe("All Accounts reads at scale", () => {
     expect(lists.map(call => call.filters.find(filter => filter.startsWith("eq:lifecycle:")))).toEqual(["eq:lifecycle:DRAFT", "eq:lifecycle:DRAFT", "eq:lifecycle:DRAFT"]);
     expect(lists.every(call => call.filters.includes("eq:origin:PLANNED") && call.filters.includes("is:plan_id:null"))).toBe(true);
     expect(db.ledgerCalls().filter(unscoped)).toEqual([]);
-    expect(db.calls.filter(call => call.table === "trade_plans").every(call => call.filters.includes("is:trade_outcomes:null"))).toBe(true);
+    expect(db.calls.filter(call => call.table === "trade_plans").every(call => call.filters.includes("is:trade_outcomes:null") && call.filters.includes("is:trade_dispositions:null"))).toBe(true);
     expect(db.calls.filter(call => call.table === "trades").every(call => call.filters.includes("is:trade_unplanned_closes:null"))).toBe(true);
     const newest = (lifecycle: Lifecycle) => [...rows, ...listed].filter(row => row.lifecycle === lifecycle).sort((a, b) => (String(b.created_at) < String(a.created_at) ? -1 : 1)).map(row => row.id);
     expect(today.live.map(card => card.row.id).sort()).toEqual(newest("LIVE").sort());
     expect(today.plans.locked.map(row => row.id)).toEqual(newest("LOCKED"));
     expect(today.truncated).toMatchObject({ live: false, locked: false, drafts: false });
+  });
+
+  it("leaves skipped and cancelled plans out of the open trades, so their ledger rows are never read for live lists", async () => {
+    const open = [trade(8000, "LIVE", A1), trade(8001, "LOCKED", A2)];
+    const settled = [...Array.from({ length: 40 }, (_, index) => trade(8100 + index, "SKIPPED", A1)), ...Array.from({ length: 40 }, (_, index) => trade(8200 + index, "CANCELLED", A2))];
+    const db = new TableDb({ ...openTables([...rows, ...open, ...settled]) });
+    const ids = await openTradeIds(db as never, USER, { mode: "all" });
+    expect(ids.sort()).toEqual(open.map(row => row.id).sort());
+    expect(db.calls.filter(call => call.table === "trade_plans").every(call => call.filters.includes("is:trade_dispositions:null"))).toBe(true);
   });
 
   it("finds the palette's newest trades by id instead of ordering the ledger of every account by creation", async () => {

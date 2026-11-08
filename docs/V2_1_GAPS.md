@@ -13,7 +13,7 @@ records (gap 2). `0019_account_erasure.sql` must remain the last V2 migration ([
 both belong to a V2.1 migration. The only fix possible in TypeScript alone, recording the position as a live-first
 trade, is unsafe (see 1.4). Gaps 3 and 4 concern large histories (about 15,000 trades and more per account). Gap 3's
 per-account totals and gap 4's stored ledger columns need SQL as well, so they belong to V2.1 too; gap 3's bounded
-charts are a TypeScript change only.
+chart payloads, a TypeScript change only, shipped in V2.
 
 **Gap 1 includes a risk exposure that must be closed before any real provider is accepted:** the daily limits do not
 see platform executions that are held, unlinked or whose close was not recorded on a trade (1.2; prerequisite in 1.5).
@@ -91,14 +91,15 @@ see platform executions that are held, unlinked or whose close was not recorded 
 The platform's own close of a linked planned trade is stored but not applied. Until the trader records it, the loss
 is missing from `realizedLoss`.
 
-A plan with a linked platform position can still be marked skipped or cancelled: `set_planned_disposition` does not
-check links (reproduced on the local stack: it returned SKIPPED). The position's result then counts in no result or
-daily limit. Whether to refuse that (a trigger on `trade_dispositions` raising `EXECUTION_LINKED` while an active link
-exists) is an open product decision; V2 does not refuse it.
+A plan with a linked platform position cannot be marked skipped or cancelled (decided in V2): the trigger
+`linked_disposition_guard` on `trade_dispositions` (0017) raises `EXECUTION_LINKED` while an active link exists, for
+`set_planned_disposition` and the V1 `set_journal_disposition` alike, and the trader unlinks first. Before it, the
+local stack reproduced the gap (`set_planned_disposition` returned SKIPPED and the position's result counted in no
+result or daily limit). The other order was already refused: a skipped or cancelled plan is not linkable.
 
 Manage → Connection flags each listed planned link whose position closed on the platform while the trade is LOCKED or
 LIVE ("Closed on the platform, but the trade is still open in Trading OS. Record the close on the trade: until then
-this result is not in your results or daily limits."), and each whose plan was later marked skipped or cancelled ("The
+this result is not in your results or daily limits."), and each whose plan is marked skipped or cancelled while linked, which only data from before the guard can show ("The
 platform reports this position, but its plan is marked skipped, so the position counts in no result or daily limit.").
 
 **The exposure.** With a real provider, a trader could leave a losing position held (ambiguous) or unlinked, or not
@@ -116,9 +117,9 @@ not recorded on its trade as an **External loss** on the day of the close (Manag
 already covers it: "Losses from trades not recorded in Trading OS today, for example on another platform." If the
 same position becomes a trade with a recorded close later that day, remove that External loss (removals are
 audited), so the loss counts once. The note under the External loss form (`EXTERNAL_LOSS_SYNC_NOTE`, Manage and
-Today) still reads "Don't add losses of trades that are recorded or synced in Trading OS: they are already counted.",
-which holds only for a synced position whose close is recorded on a trade (a held, unlinked or unclosed one is exactly
-the case this workaround covers).
+Today) reads "Don't add losses already recorded on a trade in Trading OS (imported trades included): they are counted. A
+synced platform position counts only once its close is recorded on a trade.", and Manage → Connection's pointer to
+External losses adds "If you later record its close on a trade, remove that external loss."
 
 ### 1.3 What V2 ships around it
 
@@ -174,7 +175,8 @@ PGlite tests:
 - a linked or imported execution is counted once, never both as a trade and as an execution;
 - a linked planned trade whose platform close is not recorded yet counts that loss;
 - unlinking moves the count from the trade to the execution without dropping it;
-- a plan with a linked platform position cannot be skipped or cancelled, or its position counts by its own facts.
+- a plan with a linked platform position cannot be skipped or cancelled (done in V2: `linked_disposition_guard`, tested in
+  `tests/v2-connections-database.test.ts`); keep it when executions count by their own facts.
 
 **SQL** (a new migration after 0019; the erasure purge in 0019 is catalog-driven and covers it):
 
@@ -306,17 +308,24 @@ results are not added up"); the dashboard replaces results, charts, calendar and
 page can add up" and links to EDGE and the Journal, which work by date range.
 
 The ledger reads themselves are bounded (V2_ARCHITECTURE.md §9.4: per-account keyset streams, the lifecycle checked on
-the rows read, the rest of the id range read in parallel). What stays slow is the charts: the dashboard and EDGE draw
-every closed trade as a point with its tooltip, anchor, list item and table row, and every vertex of the line.
-Measured on 2026-11-08 with a production build (1440×1000, three runs per page) on synthetic users:
+the rows read, the rest of the id range read in parallel), and so are the chart payloads: line charts above 300 points
+keep marks, tooltips and table rows only for one point per run of ⌈count / 300⌉ plus the first, last and
+deepest-drawdown points and draw min/max-decimated paths, and EDGE's daily bars show the last 120 trading days
+(V2_ARCHITECTURE.md §13.6). Exit-ordered sorts parse each timestamp once (`instantComparer`; they parsed both on every
+comparison, 12.8 s of a 17.8 s EDGE render at 19,900 trades). Measured on 2026-11-08 with a production build
+(1440×1000, three runs per page, the same synthetic data before and after):
 
-| Page | Trades | HTML (uncompressed / transferred) | Load | Of which data reads |
-|---|---|---|---|---|
-| Account dashboard | 19,900 | 118.7 MB / 12.5 MB (83.3 MB RSC payload, 58,604 table rows) | 30.8–34.3 s | server time 18 s |
-| Account dashboard | 15,000 | — | 23.0–24.2 s | server time 13–14 s |
-| EDGE, one account | 19,900 | 92 MB (41,767 table rows) | 34.7–38.1 s | 1.8–2.5 s |
-| EDGE, All Accounts | 3 × 15,000 | — | 40.2–42.8 s | 4.5–4.9 s |
-| EDGE, All Accounts, filtered | 3 × 15,000 | 5.55 MB of charts | 20.3–25.0 s | — |
+| Page | Trades | HTML before → after (transferred) | Load before → after |
+|---|---|---|---|
+| Account dashboard | 19,900 | 118.7 MB (12.4 MB) → 2.45 MB (0.37 MB) | 30.9–35.7 s → 4.6–5.2 s |
+| Account dashboard | 15,000 | 89.4 MB (9.5 MB) → 2.46 MB (0.37 MB) | 19.2–25.2 s → 3.6–4.0 s |
+| EDGE, one account | 19,900 | 94.6 MB (8.9 MB) → 2.64 MB (0.34 MB) | 35.4–38.8 s → 5.5–5.8 s |
+| EDGE, one account, filtered | 19,900 | 33.0 MB (3.2 MB) → 2.58 MB (0.33 MB) | 12.9–17.3 s → 5.7–9.4 s |
+| EDGE, All Accounts | 3 × 15,000 (20,000 read) | 97.8 MB (9.3 MB) → 2.90 MB (0.36 MB) | 39.5–40.2 s → 8.2–8.4 s |
+| EDGE, All Accounts, filtered | 3 × 15,000 | 70.7 MB (6.8 MB) → 3.10 MB (0.38 MB) | 28.5–36.6 s → 7.4–7.9 s |
+
+The browser finishes within about 0.2 s of the server; what remains is server time (reads, then metrics over up to
+20,000 trades), above the 5 s budget for EDGE across accounts.
 
 Every other page of these users loads in 1–13.5 s (Today 1.0–2.0 s, Accounts 2.5–4.9 s, Review 0.8–1.6 s, EDGE
 filtered on one account 10.1–11.0 s, the trades CSV 7.8–13.5 s; the Journal is section 4).
@@ -326,16 +335,8 @@ filtered on one account 10.1–11.0 s, the trades CSV 7.8–13.5 s; the Journal 
 - Per-account totals computed in SQL over `trade_ledger` (security invoker, so RLS still applies): realized P&L, today
   and month P&L by strategy day of exit, cumulative R, closed and live counts, and max R drawdown over the exit-ordered
   sequence. These replace the "—" for accounts above the limit.
-- Bounded chart payloads on the dashboard and EDGE, so their load time does not grow with the account's history
-  (expected 2–5 s at 20,000 trades):
-  - line charts (`LineFigure`, `src/components/charts/line-chart.tsx`) above 300 points build tips, anchors, hit areas
-    and marks only for marked positions (one point per run of `ceil(count / 300)`, always the first, the last and the
-    deepest drawdown), and draw the line and area from the minimum and maximum of about 600 x-buckets, so swings stay
-    visible;
-  - their tables (`LineTable`) list the marked rows with a caption ("Every Nth of M points; the Journal lists every
-    trade");
-  - EDGE's daily bars show a bounded window of the last trading days (proposed: 120), as the dashboard's already do
-    (`DAILY_DAYS`, "Last 30 of N trading days with exits").
+- The same SQL totals for EDGE's headline metrics and breakdowns of a large scope, so EDGE across accounts at 20,000
+  trades meets the 5 s budget (8.2–8.4 s today; the chart payloads are already bounded, §3.1).
 - Tests: SQL totals equal the TypeScript metrics on the same trades (parity), at 20,000 and above.
 
 ---
@@ -349,19 +350,17 @@ dozen joins. A read that filters or sorts on such a column makes PostgreSQL comp
 and no index can help. V2 avoids that where it measured it (V2_ARCHITECTURE.md §9.4, §13.3, §14.1): keyset reads by
 id with the lifecycle checked on the rows read, open trades found through the base tables' keys (`openTradeIds`),
 drafts read with the plain `origin` and `plan_id` columns, the palette's newest trades found in `trades`, and All
-Accounts read one account at a time. Three reads remain, measured on 2026-11-08 with a production build on synthetic users:
+Accounts read one account at a time. Two reads remain, measured on 2026-11-08 with a production build on synthetic users:
 
 - **Journal.** Each of its three streams is sorted by a computed trade date (`entered_at`, `locked_at` or
   `created_at`): 4.55 s across all accounts or 1.38 s per account at 3 × 15,000 trades, plus 2.1 s for the exact
   total. The page takes 7.9–8.7 s for All Accounts at 45,000 trades (7.3–7.9 s filtered), over the 5 s budget;
   splitting by account gives no net gain. One account of 19,900 trades: 3.3–3.4 s.
-- **Account dashboard's live list.** It still reads `lifecycle=eq.LIVE` per account (`loadAccountDashboard`,
-  `src/lib/accounts-data.ts`): 1.2 s normally. Moving it to `openLedgerRows` is a small change that was not made in V2.
 - **Prepared statements.** PostgREST prepares its statements; after five runs on a connection PostgreSQL may switch to
   a generic plan, under which a ledger read filtered by a computed column measured 5 s and more. Against the 8 s
   statement timeout of `authenticated` (Supabase's default), such a read can fail under load. Every statement timeout
-  the local stack logged during the measurements was such a read; the dashboard's live list is the remaining one, and
-  it did not fail in the final runs.
+  the local stack logged during the measurements was such a read. The last list filtered that way, the account
+  dashboard's live trades, now reads the open trades (`openLedgerRows`) too; only the Journal's sorted streams remain.
 
 ### 4.2 Proposed design (V2.1)
 
@@ -369,7 +368,7 @@ Accounts read one account at a time. Three reads remain, measured on 2026-11-08 
   migration after 0019, within the append-only rules of V2_ARCHITECTURE.md §0: recorded by the RPCs that already
   record each lifecycle event, never rewriting history), so the Journal's streams and every open-trade list become
   index range reads.
-- Then the Journal sorts by the stored date and the dashboard's live list reads the open state, and no ledger read
-  filters or sorts on a computed column.
+- Then the Journal sorts by the stored date and the open-trade lists read the open state, and no ledger read filters or
+  sorts on a computed column.
 - Tests: the stored columns agree with the derived ones (parity) for every lifecycle, origin and back-dated entry, and
   the erasure purge still covers every table.

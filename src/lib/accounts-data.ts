@@ -10,14 +10,14 @@ import {
   breakdown, type CalendarMode, type CurvePoint, type DailyPoint, type DrawdownPoint, dailySeries, drawdownSeries, equityCurveR, isClosed,
 } from "@/domain/performance";
 import type { Instrument } from "@/domain/risk";
-import { addDays, compareInstants, formatDay, strategyDay, strategyMonth } from "@/domain/time-display";
+import { addDays, compareInstants, formatDay, instantComparer, strategyDay, strategyMonth } from "@/domain/time-display";
 import { type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext, loadAccount } from "./account-context";
 import {
   breakdownHref, closedOnHref, type DrillDown, type LedgerRows, type LinkedBreakdownGroup, type LinkedCalendar, linkedCalendar, loadLedgerRows, MAX_LEDGER_ROWS,
   parseMonth,
 } from "./performance-data";
 import { type AccountConnectionState, loadAccountConnectionStates, type PlatformOption, platformOptions } from "./sync-service";
-import { decorateTrades, journalHref, ledgerSelect, loadLedgerPage, parseLedger, type TradeListRow } from "./trades-data";
+import { decorateTrades, journalHref, loadLedgerPage, openLedgerRows, type TradeListRow } from "./trades-data";
 import {
   type AccountWorkspace, INSTRUMENT_SELECT, loadAccountWorkspace, OBSERVATION_SELECT, parseInstrumentRows, parseObservationRow, parseRiskPlanRow, RISK_PLAN_SELECT,
   toInstrument, type WorkspaceObservation, type WorkspaceRiskPlan,
@@ -244,8 +244,9 @@ export interface AccountDashboard {
 /** Starting balance plus cumulative net P&L in exit order (microsecond-exact, id tie-break). */
 export function balanceCurve(startingBalance: string | null, trades: readonly LedgerTrade[]): BalancePoint[] | null {
   if (startingBalance === null) return null;
+  const compare = instantComparer();
   const closed = trades.filter(trade => isClosed(trade) && trade.net_pnl !== null)
-    .sort((a, b) => compareInstants(a.exited_at as string, b.exited_at as string) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    .sort((a, b) => compare(a.exited_at as string, b.exited_at as string) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   let balance = new M(startingBalance);
   const points: BalancePoint[] = [{ sequence: 0, tradeId: null, at: null, balance: balance.toFixed(), value: balance.toNumber() }];
   closed.forEach((trade, index) => {
@@ -260,6 +261,9 @@ export interface DashboardOptions {
   calendarMode?: CalendarMode;
 }
 
+/** Live trades the dashboard lists, newest first by creation. */
+const DASHBOARD_LIVE_ROWS = 50;
+
 export async function loadAccountDashboard(db: Db, userId: string, context: AccountContext, account: ContextAccount, now: string, options: DashboardOptions = {}): Promise<AccountDashboard> {
   const scope = { mode: "account" as const, accountId: account.id };
   const [balances, observations, ledger, connections, workspace, riskPlans, recent, live] = await Promise.all([
@@ -270,12 +274,12 @@ export async function loadAccountDashboard(db: Db, userId: string, context: Acco
     loadAccountWorkspace(db, userId, account, now),
     loadRiskPlans(db, userId, account.id),
     loadLedgerPage(db, userId, scope, {}, null, 10),
-    ledgerSelect(db).eq("account_id", account.id).eq("lifecycle", "LIVE").order("created_at", { ascending: false }).order("id", { ascending: false }).limit(50),
+    // The open trades by their keys, never a ledger read filtered by the derived lifecycle (openTradeIds).
+    openLedgerRows(db, userId, scope, ["LIVE"]),
   ]);
-  if (live.error) throw new Error("Trades are unavailable.");
   const workspaces = new Map([[account.id, workspace] as const]);
   const listDeps = { db, userId, accounts: context.accounts, now, workspaces };
-  const [recentTrades, liveTrades] = await Promise.all([decorateTrades(listDeps, recent.rows), decorateTrades(listDeps, parseLedger(live.data))]);
+  const [recentTrades, liveTrades] = await Promise.all([decorateTrades(listDeps, recent.rows), decorateTrades(listDeps, live.slice(0, DASHBOARD_LIVE_ROWS))]);
   const startingBalance = balances.get(account.id) ?? null;
   // Part of an account's trades (an arbitrary part: the read pages by id) never feeds a chart.
   const closed = ledger.truncated ? [] : ledger.rows.filter(isClosed);

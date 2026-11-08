@@ -196,6 +196,27 @@ describe("Settings page", () => {
     expect(html).toMatch(/<details\b[^>]*>[\s\S]*Demo 2025[\s\S]*<\/details>/);
   });
 
+  it("lets an archived account with AI on turn it off, and offers nothing else (§11.2, V1: disabling stays available)", () => {
+    const old = account(OLD, "Demo 2025", "USD", "DEMO", "ARCHIVED");
+    const base = fixture();
+    const archivedGroup = (enabled: boolean) => {
+      const html = render({ ...base, archived: [old], ai: { ...base.ai, accounts: [...base.ai.accounts, { account: old, budget: budget(enabled, true) }] } });
+      const start = html.indexOf("Archived accounts · 1");
+      return start < 0 ? "" : html.slice(start, html.indexOf("</details>", start));
+    };
+    const on = archivedGroup(true);
+    expect(visibleText(on)).toContain("Turn off AI for Demo 2025");
+    expect(on).toContain(`name="accountId" value="${OLD}"`);
+    expect(on).toContain('name="enabled" value="false"');
+    expect(visibleText(on)).not.toContain("Turn on AI");
+    expect(visibleText(on)).not.toContain("Save limit");
+    expect(visibleText(on)).toContain("AI can be turned off here; restore an account to turn AI on or change its limit.");
+    const off = archivedGroup(false);
+    expect(off).toContain("Demo 2025");
+    expect(off).not.toContain("<form");
+    expect(visibleText(off)).not.toContain("Turn off AI");
+  });
+
   it("states connections honestly: manual today, cTrader and MetaTrader 5 planned with read-only scope", () => {
     const text = visibleText(render(fixture()));
     expect(text).toContain("Trades are recorded manually in this version.");

@@ -1,6 +1,15 @@
+import { createElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveSourceChip } from "@/domain/ai-summary";
 import { revealTradeTarget, tradeTargetOf } from "@/components/trade/reveal";
+
+// next/link renders the same <a> on the server; marking it tells a client-side link from a plain anchor.
+vi.mock("next/link", () => ({
+  default: ({ href, children, ...rest }: { href: string; children?: ReactNode }) => createElement("a", { ...rest, href, "data-client-link": "" }, children),
+}));
+
+import { SourceChip } from "@/components/ai/source-chip";
 
 // A weekly, recent-trades or monthly review lists many trades and has no timeline of its own: its note and event chips
 // open the trade's timeline item, /trades/<trade>#journal:<id> (docs/V2_ARCHITECTURE.md §11.1). The trade page streams
@@ -76,5 +85,17 @@ describe("periodic source chips open the trade's timeline item", () => {
     expect(revealTradeTarget(`journal:${JOURNAL}`)).toBe(false);
     expect(other.scrollIntoView).not.toHaveBeenCalled();
     expect(other.focus).not.toHaveBeenCalled();
+  });
+
+  it("a V1 chip that goes through /journal/<plan>#… is a plain link, so the redirect keeps the fragment (K23)", () => {
+    const PLAN = "50000000-0000-4000-8000-000000000001";
+    const html = (href: string) => renderToStaticMarkup(createElement(SourceChip, { chip: { label: "Stop moved · 10:30", kind: "event", href } }));
+    const v1 = html(`/journal/${PLAN}#event:${EVENT}`);
+    expect(v1).toContain(`href="/journal/${PLAN}#event:${EVENT}"`);
+    expect(v1).not.toContain("data-client-link");
+    // The V2 chip opens the trade itself, where TradeHashFocus reveals the item after a client-side navigation.
+    expect(html(`/trades/${TRADE}#event:${EVENT}`)).toContain("data-client-link");
+    // A V1 trade chip without a fragment keeps the client-side link.
+    expect(html(`/journal/${PLAN}`)).toContain("data-client-link");
   });
 });

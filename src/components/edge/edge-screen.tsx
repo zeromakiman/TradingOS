@@ -96,7 +96,8 @@ function Notices({ data }: { data: EdgeData }) {
       )}
       {data.truncated && (
         <Callout tone="warning" title="Results are incomplete">
-          Only the first {MAX_LEDGER_ROWS.toLocaleString("en-US")} closed trades are included. Narrow the date range for complete statistics.
+          {/* The read keeps the first rows by trade id, which says nothing about dates: never "the first" or "the latest". */}
+          Figures cover {MAX_LEDGER_ROWS.toLocaleString("en-US")} of the closed trades that match, not a date range. Narrow the date range for complete statistics.
         </Callout>
       )}
     </div>

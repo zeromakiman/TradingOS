@@ -53,6 +53,7 @@ export const SQL_ERROR_COPY: Readonly<Record<string, string>> = Object.freeze({
   ALREADY_EXECUTED: "This plan was executed. Close the trade instead of skipping it.",
   STRATEGY_UNSUPPORTED: "This draft uses a strategy version the risk engine doesn't support.",
   ALREADY_DISPOSED: "This plan is already skipped or cancelled.",
+  EXECUTION_LINKED: "A platform position is linked to this plan, so its result counts here. Unlink it in Manage → Connection before marking the plan skipped or cancelled.",
   NOT_CLOSED: "Only closed trades can be marked reviewed.",
   NOT_REVIEWED: "Only reviewed trades can be reopened.",
   ORIGIN_MISMATCH: "This action isn't available for this trade.",

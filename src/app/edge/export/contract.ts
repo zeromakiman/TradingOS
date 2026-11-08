@@ -1,7 +1,7 @@
 import { type EdgeQuery, edgeFilters, parseEdgeQuery } from "@/components/edge/query";
 import type { LedgerTrade } from "@/domain/ledger";
 import { strategyClock } from "@/domain/session";
-import { compareInstants, instantMicros, strategyDay, WEEKDAY_NAMES, weekdayIndex } from "@/domain/time-display";
+import { instantComparer, instantMicros, strategyDay, WEEKDAY_NAMES, weekdayIndex } from "@/domain/time-display";
 import { csvCell } from "@/lib/export";
 import { MAX_LEDGER_ROWS } from "@/lib/performance-data";
 import { type TradeFilters, tradeFilterParams } from "@/lib/trades-data";
@@ -157,13 +157,19 @@ function compareIds(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** Closed trades in exit order (microsecond exact), then by id, as V1 listed them. */
-export function byExit(a: Pick<LedgerTrade, "exited_at" | "id">, b: Pick<LedgerTrade, "exited_at" | "id">): number {
-  if (a.exited_at !== null && b.exited_at !== null) {
-    const order = compareInstants(a.exited_at, b.exited_at);
-    if (order !== 0) return order;
-  }
-  return compareIds(a.id, b.id);
+/**
+ * Closed trades in exit order (microsecond exact), then by id, as V1 listed them. A comparer per sort: each exit time
+ * is parsed once (`instantComparer`).
+ */
+export function exitOrder(): (a: Pick<LedgerTrade, "exited_at" | "id">, b: Pick<LedgerTrade, "exited_at" | "id">) => number {
+  const compare = instantComparer();
+  return (a, b) => {
+    if (a.exited_at !== null && b.exited_at !== null) {
+      const order = compare(a.exited_at, b.exited_at);
+      if (order !== 0) return order;
+    }
+    return compareIds(a.id, b.id);
+  };
 }
 
 export interface EntryRecord {

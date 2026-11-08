@@ -8,7 +8,7 @@ import { type RiskReportV12, riskReportSchemaV12 } from "@/domain/risk-report";
 import { strategyClock } from "@/domain/session";
 import { type BootstrappedAccount, createTestDatabase, OWNER, type TestDatabase } from "./helpers/pglite";
 
-// Precision audit §4 (reports/precision.md): every boundary case T1–T29 and money scenario S1–S6, through
+// The precision audit's boundaries (docs/RISK_ENGINE.md, docs/V2_ARCHITECTURE.md §6.6): every boundary case T1–T29 and money scenario S1–S6, through
 // private.risk_report_v12 with an explicit p_now AND through evaluateRisk, which must agree byte for byte.
 // Base: EURUSD (tick 0.00001, pip 0.0001, tick value 1, step 0.01, minimum 0.01); equity 10000.00, observation day
 // 2026-09-04, now 2026-09-04T14:00:00Z; Risk Plan max 0.5, min RR 3 BLOCK, 2 trades/day, news WARN, no caps;

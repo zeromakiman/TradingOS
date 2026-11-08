@@ -44,7 +44,7 @@ import { EDGE_DESCRIPTION } from "@/components/edge/edge-screen";
 import { EXPORT_NOTE } from "@/components/edge/export-menu";
 import { formatDrawdownR, formatProfitFactor, formatRate, formatShare } from "@/components/edge/format";
 import {
-  breakdownSections, calendarModel, contributionSection, curveData, dailyData, distributionBins, exportLinks, headlineModel, noMatchDescription,
+  breakdownSections, calendarModel, contributionSection, curveData, DAILY_WINDOW, dailyData, distributionBins, exportLinks, headlineModel, noMatchDescription,
   originSection, rCoverage, scopeLabel,
 } from "@/components/edge/model";
 import { edgeHref, withParams } from "@/components/edge/params";
@@ -857,7 +857,8 @@ describe("EDGE page (rendered)", () => {
     m.load.mockImplementation(async () => ({ rows: dataset(), truncated: true }));
     const text = visibleText(await renderPage({ model: "SCALP" }));
     expect(text).toContain("Some filters in this link couldn't be read and were ignored.");
-    expect(text).toContain("Only the first 20,000 closed trades are included. Narrow the date range for complete statistics.");
+    expect(text).toContain("Figures cover 20,000 of the closed trades that match, not a date range. Narrow the date range for complete statistics.");
+    expect(text).not.toContain("Only the first");
   });
 
   it("dims calendar days outside the selected range and lists every day with trades for phones", () => {
@@ -941,5 +942,68 @@ describe("EDGE page (rendered)", () => {
     const direct = buildPerformance(ALL, { rows: dataset(), truncated: false }, {}, NOW, { month: data.month, calendarMode: "NET_R" });
     expect(data.view?.metrics).toEqual(direct.metrics);
     expect(data.view?.money).toEqual(direct.money);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A long history: the page draws a bounded number of marks, however many trades and days match.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("EDGE with a long history", () => {
+  /** `days` consecutive exit days from May 1, 2026, `perDay` USD trades each on FTMO, and one EUR trade on each of the last `eurDays`. */
+  function history(days: number, perDay: number, eurDays = 0): { rows: LedgerTrade[]; days: string[] } {
+    const list = Array.from({ length: days }, (_, index) => new Date(Date.UTC(2026, 4, 1 + index)).toISOString().slice(0, 10));
+    const rs = ["1", "-1", "0.5", "-0.5", "2", "-1", "1.5", "-0.25"];
+    const rows = list.flatMap((day, index) => [
+      ...Array.from({ length: perDay }, (_, trade) => closed(day, rs[(index + trade) % rs.length])),
+      ...(index >= days - eurDays ? [closed(day, "1", { account_id: PERSONAL, currency: "EUR", symbol: "DE40" })] : []),
+    ]);
+    return { rows, days: list };
+  }
+  const dayLink = (day: string) => `closedFrom=${day}&amp;closedTo=${day}`;
+
+  it("draws the daily bars for the last 120 trading days and says so, per currency", () => {
+    const { rows, days } = history(130, 1, 10);
+    const data = edgeData(rows);
+    if (!data.view) throw new Error("expected a view");
+    const daily = dailyData(data.view, data.rows);
+    expect(DAILY_WINDOW).toBe(120);
+    expect(daily.days).toBe(130);
+    expect(daily.r).toHaveLength(120);
+    expect(daily.r.map(point => point.key)).toEqual(days.slice(-120));
+    expect(daily.rSample).toBe("Last 120 of 130 trading days · exit day (UTC−5)");
+    const usd = daily.money.find(entry => entry.currency === "USD");
+    const eur = daily.money.find(entry => entry.currency === "EUR");
+    expect(usd?.data.map(point => point.key)).toEqual(days.slice(-120));
+    expect(usd?.sample).toBe("Last 120 of 130 trading days with USD trades · exit day (UTC−5)");
+    // A currency with fewer days keeps all of them, and its sample is unchanged.
+    expect(eur?.data.map(point => point.key)).toEqual(days.slice(-10));
+    expect(eur?.sample).toBe("10 trading days with EUR trades · exit day (UTC−5)");
+  });
+
+  it("keeps the daily sample unchanged up to 120 trading days", () => {
+    const { rows, days } = history(120, 1);
+    const data = edgeData(rows, {}, ONE);
+    if (!data.view) throw new Error("expected a view");
+    const daily = dailyData(data.view, data.rows);
+    expect(daily.r.map(point => point.key)).toEqual(days);
+    expect(daily.rSample).toBe("120 trading days · exit day (UTC−5)");
+    expect(daily.money[0].sample).toBe("120 trading days with USD trades · exit day (UTC−5)");
+  });
+
+  it("renders fewer chart marks than trades, the windowed days' sample and no bar before the window", async () => {
+    const { rows, days } = history(130, 8);
+    m.load.mockImplementation(async () => ({ rows, truncated: false }));
+    const html = await renderPage({ month: "2026-09" });
+    const text = visibleText(html);
+    expect(text).toContain("Last 120 of 130 trading days · exit day (UTC−5)");
+    expect(text).toContain("Last 120 of 130 trading days with USD trades · exit day (UTC−5)");
+    // 1,040 trades: each line chart keeps about 300 marks and table rows, each daily chart 120.
+    const marks = html.match(/data-mark="/g)?.length ?? 0;
+    expect(marks).toBeLessThan(rows.length);
+    expect(html.match(/<tr[ >]/g)?.length ?? 0).toBeLessThan(rows.length);
+    expect(text).toContain("Every 4th of 1,041 points, with the first point and the deepest drawdown. The Journal lists every trade.");
+    // The oldest days are not drawn as bars (the calendar shows September); the latest is.
+    expect(html).not.toContain(dayLink(days[0]));
+    expect(html).toContain(dayLink(days[129]));
   });
 });

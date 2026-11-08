@@ -24,6 +24,7 @@ import {
   ZERO,
 } from "./scale";
 import { seriesSummary } from "./summary";
+import { decimatePath, deepestFall, everyNth, MARK_LIMIT, markedPositions } from "./thinning";
 import { SERIES_ORDER, seriesClass } from "./tones";
 import type { ChartAnchor, ChartDatum, ChartEmptyCopy, ChartFigureProps, ChartTip, LineSeries, SeriesTone, TickFormatter } from "./types";
 
@@ -96,6 +97,12 @@ function segments(points: (Point | null)[]): Point[][] {
   return runs.filter((run) => run.length > 0);
 }
 
+/** The deepest point of a drawdown (≤ 0) series, the one `DeepestPoint` labels; null while it never goes below zero. */
+function deepestBelowZero(values: (Dec | null)[]): number | null {
+  const range = extremes(values);
+  return range && values[range.minIndex]?.isNegative() ? range.minIndex : null;
+}
+
 function LineFigure({
   title,
   question,
@@ -138,19 +145,30 @@ function LineFigure({
   const showArea = !multiple && (area ?? true);
   const tops = values.map((line) => line.map((value) => (value === null ? null : topPercent(value, scale))));
 
+  // Long series (above MARK_LIMIT points) keep marks, tooltips and table rows only for the marked points, and draw
+  // min/max-decimated paths (thinning.ts); shorter ones keep every point.
+  const thinned = count > MARK_LIMIT;
+  const deepest = thinned ? values.map((line) => (variant === "drawdown" ? deepestBelowZero(line) : deepestFall(line))) : [];
+  const positions = markedPositions(count, deepest);
+  const tableNote = thinned
+    ? `${everyNth(count)}, with the first point${deepest.some((position) => position !== null) ? " and the deepest drawdown" : ""}. The Journal lists every trade.`
+    : undefined;
+
   const paths = series.map((line, index) => {
     const runs = segments(tops[index].map((y, position) => (y === null ? null : { x: xs[position], y })));
+    const drawn = thinned ? runs.map((run) => decimatePath(run)) : runs;
     return {
       id: line.id,
       tone: line.tone,
-      line: runs.map((run) => linePath(run)).filter(Boolean).join(" "),
-      area: showArea ? runs.map((run) => areaPath(run, baseline)).filter(Boolean).join(" ") : "",
+      line: drawn.map((run) => linePath(run)).filter(Boolean).join(" "),
+      area: showArea ? drawn.map((run) => areaPath(run, baseline)).filter(Boolean).join(" ") : "",
       // A point between two gaps has no segment, so it is drawn as a dot (EndMarks draws the last run's end).
       isolated: runs.slice(0, -1).filter((run) => run.length === 1).map((run) => run[0]),
     };
   });
 
-  const tips: ChartTip[] = xs.map((_, position) => ({
+  // Mark `mark` (its `data-mark`, its tooltip and anchor) is the point at `positions[mark]`.
+  const tips: ChartTip[] = positions.map((position) => ({
     title: series[0].points[position]?.label ?? "",
     rows: series.map((line) => ({
       value: line.points[position]?.valueLabel ?? "—",
@@ -160,16 +178,19 @@ function LineFigure({
     note: multiple ? undefined : series[0].points[position]?.detail,
   }));
 
-  const anchors: ChartAnchor[] = xs.map((x, position) => {
+  const anchors: ChartAnchor[] = positions.map((position) => {
     const dots = series.flatMap((line, index) => {
       const y = tops[index][position];
       return y === null ? [] : [{ y, tone: line.tone }];
     });
-    return { x, y: dots.length > 0 ? Math.min(...dots.map((dot) => dot.y)) : baseline, dots };
+    return { x: xs[position], y: dots.length > 0 ? Math.min(...dots.map((dot) => dot.y)) : baseline, dots };
   });
 
-  const hrefAt = (position: number) => series.find((line) => line.points[position]?.href)?.points[position]?.href;
-  const hits = pointHitAreas(xs);
+  const hrefAt = (mark: number) => {
+    const position = positions[mark];
+    return series.find((line) => line.points[position]?.href)?.points[position]?.href;
+  };
+  const hits = pointHitAreas(positions.map((position) => xs[position]));
 
   return (
     <ChartFrame
@@ -177,7 +198,7 @@ function LineFigure({
       question={question}
       sample={sample}
       summary={resolvedSummary}
-      table={<LineTable caption={title} xLabel={xLabel} series={input} />}
+      table={<LineTable caption={title} xLabel={xLabel} series={input} marked={tableNote === undefined ? undefined : { positions, note: tableNote }} />}
       legend={multiple ? <SeriesLegend series={series} tableOnly={input.length - series.length} /> : undefined}
       actions={actions}
       headingLevel={headingLevel}
@@ -203,10 +224,10 @@ function LineFigure({
             )}
             <EndMarks series={series} values={values} tops={tops} xs={xs} variant={variant} />
             {variant === "drawdown" && <DeepestPoint points={series[0].points} values={values[0]} tops={tops[0]} xs={xs} />}
-            <ul className="chart-hits" aria-label={`${title}: data points. Use the arrow keys to move between them.`}>
-              {hits.map((hit, position) => (
-                <li key={series[0].points[position]?.key ?? `point-${hit.left}`}>
-                  <ChartMark index={position} tip={tips[position]} href={hrefAt(position)} focusable={position === count - 1} style={{ left: `${hit.left}%`, width: `${hit.width}%` }} />
+            <ul className="chart-hits" aria-label={`${title}: ${thinned ? everyNth(count).toLowerCase() : "data points"}. Use the arrow keys to move between them.`}>
+              {hits.map((hit, mark) => (
+                <li key={series[0].points[positions[mark]]?.key ?? `point-${hit.left}`}>
+                  <ChartMark index={mark} tip={tips[mark]} href={hrefAt(mark)} focusable={mark === positions.length - 1} style={{ left: `${hit.left}%`, width: `${hit.width}%` }} />
                 </li>
               ))}
             </ul>
@@ -301,14 +322,28 @@ function SeriesLegend({ series, tableOnly }: { series: (LineSeries & { tone: Ser
   );
 }
 
-/** Every series by position, including any beyond the three that are drawn. */
-function LineTable({ caption, xLabel, series }: { caption: string; xLabel: string; series: LineSeries[] }) {
+/**
+ * Every series by position, including any beyond the three that are drawn. A thinned chart lists only its marked
+ * positions (`marked`) and says so in a visible caption (every line chart in the app plots closed trades, which the
+ * Journal lists in full).
+ */
+function LineTable({ caption, xLabel, series, marked }: { caption: string; xLabel: string; series: LineSeries[]; marked?: { positions: number[]; note: string } }) {
   const count = Math.max(0, ...series.map((line) => line.points.length));
-  const rows = Array.from({ length: count }, (_, position) => position);
+  const rows = marked?.positions ?? Array.from({ length: count }, (_, position) => position);
   const hasDetail = series.length === 1 && series[0].points.some((point) => point.detail);
   return (
     <DataTable
-      caption={caption}
+      caption={
+        marked ? (
+          <>
+            <span className="sr-only">{`${caption}. `}</span>
+            <span className="t-caption font-normal">{marked.note}</span>
+          </>
+        ) : (
+          caption
+        )
+      }
+      captionVisible={marked !== undefined}
       rows={rows}
       rowKey={(position) => series[0].points[position]?.key ?? `row-${position}`}
       columns={[

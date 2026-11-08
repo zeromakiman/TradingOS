@@ -233,8 +233,11 @@ describe("100-character account names without spaces where a name is printed who
     expect(card?.[2]).toContain(`>${NO_SPACES}</p>`);
     await expectWrapAnywhere((card?.[1] ?? "").split(/\s+/));
     // The list is the innermost div around the archived account's compact budget line.
+    // The list holds one column per archived account (its budget line and, while AI is on, Turn off AI); the list
+    // breaks the names, and each account's column inherits it.
     const beforeOld = html.slice(0, html.indexOf(`>${old.name}<`));
-    const archivedList = [...beforeOld.matchAll(/<div class="([^"]*)">/g)].at(-1);
+    const [archivedList, entry] = [...beforeOld.matchAll(/<div class="([^"]*)">/g)].slice(-2);
+    expect(entry?.[1]).toBe("flex flex-col gap-2");
     await expectWrapAnywhere((archivedList?.[1] ?? "").split(/\s+/));
   });
 });

@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import { formatPercent, formatR, formatSignedMoney, plural, stripZeros } from "./format";
 import type { LedgerTrade } from "./ledger";
 import { strategyClock } from "./session";
-import { addDays, compareInstants, daysInMonth, strategyDay, toDate, WEEKDAY_NAMES, weekdayIndex } from "./time-display";
+import { addDays, daysInMonth, instantComparer, strategyDay, toDate, WEEKDAY_NAMES, weekdayIndex } from "./time-display";
 
 /**
  * Deterministic performance from ledger rows (spec §9.3–9.4, §13.6–13.8).
@@ -61,13 +61,15 @@ export function isClosed(trade: Pick<PerformanceTrade, "exited_at" | "outcome">)
   return trade.exited_at !== null && trade.outcome !== null;
 }
 
-function byExit(a: PerformanceTrade, b: PerformanceTrade): number {
-  return compareInstants(a.exited_at ?? "", b.exited_at ?? "") || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/** Exit order (microsecond exact), then id. One comparer per sort, so each exit time is parsed once. */
+function exitOrder(): (a: PerformanceTrade, b: PerformanceTrade) => number {
+  const compare = instantComparer();
+  return (a, b) => compare(a.exited_at ?? "", b.exited_at ?? "") || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 /** Closed trades in exit order, split by whether they carry realized R. */
 function closedTrades(trades: readonly PerformanceTrade[]) {
-  const closed = trades.filter(isClosed).sort(byExit);
+  const closed = trades.filter(isClosed).sort(exitOrder());
   const withR = closed.filter(trade => trade.realized_r !== null);
   return { closed, withR, excluded: closed.length - withR.length };
 }
@@ -550,7 +552,7 @@ export function breakdown(trades: readonly PerformanceTrade[], key: BreakdownKey
       return {
         key, value, label: groupLabel(key, value, members[0], options), closed: members.length, metrics,
         money: moneyByCurrency(members), sample: metrics.sample, evidence, evidenceLabel,
-        tradeIds: [...members].sort(byExit).map(trade => trade.id),
+        tradeIds: [...members].sort(exitOrder()).map(trade => trade.id),
       };
     })
     .sort((a, b) => compareGroups(key, a, b));

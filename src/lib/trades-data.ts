@@ -417,8 +417,9 @@ const openTradeRow = z.object({ id: z.uuid() });
 
 /**
  * Ids of the trades whose lifecycle can be LIVE or LOCKED, read from the base tables through their keys, never the
- * ledger's derived columns: planned trades whose plan has no outcome (`trade_outcomes=is.null`, an anti-join), and
- * live-first or imported trades without a close. A superset (skipped and cancelled plans, for example): callers keep the
+ * ledger's derived columns: planned trades whose plan has neither an outcome nor a skip or cancel (`trade_outcomes=is.null`
+ * and `trade_dispositions=is.null`, anti-joins; a plan has at most one of each and they exclude each other, 0006), and
+ * live-first or imported trades without a close. Still a superset (drafts, waiting and discarded plans): callers keep the
  * ledger rows of the lifecycles they list. A ledger read filtered by `lifecycle` computes every trade of the scope first
  * (1.2 s per query at 20,000 trades; once PostgREST's prepared statement switched to a generic plan on a connection,
  * 5 s and more, past the 8 s statement timeout under load).
@@ -438,7 +439,7 @@ export async function openTradeIds(db: Db, userId: string, scope: TradeScope): P
   };
   const [plans, unplanned] = await Promise.all([
     keyset(openPlanRow, after => {
-      let query = db.from("trade_plans").select("id,trade_plan_links(trade_id),trade_outcomes(id)").eq("user_id", userId).is("trade_outcomes", null);
+      let query = db.from("trade_plans").select("id,trade_plan_links(trade_id),trade_outcomes(id),trade_dispositions(id)").eq("user_id", userId).is("trade_outcomes", null).is("trade_dispositions", null);
       if (scope.mode === "account") query = query.eq("account_id", scope.accountId);
       if (after !== null) query = query.gt("id", after);
       return query.order("id", { ascending: true }).limit(OPEN_PAGE);

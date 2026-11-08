@@ -342,7 +342,7 @@ export function JournalComposer({
             setFieldErrors({});
           }}
           aria-describedby={kindsNote ? kindsNoteId : undefined}
-          className="max-md:[&_.filter-chips]:flex-nowrap max-md:[&_.filter-chips]:overflow-x-auto max-md:[&_.filter-chips]:pb-1"
+          // Every kind stays in view on a phone (two rows at 393 px), none behind a sideways scroll.
         />
         {kindsNote && (
           <p id={kindsNoteId} className="t-caption -mt-1">
@@ -399,10 +399,15 @@ export function JournalComposer({
             <p role="status" aria-live="polite" aria-atomic="true" className={cx("t-caption", !status && "sr-only", status?.tone === "success" && "text-pos")}>
               {status?.text}
             </p>
+            {/* Each shortcut keeps its words on one line; the pair wraps between them (never "to / add"). */}
             {!status && (
-              <p className="t-caption hidden items-center gap-1 md:flex">
-                <KbdCombo keys={[modifier, "Enter"]} label={`${modifierName} Enter`} /> to add · <KbdCombo keys={[modifier, "V"]} label={`${modifierName} V`} /> pastes a
-                screenshot
+              <p className="t-caption hidden flex-wrap items-center gap-x-2 gap-y-0.5 md:flex">
+                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                  <KbdCombo keys={[modifier, "Enter"]} label={`${modifierName} Enter`} /> to add
+                </span>
+                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                  <KbdCombo keys={[modifier, "V"]} label={`${modifierName} V`} /> pastes a screenshot
+                </span>
               </p>
             )}
           </div>

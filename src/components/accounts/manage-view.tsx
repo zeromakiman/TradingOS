@@ -25,7 +25,7 @@ import { connectionLabel } from "./accounts-overview";
 import type { ConnectionDetails, LinkedTradeNote } from "./connection-data";
 import {
   ADD_EXTERNAL_LOSS, ARCHIVE_COPY, ARCHIVED_VALUES_COPY, accountDashboardHref, EXTERNAL_LOSSES_TITLE, MANAGE_TABS, MANUAL_CONNECTION_COPY, type ManageTab, manageHref,
-  RESTORE_COPY, RR_POLICY_LABELS, STARTS_TOMORROW, typeAndBroker, UPDATE_VALUES, VERSIONING_COPY,
+  RESTORE_COPY, RR_POLICY_LABELS, STARTS_TOMORROW, typeAndBroker, UNMATCHED_LOSS_REMOVE_NOTE, UPDATE_VALUES, VERSIONING_COPY,
 } from "./copy";
 import { LinkExecutionForm, MockConnectButton, MockSyncControls, UnlinkExecutionButton } from "./manage-connection-controls";
 import { AddExternalLossForm, ExternalLossHelp, RemoveExternalLossButton } from "./manage-external-losses";
@@ -764,7 +764,7 @@ function ConnectionPanel({ manage, display, connection }: ManageViewProps) {
                   <Link href={manageHref(account.id, "external-losses")} className={cx("font-medium text-accent hover:underline", HIT_AREA)}>
                     External losses
                   </Link>
-                  .
+                  . {UNMATCHED_LOSS_REMOVE_NOTE}
                 </>
               )}
             </Callout>

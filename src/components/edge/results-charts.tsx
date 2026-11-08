@@ -2,14 +2,13 @@ import { DivergingBarChart, Histogram } from "@/components/charts/bar-chart";
 import { formatTickMoney, formatTickR } from "@/components/charts/format";
 import { DrawdownChart, LineChart } from "@/components/charts/line-chart";
 import { Card, CardBody } from "@/components/ui/card";
-import { plural } from "@/domain/format";
 import type { CurveData, DailyData } from "./model";
 import type { HistogramBin } from "@/components/charts/types";
 import { ViewPanel, ViewSwitch, ViewSwitchButtons } from "./view-switch";
 
 /**
  * Results over time (§13.6): cumulative R with its drawdown, daily results as diverging bars (Net R, or net P&L in
- * one currency at a time), and the R distribution. Every chart names its trading question, shows its sample, has a
+ * one currency at a time; the last `DAILY_WINDOW` trading days, the sample says so), and the R distribution. Every chart names its trading question, shows its sample, has a
  * table view, and drills down to the trade, the day or the bin in the Journal.
  */
 export function ResultsCharts({ curve, daily, bins, rSample, drawdownSample, distributionSample }: {
@@ -24,7 +23,6 @@ export function ResultsCharts({ curve, daily, bins, rSample, drawdownSample, dis
     { value: "r", label: "Net R" },
     ...daily.money.map(entry => ({ value: `pnl:${entry.currency}`, label: daily.money.length > 1 ? `Net P&L · ${entry.currency}` : "Net P&L" })),
   ];
-  const daySample = `${plural(daily.days, "trading day")} · exit day (UTC−5)`;
   return (
     <div className="grid gap-4 lg:grid-cols-3">
       <Card className="lg:col-span-2">
@@ -63,7 +61,7 @@ export function ResultsCharts({ curve, daily, bins, rSample, drawdownSample, dis
               <DivergingBarChart
                 title="Daily net R"
                 question="Which days drive results?"
-                sample={daySample}
+                sample={daily.rSample}
                 data={daily.r}
                 valueName="Net R"
                 formatTick={formatTickR}
@@ -75,7 +73,7 @@ export function ResultsCharts({ curve, daily, bins, rSample, drawdownSample, dis
                 <DivergingBarChart
                   title={`Daily net P&L · ${entry.currency}`}
                   question="Which days drive results?"
-                  sample={`${plural(entry.data.length, "trading day")} with ${entry.currency} trades · exit day (UTC−5)`}
+                  sample={entry.sample}
                   data={entry.data}
                   valueName="Net P&L"
                   formatTick={formatTickMoney(entry.currency)}

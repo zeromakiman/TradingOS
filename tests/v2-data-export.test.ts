@@ -57,8 +57,8 @@ vi.mock("@/components/ui/dropdown-menu", async importOriginal => {
 });
 
 import {
-  ADDED_COLUMNS, ALL_ACCOUNTS_SCOPE, BYTE_ORDER_MARK, byExit, CSV_COLUMNS, closedTradesCsv, dailySequences, exportFilename, exportHref, LEGACY_COLUMNS,
-  legacySession, legacyWeekday, parseExportRequest, TOO_MANY_TRADES,
+  ADDED_COLUMNS, ALL_ACCOUNTS_SCOPE, BYTE_ORDER_MARK, CSV_COLUMNS, closedTradesCsv, dailySequences, exportFilename, exportHref, LEGACY_COLUMNS,
+  exitOrder, legacySession, legacyWeekday, parseExportRequest, TOO_MANY_TRADES,
 } from "@/app/edge/export/contract";
 import { LEGACY_LAST_CLOSED } from "@/components/edge/query";
 import { GET } from "@/app/edge/export/route";
@@ -576,7 +576,7 @@ describe("EDGE: the export matches what the page shows", () => {
       const scoped = link.href.includes(`account=${ALL_ACCOUNTS_SCOPE}&`) || link.href.endsWith(`account=${ALL_ACCOUNTS_SCOPE}`)
         ? edge.rows
         : edge.rows.filter(row => link.href.includes(`account=${row.account_id}`));
-      const expected = [...scoped].sort(byExit).map(row => row.exited_at);
+      const expected = [...scoped].sort(exitOrder()).map(row => row.exited_at);
       const { response, rows } = await fetchHref(link.href);
       expect(response.status).toBe(200);
       expect(rows.map(row => row.exited_at)).toEqual(expected);

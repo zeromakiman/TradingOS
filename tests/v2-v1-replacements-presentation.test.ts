@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 // V2 replacements of the V1 presentation tests tests/ui-review.test.ts, tests/ui-presentation.test.ts and
 // tests/ux.test.ts (their subjects - session-ribbon, status-banner, numeric, edge-dashboard, journal page and
 // src/domain/ux.ts - were V1-only and are deleted). Each block names the V1 intent it carries over; intents that existing
-// V2 tests already assert are listed in the cleanup replacement table instead of being repeated here.
+// V2 tests already assert are listed in docs/V2_TEST_REPLACEMENTS.md instead of being repeated here.
 
 vi.mock("server-only", () => ({}));
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined, getAll: () => [] }), headers: async () => ({ get: () => null }) }));
