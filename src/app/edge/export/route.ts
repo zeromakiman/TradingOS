@@ -1,9 +1,28 @@
-import { loadJournalAnalytics } from "@/lib/analytics-data";
-import { filterTrades,tradeCsv,validateFilters } from "@/domain/analytics";
-import { routeError,routeUser } from "@/lib/route-security";
-export async function GET(request:Request){
- try{await routeUser(request);const params=Object.fromEntries(new URL(request.url).searchParams),error=validateFilters(params);if(error)return Response.json({error},{status:400});
- const {trades}=await loadJournalAnalytics(params.account);
- return new Response(tradeCsv(filterTrades(trades,params).filter(t=>t.status==="CLOSED")),{headers:{"Content-Type":"text/csv; charset=utf-8","Content-Disposition":"attachment; filename=trading-os-closed-trades.csv","Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff"}});
- }catch(e){return routeError(e);}
+import { cookies } from "next/headers";
+import { ACCOUNT_COOKIE } from "@/lib/account-context";
+import { routeError, routeUser } from "@/lib/route-security";
+import { closedTradesExport } from "./load";
+
+// EDGE's closed-trades CSV (docs/V2_ARCHITECTURE.md §1.2, §14.6; contract in ./contract.ts): read-only, so no
+// same-origin check; the user's own session is the only client used, and signed-out requests get a JSON 401.
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
+export async function GET(request: Request): Promise<Response> {
+  try {
+    const { db, user } = await routeUser(request);
+    // Without an explicit `account`, the file follows the request's account context (the `tos_account` cookie).
+    const context = (await cookies()).get(ACCOUNT_COOKIE)?.value;
+    const file = await closedTradesExport(db, user.id, new URL(request.url).searchParams, context, new Date().toISOString());
+    return new Response(file.csv, {
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${file.filename}"`,
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  } catch (error) {
+    return routeError(error);
+  }
 }

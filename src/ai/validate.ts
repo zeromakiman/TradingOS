@@ -1,6 +1,5 @@
 import Ajv from "ajv";
 import schema from "./evaluation.schema.json";
-import type { RiskResult } from "@/domain/risk";
 const validator = new Ajv({ allErrors: true, strict: true }).compile(schema);
 type Obj = Record<string, unknown>;
 interface Assessment { status: string; evidence_ids: string[]; rule_ids: string[] }
@@ -81,14 +80,4 @@ export function validateEvaluation(raw: unknown, ctx: EvaluationContext): AiAsse
     if (v.grade_components.some(c=>["INVALID","UNKNOWN"].includes(c.rating) || ["REFUTED","AMBIGUOUS","NOT_ASSESSED"].includes(c.assessment.status))) throw new Error("Approval conflicts with rubric findings.");
   }
   return v;
-}
-export function composeFinalEvaluation(analysis: AiAssessment, boundRisk: { inputHash:string; result:RiskResult }) {
-  const risk = boundRisk.result;
-  if (analysis.input_hash !== boundRisk.inputHash) throw new Error("Risk and AI input packages differ.");
-  if (analysis.strategy_version !== risk.strategyVersionId || analysis.risk_plan_version !== risk.riskPlanVersionId) throw new Error("Risk and AI versions differ.");
-  return { schema_version: "1.0", analysis_id: analysis.analysis_id, assessment: analysis, risk,
-    planned_rr: risk.calculations?.plannedRR ?? null, setup_score: null, setup_grade: null,
-    grading_status: "UNCONFIGURED" as const,
-    decision: risk.status === "TRADE_BLOCKED" || analysis.qualitative_decision === "BLOCKED" ? "BLOCKED" : "CONDITIONAL",
-    decision_reason: risk.status === "TRADE_BLOCKED" ? "Deterministic risk restriction." : analysis.qualitative_decision === "BLOCKED" ? "Strategy violation." : "Grading policy is not configured; preserve the qualitative assessment separately." };
 }

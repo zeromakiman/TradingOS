@@ -4,6 +4,17 @@ import { boundedBody, RequestError, routeError, routeUser } from "@/lib/route-se
 import { aiAvailability } from "@/ai/availability";
 export const runtime="nodejs";
 export const maxDuration=300;
+const analyzeRequest=z.object({evaluationId:z.uuid(),mode:z.enum(["NORMAL","DEEP"])}).strict();
+/** A missing, unreadable or malformed body is the caller's mistake: 400 in the standard error shape, never a 500. */
+const INVALID_ANALYZE_BODY="Send a JSON body with an evaluationId (UUID) and a mode (NORMAL or DEEP).";
+async function analyzeBody(request:Request){
+ const text=(await boundedBody(request,4096)).toString("utf8");
+ let json:unknown;
+ try{json=JSON.parse(text);}catch{throw new RequestError(INVALID_ANALYZE_BODY,400);}
+ const body=analyzeRequest.safeParse(json);
+ if(!body.success)throw new RequestError(INVALID_ANALYZE_BODY,400);
+ return body.data;
+}
 export async function POST(request:Request,{params}:{params:Promise<{id:string}>}){
  try{
   await routeUser(request,true);
@@ -12,7 +23,8 @@ export async function POST(request:Request,{params}:{params:Promise<{id:string}>
   if(availability.status==="CONFIGURATION_ERROR")throw new RequestError(availability.message,503);
   const {id}=await params;
   if(!z.uuid().safeParse(id).success)throw new RequestError("Proposal not found",404);
-  const body=z.object({evaluationId:z.uuid(),mode:z.enum(["NORMAL","DEEP"])}).strict().parse(JSON.parse((await boundedBody(request,4096)).toString("utf8")));
+  // The body is validated before any evaluation work starts.
+  const body=await analyzeBody(request);
   try{return Response.json(await analyzeSetup(id,body.evaluationId,body.mode),{headers:{"Cache-Control":"no-store"}});}catch(e){
    if(e instanceof Error&&!e.message.startsWith("NEXT_"))throw new RequestError(e.message,503);throw e;
   }

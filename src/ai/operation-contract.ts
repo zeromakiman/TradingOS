@@ -8,6 +8,7 @@ import { chartEvaluationSchema } from "./chart-contract";
 import { tradeReviewContract } from "./trade-review-contract";
 import type { AiOperation } from "./operations";
 import { CHALLENGE_BIAS_PROMPT,biasChallengeJsonSchema } from "./bias-challenge-contract";
+import { tradeTimelineReviewContract } from "./trade-timeline-review-contract";
 export function operationContract(operation?:AiOperation,context?:unknown) {
  if(!operation||operation.contract==="SETUP_V2")return {name:"ict_setup_v2",instructions:SYSTEM_PROMPT,schema:chartEvaluationSchema};
  if(operation.contract==="REVIEW_TRADE_V1")return tradeReviewContract(context);
@@ -16,5 +17,6 @@ export function operationContract(operation?:AiOperation,context?:unknown) {
  if(operation.contract==="WEEKLY_REVIEW_V1")return canonicalOperationContract("WEEKLY_REVIEW",context,{name:"weekly_review_v1",instructions:WEEKLY_REVIEW_PROMPT,schema:weeklyReviewJsonSchema});
  if(operation.contract==="RECENT_TRADES_V1")return canonicalOperationContract("RECENT_TRADES_ANALYSIS",context,{name:"recent_trades_v1",instructions:RECENT_TRADES_PROMPT,schema:recentTradesJsonSchema});
  if(operation.contract==="MONTHLY_REVIEW_V1")return canonicalOperationContract("MONTHLY_REVIEW",context,{name:"monthly_review_v1",instructions:MONTHLY_REVIEW_PROMPT,schema:monthlyReviewJsonSchema});
+ if(operation.contract==="REVIEW_TRADE_TIMELINE_V1")return tradeTimelineReviewContract(context);
  throw new Error("Unknown AI operation contract");
 }

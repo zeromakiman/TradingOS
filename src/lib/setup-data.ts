@@ -40,8 +40,3 @@ export async function loadSetup(id:string){
  return {riskVersion,db,user,proposal,strategy,instrument,screenshots,removals,evaluations,decisions,lock:locks[0]??null,risks,risk:risks[0].risk};
 }
 export const evaluationRow=z.object({id:z.uuid(),proposal_id:z.uuid(),strategy_version_id:z.uuid(),mode:z.string(),model:z.string(),evaluator_version:z.string(),input_hash:z.string(),manifest:z.unknown(),created_at:z.string(),deadline_at:z.string(),events:z.array(z.object({id:z.number(),status:z.enum(["QUEUED","RUNNING","COMPLETED","FAILED"]),payload:z.record(z.string(),z.unknown()),created_at:z.string()})),passes:z.array(z.object({id:z.uuid(),stage:z.string(),status:z.string(),model:z.string(),response_id:z.string().nullable(),usage:z.unknown(),output:z.unknown(),error_code:z.string().nullable()})),screenshots:z.array(z.object({screenshot_id:z.uuid()}))});
-export type EvaluationRow=z.infer<typeof evaluationRow>;
-export function evaluationState(e:EvaluationRow){
- const event=[...e.events].sort((a,b)=>b.id-a.id)[0];
- return event?.status==="COMPLETED"||event?.status==="FAILED"?event.status:Date.parse(e.deadline_at)<Date.now()?"FAILED":event?.status??"QUEUED";
-}

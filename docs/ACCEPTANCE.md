@@ -1,5 +1,12 @@
 # Deterministic slice acceptance
 
+> Historical V1 record. The V1 Analyze page and `pnpm test:live` (`scripts/verify-live.mjs`, which calls V1 RPCs that
+> migration 0019 revokes) no longer work on V2; the script is kept as the record of the V1 run, without a package script. The V2 browser acceptance is `scripts/local-stack/acceptance/`
+> ([scripts/local-stack/README.md](../scripts/local-stack/README.md)). In V2, `pnpm lint` (line 21 below) runs Biome
+> and then the unused-export check `scripts/check-unused-exports.mjs`: every exported value of `src/` needs a caller in
+> `src/` or `scripts/`, resolved per module (imports, namespaces, re-exports, and the modules the seed loads by path),
+> so a same-named identifier elsewhere does not count, and tests never do.
+
 Connected Supabase and local production-app acceptance completed on 2026-09-05. See PERSISTENCE_INTEGRATION_REVIEW.md and LIVE_VERIFICATION.json for exact evidence. This is not a hosted Vercel deployment claim.
 
 ## Short manual check

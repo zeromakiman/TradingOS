@@ -1,7 +1,7 @@
 import { describe,it,expect,vi,beforeEach,afterEach } from "vitest";
 import Ajv from "ajv";
 import sharp from "sharp";
-import { chartDetailsSchema, chartEvaluationSchema, scoreSetup, tradingStatus, validateChartEvaluation, type ChartEvaluation } from "@/ai/chart-contract";
+import { chartDetailsSchema, chartEvaluationSchema, scoreSetup, validateChartEvaluation, type ChartEvaluation } from "@/ai/chart-contract";
 import { modelConfig } from "@/ai/config";
 import { callResponses, ProviderError } from "@/ai/provider";
 import { runEvaluation, type PassRecord } from "@/ai/run";
@@ -23,7 +23,6 @@ describe("production chart contract",()=>{
  it("does not permit contradictory old/new decisions",()=>expect(()=>validateChartEvaluation({...full(),decision:"APPROVED"},ctx)).toThrow(/Contradictory/));
  it.each(["USER_REPORTED","INFERRED"] as const)("does not upgrade %s to observed",kind=>{const v=full();v.chart_details.target.evidence_class=kind;v.chart_details.target.evidence_ids=["invented"];expect(()=>validateChartEvaluation(v,ctx)).toThrow(/reference/);});
  it("scores process separately and leaves unknown criteria unrated",()=>{expect(scoreSetup(approved() as unknown as ChartEvaluation["assessment"])).toMatchObject({setup_score:100,setup_grade:"A"});expect(scoreSetup(fixture() as unknown as ChartEvaluation["assessment"])).toMatchObject({setup_score:null,setup_grade:"UNRATED"});});
- it("preserves all AI and risk combinations",()=>{for(const ai of ["APPROVED","CONDITIONAL","BLOCKED","INSUFFICIENT_EVIDENCE"] as const)expect(tradingStatus(ai,"BLOCKED")).toBe("BLOCKED BY RISK");expect(tradingStatus("BLOCKED","APPROVED")).toBe("BLOCKED BY AI");expect(tradingStatus("CONDITIONAL","APPROVED")).toBe("REQUIRES HUMAN DECISION");});
 });
 describe("real image byte validation",()=>{
  it.each(["png","jpeg","webp"] as const)("decodes and hashes valid %s",async format=>{const image=await sharp({create:{width:32,height:32,channels:3,background:"white"}}).toFormat(format).toBuffer();expect(await validateScreenshot(image,`image/${format}`)).toMatchObject({width:32,height:32,byte_size:image.length});});

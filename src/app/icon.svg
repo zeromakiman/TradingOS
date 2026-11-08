@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>Trading OS</title>
+  <style>
+    .tile { fill: #2f5bea; }
+    .pulse { stroke: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #6d93ff; }
+      .pulse { stroke: #0d1015; }
+    }
+  </style>
+  <rect class="tile" width="32" height="32" rx="8" />
+  <path class="pulse" transform="translate(5 5) scale(0.9167)" d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

@@ -1,6 +1,6 @@
 /** Reviewed operation envelopes, not model context capacities. No client overrides. */
 export interface AiOperation {
- id: string; version: string; provider: string; model: string; reasoningEffort: string; contract:"SETUP_V2"|"REVIEW_TRADE_V1"|"CHALLENGE_BIAS_V1"|"ANALYZE_SETUP_V1"|"WEEKLY_REVIEW_V1"|"RECENT_TRADES_V1"|"MONTHLY_REVIEW_V1";
+ id: string; version: string; provider: string; model: string; reasoningEffort: string; contract:"SETUP_V2"|"REVIEW_TRADE_V1"|"CHALLENGE_BIAS_V1"|"ANALYZE_SETUP_V1"|"WEEKLY_REVIEW_V1"|"RECENT_TRADES_V1"|"MONTHLY_REVIEW_V1"|"REVIEW_TRADE_TIMELINE_V1";
  maxInputTokens: number; maxOutputTokens: number; maxImages: number; tools: readonly string[];
  imageDetail: "high"; pricingProfile: string; safetyMultiplier: string; timeoutMs: number;
 }
@@ -17,6 +17,8 @@ export const AI_OPERATIONS: Readonly<Record<string,Readonly<AiOperation>>> = Obj
  WEEKLY_REVIEW:Object.freeze({...base,id:"WEEKLY_REVIEW",model:"gpt-5.4-mini",pricingProfile:"GPT_5_4_MINI_EUR_2026_10_13",version:"WEEKLY_REVIEW_MINI_V1",contract:"WEEKLY_REVIEW_V1",reasoningEffort:"medium",maxInputTokens:24000,maxOutputTokens:6000,maxImages:0}),
  RECENT_TRADES_ANALYSIS:Object.freeze({...base,id:"RECENT_TRADES_ANALYSIS",model:"gpt-5.4-mini",pricingProfile:"GPT_5_4_MINI_EUR_2026_10_13",version:"RECENT_TRADES_MINI_V1",contract:"RECENT_TRADES_V1",reasoningEffort:"medium",maxInputTokens:32000,maxOutputTokens:6000,maxImages:0}),
  MONTHLY_REVIEW:Object.freeze({...base,id:"MONTHLY_REVIEW",model:"gpt-5.4-mini",pricingProfile:"GPT_5_4_MINI_EUR_2026_10_13",version:"MONTHLY_REVIEW_MINI_V1",contract:"MONTHLY_REVIEW_V1",reasoningEffort:"medium",maxInputTokens:32000,maxOutputTokens:6000,maxImages:0}),
+ // V2 timeline-aware review of any closed trade (spec §11.4). REVIEW_TRADE stays registered for its history.
+ REVIEW_TRADE_TIMELINE:Object.freeze({...base,id:"REVIEW_TRADE_TIMELINE",model:"gpt-5.4-mini",pricingProfile:"GPT_5_4_MINI_EUR_2026_10_13",version:"REVIEW_TRADE_TIMELINE_MINI_V1",contract:"REVIEW_TRADE_TIMELINE_V1",reasoningEffort:"medium",maxInputTokens:24000,maxOutputTokens:4000,maxImages:4}),
 });
 export function operationFor(id:string):Readonly<AiOperation> {
  if(!Object.hasOwn(AI_OPERATIONS,id))throw new Error("Unknown AI operation");

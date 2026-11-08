@@ -26,4 +26,3 @@ export function budgetPresentation(budget: BudgetSnapshot, available: boolean) {
  const warning = percentage >= 100 ? "Limit reached — further AI requests are blocked." : percentage >= 95 ? "95% threshold — almost at the limit." : percentage >= 80 ? "80% threshold — approaching the limit." : percentage >= 50 ? "50% threshold — half of the budget is committed." : "Normal usage";
  return { state, percentage, warning, remainingMicros: Math.max(0, cap - committed) };
 }
-export function euros(micros: number) { return new Intl.NumberFormat("en-IE", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 4 }).format(micros / 1000000); }

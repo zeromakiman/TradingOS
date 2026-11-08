@@ -55,13 +55,15 @@ Normal analysis is one pass. Deep review is up to three separately authorized pa
 
 ### Enforced request limits
 
-The gate snapshots the request, checks the deployment/configuration, selects the registered operation/adapter/pricing, reserves atomically and obtains single-use dispatch authorization **before any provider contact, including token counting**. The adapter assembles an immutable input from instructions, schema, context, prior outputs and inline evidence. It sends the exact input-bearing fields supported by the token-count endpoint: model, instructions, input, reasoning, text/schema and truncation. Generation-only fields (output cap, storage and service tier) are excluded from counting. No remote image URLs, files, conversations or tools can introduce uncounted mutable input.
+The gate snapshots the request, checks the deployment/configuration, selects the registered operation/adapter/pricing, estimates the whole request locally and refuses it with `INPUT_LIMIT_EXCEEDED` before anything is reserved when the estimate is above the operation's input limit (V2, `src/ai/request-estimate.ts`: counted so that the provider's tokenizer cannot plausibly count it higher), reserves atomically and obtains single-use dispatch authorization **before any provider contact, including token counting**. The adapter assembles an immutable input from instructions, schema, context, prior outputs and inline evidence. It sends the exact input-bearing fields supported by the token-count endpoint: model, instructions, input, reasoning, text/schema and truncation. Generation-only fields (output cap, storage and service tier) are excluded from counting. No remote image URLs, files, conversations or tools can introduce uncounted mutable input.
 
 The provider's authoritative input count must be a nonnegative integer at or below the operation's ceiling. Oversized or uncountable input never reaches generation. This is a pre-generation server check, not a nonexistent `max_input_tokens` parameter or a character-count guess. The same immutable input is then generated with `max_output_tokens=8000`, standard service tier and truncation disabled. A second account-lock/RLS accounting check after counting observes opt-out, cap reduction, month changes and uncertainty before generation. The global switch and pricing expiry are also rechecked. No automatic provider retry occurs.
 
 ### Versioned pricing and conversion policy
 
 `src/ai/pricing.ts` contains the versioned profile `ASTRA_EUR_2026_09_23`, valid until **2026-10-22 00:00 UTC**. Prices, long-context multipliers and the fixed conversion policy are centralized. Unknown/expired/mismatched profiles fail closed.
+
+Current state (V2): the Astra profile has expired, so the legacy setup evaluator is refused before any provider contact. Every other operation (Analyze Setup, Challenge My Bias, Review Trade, the timeline review, Weekly, Recent and Monthly reviews) uses the later profile `GPT_5_4_MINI_EUR_2026_10_13` (gpt-5.4-mini), valid until **2026-11-12 00:00 UTC**. From then on every AI request is refused ("AI pricing requires review before requests can run.") until the pricing is reviewed and a new profile is added.
 
 Official references inspected on 2026-09-23:
 
@@ -75,17 +77,20 @@ Reservation = ceiling((operation max input × highest applicable input rate + op
 
 Reconciliation uses returned input/output/cached/cache-write/reasoning metadata and the reserved pricing snapshot. Reasoning is already in output and is not counted twice. Missing cache-write detail receives the conservative higher input rate. Costs round upward to one EUR millionth. Valid usage releases all unused reservation, including unused margin. Over-envelope usage, unexpected models or malformed usage fail closed and retain the hold. Existing evaluation-pass usage and failed evaluations remain intact.
 
+The table states the current request gate (`src/ai/request-gate.ts`, migration 0018 Part 4); the first and third rows were added or widened in V2.
+
 | Outcome | Accounting |
 |---|---|
-| Definitely not dispatched | CANCELLED; zero cost; release hold |
+| Pre-flight estimate above the operation's input limit (V2) | Refused with `INPUT_LIMIT_EXCEEDED` before anything is written or reserved; nothing to account |
+| Never reached the provider: a failed reserve or dispatch (including one that committed and lost its response), or an adapter failure before its first provider request (envelope, image, or a body above 64 MiB, `OPERATION_PAYLOAD_TOO_LARGE`) | CANCELLED; zero cost; release hold. A dispatched request is released with the usage marker `{"generation":"NOT_SENT"}`, which SQL refuses once a generation commit (`ai_request_generations`, written by the pre-generation recheck) exists; a refused release keeps the full hold as UNCERTAIN |
 | Successful, refused, incomplete or invalid-output response with usable usage | SETTLED from returned usage, release unused reservation; retain evaluation outcome |
-| Count failure/oversize input after dispatch, timeout, network loss, missing/malformed usage, unexpected model, or bounds violation | UNCERTAIN; retain full reservation as estimated charge; stop further account AI pending accounting review |
+| Any failure after a provider request was issued without usable usage: input count unavailable or above the limit, a recheck refused after counting, timeout, network loss, aborted or unreadable response; also missing/malformed usage, unexpected model, or bounds violation | UNCERTAIN; retain full reservation as estimated charge; stop further account AI pending accounting review |
 | Accounting persistence failure / process crash | Keep the original hold; never retry provider automatically or assume zero cost |
-| Ambiguous dispatch RPC outcome | Refund RPC refuses if dispatch actually committed; hold remains |
+| Ambiguous dispatch RPC outcome | Released with the NOT_SENT marker (the adapter never ran); SQL refuses that release after a generation commit, and the hold remains |
 
 Uncertain history is not automatically refunded at month reset or cleared by raising the cap. There is deliberately no browser override. Resolving such an account requires an operator to compare provider records and introduce an audited append-only resolution in a separately reviewed change; this initial feature does not ship an administrative refund tool.
 
-The count endpoint does not generate model output, but the official references inspected do not establish a billed-cost contract for token counting. No zero-cost invoice claim is made. All preflight contact is permission/budget gated; if preflight fails or rejects input after dispatch, this implementation conservatively records UNCERTAIN and retains the full hold. Confirm counting billing/limits and real image/schema counts in an explicitly authorized staging acceptance before activation.
+The count endpoint does not generate model output, but the official references inspected do not establish a billed-cost contract for token counting. No zero-cost invoice claim is made. All preflight contact is permission/budget gated; if preflight fails or rejects input after dispatch, this implementation conservatively records UNCERTAIN and retains the full hold. In V2 the provider adapter reports every provider request, the input count included, through a `beforeContact` callback just before sending it, and the gate releases at zero cost only when no request of any kind was issued. Confirm counting billing/limits and real image/schema counts in an explicitly authorized staging acceptance before activation.
 
 The hard cap is an application estimated-cost limit. Provider tariff changes, currency conversion, taxes, credits, pricing-tier anomalies and invoice adjustments can differ from this ledger; it is not the provider's final invoice or an account-wide provider spending limit. Provider-side project spend controls should be configured separately before live use. No provider request or billed test was needed here: test cost €0.
 
@@ -119,7 +124,7 @@ One real presentation defect was found and fixed: audit timestamps were concaten
 
 Follow-up verification: **18/18 focused Settings tests passed**, strict TypeScript passed and targeted lint passed. The existing 519/519 full-suite result and prior build/security/concurrency verification were retained; the full suite was not repeated for this presentation-only change. Live model quality with the 8K output ceiling, real staging integration and provider invoices remain separately authorized staging acceptance items.
 
-Optional test tooling, isolated from application dependencies:
+Optional test tooling, isolated from application dependencies (V2 removed `ai-budget-browser-harness.mjs`; the budget UI is covered by the browser acceptance in `scripts/local-stack/acceptance/`):
 
 ```powershell
 pnpm --dir .local/ai-budget-tools add embedded-postgres@18.4.0-beta.17 pg@8.23.0 esbuild@0.25.12
