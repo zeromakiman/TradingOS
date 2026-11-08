@@ -10,7 +10,7 @@ vi.mock("@/lib/supabase/admin", () => ({ trustedServer: m.trustedServer }));
 
 import {
   accountConnectionStates, connectionErrorCode, connectionErrorMessage, connectMockPlatform, type Db, disconnectPlatform, isMockSyncEnabled,
-  linkPlatformExecution, listConnections, listLinkCandidates, listLinkedExecutions, listUnmatchedExecutions, loadAccountConnectionStates, loadExecution,
+  linkPlatformExecution, listConnections, listLinkCandidates, listLinkedExecutions, listUnmatchedExecutions, loadAccountConnectionStates,
   MOCK_SYNC_UNAVAILABLE, type PlatformConnection, platformOptions, SupabaseSyncStore, simulateMockSync, syncConnection, unlinkPlatformExecution,
 } from "@/lib/sync-service";
 
@@ -276,8 +276,6 @@ describe("read models (RLS client)", () => {
     await listUnmatchedExecutions(db, { limit: 0 });
     await listUnmatchedExecutions(db, { limit: 10_000 });
     expect(queries.slice(1).map(q => q.limit)).toEqual([1, 500]);
-    expect((await loadExecution(db, id(7, 2)))?.linkMethod).toBe("USER");
-    expect(await loadExecution(db, id(7, 99))).toBeNull();
   });
 
   it("lists linked executions newest first (automatic, trader and import links), never unlinked ones, with a bounded page size", async () => {
@@ -314,8 +312,8 @@ describe("read models (RLS client)", () => {
     );
     tables.external_execution_status = [executionRow(1, { linked_trade_id: trade(10) })];
     const { db } = fakeClient(tables);
-    const execution = (await loadExecution(fakeClient({ external_execution_status: [executionRow(5, { entered_at: "2026-09-15T07:05:00+00:00" })] }).db, id(7, 5)));
-    if (execution === null) throw new Error("fixture");
+    const [execution] = await listUnmatchedExecutions(fakeClient({ external_execution_status: [executionRow(5, { entered_at: "2026-09-15T07:05:00+00:00" })] }).db);
+    if (execution === undefined) throw new Error("fixture");
     const candidates = await listLinkCandidates(db, execution);
     // Trade 1 is an automatic match; 7 is closed (trader links only); 8 was locked too early to match; 9 was locked after the entry;
     // 10 is already linked; 11 is short; drafts, live-first trades and other accounts are never offered.

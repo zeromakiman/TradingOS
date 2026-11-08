@@ -354,7 +354,7 @@ export default async function planned(run) {
     await run.curate("trade-planned-live", `Trade workspace: planned trade live, journal with a note and a ${run.mobile ? "screenshot from the phone's picker" : "pasted screenshot"}`, { full: !run.mobile });
   }, { requires: ["record-entry"], criteria: run.mobile ? [2, 18] : [2, 3] });
 
-  await run.step("close", "Close the trade with one exit price", async s => {
+  const closed = await run.step("close", "Close the trade with one exit price, confirmed before it is recorded", async s => {
     const form = p.getByRole("form", { name: "Close trade" });
     await form.waitFor({ state: "visible" });
     const priceField = form.getByRole("textbox", { name: /exit price/i });
@@ -362,7 +362,22 @@ export default async function planned(run) {
     // A clean exit 3 stop distances in favour of the trade, derived from the plan the page shows.
     const exit = await exitPriceFor(p);
     await fill(priceField, exit);
-    await press(form.getByRole("button", { name: "Close trade" }), { tap });
+    // The close can't be changed later (spec §57): Enter in the price field, like the button, only opens a confirmation
+    // with what will be recorded; nothing is recorded until the trader confirms it there.
+    if (tap) await press(form.getByRole("button", { name: "Close trade" }), { tap });
+    else await priceField.first().press("Enter");
+    const confirm = p.getByRole("alertdialog", { name: "Close this trade?" });
+    s.check(await visible(confirm, 15_000), tap ? "Close trade opens the confirmation" : "Enter in the exit price opens the confirmation instead of closing the trade");
+    const summary = await textOf(confirm);
+    s.check(summary.includes(exit), "the confirmation shows the exit before anything is recorded", summary.slice(0, 220));
+    // The page behind the modal is hidden from the accessibility tree, so its header is read from the DOM.
+    const header = await p.evaluate(() => {
+      const h1 = document.querySelector("h1");
+      return (h1?.closest("header") ?? h1?.parentElement?.parentElement ?? h1?.parentElement)?.textContent ?? "";
+    });
+    s.check(!/Closed/.test(header), "nothing is recorded before the close is confirmed", header.replace(/\s+/g, " ").slice(0, 120));
+    await s.shot("close-confirmation");
+    await press(confirm.getByRole("button", { name: "Close trade" }), { tap });
     const state = await waitForState(p, ["Closed · review pending"], 60_000);
     s.check(state === "Closed · review pending", "the trade is Closed · review pending", state);
     const result = await textOf(region(p, "Result"));
@@ -370,7 +385,17 @@ export default async function planned(run) {
     s.info(`exit ${exit}; execution: ${entryFacts.slice(0, 100)}`);
     s.check(await aboveTheFold(p, p.getByRole("link", { name: "Write review" }).first()), "'Write review' is the next action after close");
     s.evidence(1, "Closed: 'Write review' is the next action");
+    return { summary, result };
   }, { requires: ["record-entry"], criteria: [1] });
+
+  // Its own step, so a confirmation without the result fails here while the steps after the close still run.
+  await run.step("close-preview", "The close confirmation showed the result the close then recorded", async s => {
+    const shown = { pnl: closeFigure(closed.summary, "Net P&L"), r: closeFigure(closed.summary, "Realized R") };
+    const recorded = { pnl: closeFigure(closed.result, "Net P&L"), r: closeFigure(closed.result, "Realized R") };
+    s.check(shown.pnl !== null && shown.r !== null, "the confirmation showed the net P&L and realized R as figures before the close was recorded", closed.summary.slice(0, 260));
+    s.check(shown.pnl === recorded.pnl && shown.r === recorded.r, "they are the net P&L and realized R the close recorded",
+      `confirmation ${shown.pnl} ${shown.r}; Result ${recorded.pnl} ${recorded.r}`);
+  }, { requires: ["close"] });
 
   await run.step("lesson-after-close", "Write a lesson after close: labelled After close, never Before entry", async s => {
     const { announced } = await addJournalEntry(p, { kind: "Lesson", body: "Lesson: waiting for the M5 shift before entry kept the risk small.", tap });
@@ -439,6 +464,17 @@ async function refuseDraftChanges(stack, owner, tradeId) {
     ? await userRpc(stack, grant.token, "discard_trade_draft", { p_trade_id: tradeId, p_reason: "Acceptance: a locked plan must not be discardable", p_request_key: randomUUID() })
     : unsent;
   return { grant, revise, discard, before, after: facts() };
+}
+
+/**
+ * The figure after `label` in a close's words, as the page formats it: net P&L as signed money (`+$1,530.00`), realized
+ * R as a signed R (`+3.06R`). Null when the label is followed by words instead ("Calculated when you confirm") or is
+ * missing, so a label alone never counts as the figure.
+ */
+function closeFigure(text, label) {
+  const figure = label === "Net P&L" ? String.raw`[+\-−]?[$€£][0-9][0-9,]*\.[0-9]{2}` : String.raw`[+\-−]?[0-9]+\.[0-9]{2}R`;
+  const match = new RegExp(`${label}\\s+(${figure})`).exec(text ?? "");
+  return match ? match[1].replace("−", "-") : null;
 }
 
 /**

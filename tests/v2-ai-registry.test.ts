@@ -121,12 +121,13 @@ describe("REVIEW_TRADE_TIMELINE through the budget gate (mocked transport)", () 
     expect(unbounded.transport).not.toHaveBeenCalled();
   });
 
-  it("an input count above 24,000 tokens never generates and releases the unsent reservation", async () => {
+  it("an input count above 24,000 tokens never generates and holds the full reservation: the count reached the provider", async () => {
     const { ledger, transport } = harness();
     transport.mockResolvedValueOnce(Response.json({ input_tokens: 24001 }));
-    await expect(budgetedAiRequest({ apiKey: "mock-only", config, context: facts, images: [], prior: [] }, owner, ledger, transport)).rejects.toMatchObject({ code: "INPUT_LIMIT_EXCEEDED" });
+    await expect(budgetedAiRequest({ apiKey: "mock-only", config, context: facts, images: [], prior: [] }, owner, ledger, transport)).rejects.toMatchObject({ code: "ACCOUNTING_UNCERTAIN" });
     expect(transport).toHaveBeenCalledTimes(1);
     expect(ledger.recheck).not.toHaveBeenCalled();
-    expect(ledger.settle.mock.calls[0][2]).toEqual({ disposition: "CANCELLED", chargedMicros: 0, usage: { generation: "NOT_SENT" }, errorCode: "INPUT_LIMIT_EXCEEDED" });
+    expect(ledger.settle).toHaveBeenCalledTimes(1);
+    expect(ledger.settle.mock.calls[0][2]).toEqual({ disposition: "UNCERTAIN", chargedMicros: 47520, usage: null, responseModel: null, responseId: null, errorCode: "INPUT_LIMIT_EXCEEDED" });
   });
 });

@@ -5,8 +5,10 @@ import { biasChallengeOutput } from "@/ai/bias-challenge-contract";
 import { AI_OPERATIONS, operationFor } from "@/ai/operations";
 import { operationPricing, reservationMicros } from "@/ai/pricing";
 import { tradeReviewContext } from "@/ai/trade-review-context";
+import { estimateModel } from "@/components/ai/estimate";
+import { estimateLabel, estimateTooltip } from "@/components/ai/model";
 import {
-  AI_TYPICAL_COST_MICROS, type AiCostOperation, aiActionLabel, aiCostLabel, aiCostTooltip, aiHistoryLabel, estimateAiCost, firstSentence, resolveSourceChip,
+  AI_TYPICAL_COST_MICROS, type AiCostOperation, aiHistoryLabel, CHANGE_EVIDENCE_NOTE, estimateAiCost, firstSentence, resolveSourceChip,
   STALE_ANALYSIS_NOTE, staleRevisionLabel, summarizeAnalyzeSetup, summarizeBiasChallenge, summarizeMonthlyReview, summarizeRecentTrades, summarizeTradeReview,
   summarizeTradeTimelineReview, summarizeWeeklyReview, type TradeTimelineReviewOutput,
 } from "@/domain/ai-summary";
@@ -131,6 +133,19 @@ describe("concise cards (spec §11.1)", () => {
     expect(monthly.headline.text).toBe("This small sample cannot establish a recurring behavioral cause.");
     expect(monthly.full).toHaveLength(13);
   });
+
+  it("a monthly review's change sections carry the comparison caveat from Trading OS (kept from V1), no other section does", () => {
+    const monthly = summarizeMonthlyReview(monthlyOutput);
+    expect(CHANGE_EVIDENCE_NOTE).toBe("Change requires comparable earlier and later evidence. Record completeness alone does not establish improvement or degradation.");
+    expect(monthly.full.filter(section => section.note).map(section => [section.id, section.title, section.note])).toEqual([
+      ["whatImproved", "What improved", CHANGE_EVIDENCE_NOTE],
+      ["whatDegraded", "What degraded", CHANGE_EVIDENCE_NOTE],
+    ]);
+    // The caveat is never AI text: it is not an item, and the concise card keeps its three sections without it.
+    expect(monthly.full.flatMap(section => section.items).map(item => item.text)).not.toContain(CHANGE_EVIDENCE_NOTE);
+    expect(monthly.sections.some(section => "note" in section)).toBe(false);
+    expect([summarizeWeeklyReview(weeklyOutput), summarizeRecentTrades(recentOutput)].flatMap(card => card.full).some(section => "note" in section)).toBe(false);
+  });
 });
 
 describe("friendly source chips", () => {
@@ -231,6 +246,57 @@ describe("friendly source chips", () => {
     expect(resolveSourceChip(`trade:${ids.plan}`, legacy).label).toBe("EURUSD long · Sep 1");
   });
 
+  it("a periodic review's notes and events name their trade and open its timeline: the review page has none", () => {
+    // V1 facts know the plan only; the legacy journal link redirects to the trade, where the event is a timeline item.
+    expect(resolveSourceChip(`event:${ids.event}`, weeklyFacts, weeklyFacts.sourceManifest).label).toBe("EURUSD long · Sep 1 · Journal note · 04:01");
+    const v1 = { label: expect.stringMatching(/^EURUSD long · [A-Z][a-z]{2} \d{1,2} · Journal note · \d{2}:\d{2}$/), kind: "note", href: `/journal/${ids.plan}#event:${ids.event}`, technicalId: `event:${ids.event}` };
+    for (const facts of [weeklyFacts, recentFacts, monthlyFacts]) {
+      expect(resolveSourceChip(`event:${ids.event}`, facts, facts.sourceManifest)).toEqual(v1);
+      const { sourceManifest: _omitted, ...legacy } = facts;
+      expect(resolveSourceChip(`event:${ids.event}`, legacy)).toEqual(v1);
+    }
+    // V2 periodic facts carry no manifest: a journal row is found by its id and opens on the V2 trade.
+    const tradeRecordId = "90000000-0000-4000-8000-000000000001";
+    const journalId = "70000000-0000-4000-8000-000000000001";
+    const v2 = {
+      version: "WEEKLY_REVIEW_FACTS_V2",
+      trades: [{
+        tradeId: ids.plan, tradeRecordId, originalPlan: { instrument: "GBPUSD", proposal: { direction: "SHORT" } }, execution: { exited_at: "2026-09-07T12:00Z" },
+        journal: [[journalId, "STOP_CHANGE", "2026-09-07T10:11Z", "WHILE_LIVE", "Stop to break-even.", { details: { price: "1.3" } }]],
+      }],
+    };
+    expect(resolveSourceChip(`journal:${journalId}`, v2)).toEqual({
+      label: "GBPUSD short · Sep 7 · Live note · 05:11", kind: "note", href: `/trades/${tradeRecordId}#journal:${journalId}`, technicalId: `journal:${journalId}`,
+    });
+    expect(resolveSourceChip(`journal:${journalId}`, v2, undefined, {}, { mode: "utc" }).label).toBe("GBPUSD short · Sep 7 · Live note · 10:11");
+    expect(resolveSourceChip(`trade:${tradeRecordId}`, v2)).toEqual({ label: "GBPUSD short · Sep 7", kind: "trade", href: `/trades/${tradeRecordId}`, technicalId: `trade:${tradeRecordId}` });
+    // A record the facts do not hold keeps the neutral note chip with no link (an anchor on the review page would lead
+    // nowhere); an id that is not a UUID never becomes a link.
+    const missing = "70000000-0000-4000-8000-000000000009";
+    expect(resolveSourceChip(`journal:${missing}`, v2)).toEqual({ label: "Journal note", kind: "note", technicalId: `journal:${missing}` });
+    expect(resolveSourceChip(`event:${missing}`, weeklyFacts, weeklyFacts.sourceManifest)).not.toHaveProperty("href");
+    const unsafe = { ...v2, trades: [{ ...v2.trades[0], tradeRecordId: "../settings", tradeId: "javascript:alert(1)" }] };
+    expect(resolveSourceChip(`journal:${journalId}`, unsafe)).not.toHaveProperty("href");
+  });
+
+  it("a periodic V1 event opens its timeline item, or the trade when the timeline shows it as the plan lock, entry or close", () => {
+    const eventId = "60000000-0000-4000-8000-000000000041";
+    const withEvent = (event_type: string) => ({
+      version: "WEEKLY_REVIEW_FACTS_V2",
+      trades: [{
+        tradeId: ids.plan, tradeRecordId: "90000000-0000-4000-8000-000000000001", originalPlan: { instrument: "EURUSD", proposal: { direction: "LONG" } }, execution: { exited_at: "2026-09-01T09:00Z" },
+        events: [{ id: eventId, event_type, occurred_at: "2026-09-01T08:20Z", recorded_at: "2026-09-01T08:20Z", timing: "WHILE_LIVE", payload: {} }],
+      }],
+    });
+    expect(resolveSourceChip(`event:${eventId}`, withEvent("STOP_MOVED"))).toEqual({
+      label: "EURUSD long · Sep 1 · Stop moved · 03:20", kind: "event", href: `/trades/90000000-0000-4000-8000-000000000001#event:${eventId}`, technicalId: `event:${eventId}`,
+    });
+    expect(resolveSourceChip(`event:${eventId}`, withEvent("TRADE_OPENED"))).toMatchObject({ label: "EURUSD long · Sep 1 · Entry · 03:20", href: "/trades/90000000-0000-4000-8000-000000000001" });
+    // V1 decisions are timeline items too, worded as the timeline titles them.
+    expect(resolveSourceChip(`event:${eventId}`, withEvent("MANUAL_OVERRIDE")).label).toBe("EURUSD long · Sep 1 · Taken despite a block · 03:20");
+    expect(resolveSourceChip(`event:${eventId}`, withEvent("HUMAN_DECISION")).label).toBe("EURUSD long · Sep 1 · Decision · 03:20");
+  });
+
   it("falls back to a neutral chip and keeps the raw id out of the label", () => {
     for (const id of ["mystery", "evidence:", "bogus:123", `trade:${"f".repeat(8)}`, "__proto__"]) {
       const chip = resolveSourceChip(id, weeklyFacts, weeklyFacts.sourceManifest);
@@ -269,14 +335,19 @@ describe("AI cost estimates (spec §11.2)", () => {
     expect(() => estimateAiCost("REVIEW_TRADE", new Date("2026-11-12T00:00:00Z"))).toThrow("AI pricing requires review before requests can run.");
   });
 
-  it("labels buttons and tooltips in euros", () => {
-    const review = estimateAiCost("REVIEW_TRADE", now);
-    expect(aiCostLabel(review)).toBe("≈ €0.02");
-    expect(aiCostTooltip(review)).toBe("Typical cost based on measured runs; at most €0.06 is reserved and unused funds are released.");
-    expect(aiCostLabel(estimateAiCost("MONTHLY_REVIEW", now))).toBe("≈ €0.03");
-    expect(aiCostTooltip(estimateAiCost("CHALLENGE_BIAS", now))).toContain("at most €0.04 ");
-    expect(aiCostTooltip(estimateAiCost("ANALYZE_SETUP", now))).toContain("at most €0.05 ");
-    expect(aiActionLabel("Analyze blocked setup anyway", estimateAiCost("ANALYZE_SETUP", now))).toBe("Analyze blocked setup anyway · ≈ €0.02");
+  it("labels buttons and tooltips in euros, as the paid buttons show them", () => {
+    // The paid buttons format the estimate with estimateModel (typical half-up, maximum rounded up) and model.ts.
+    const model = (operation: AiCostOperation) => {
+      const formatted = estimateModel(estimateAiCost(operation, now));
+      if (formatted === null) throw new Error("pricing is current at the pinned time");
+      return formatted;
+    };
+    expect(estimateLabel(model("REVIEW_TRADE"))).toBe("≈ €0.02");
+    expect(estimateTooltip(model("REVIEW_TRADE"))).toBe("Typical cost based on measured runs; at most €0.06 is reserved and unused funds are released.");
+    expect(estimateLabel(model("MONTHLY_REVIEW"))).toBe("≈ €0.03");
+    expect(estimateTooltip(model("CHALLENGE_BIAS"))).toContain("at most €0.04 ");
+    expect(estimateTooltip(model("ANALYZE_SETUP"))).toContain("at most €0.05 ");
+    expect(estimateLabel(model("ANALYZE_SETUP"))).toBe("≈ €0.02");
   });
 });
 

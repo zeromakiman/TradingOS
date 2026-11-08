@@ -138,6 +138,13 @@ async function exportJson(query: string): Promise<{ response: Response; document
   return { response, document: (await response.json()) as ExportDocument };
 }
 
+/** The ledger columns the manifest's timing reads (`planEndedAt` included), as the view returns them. */
+const LEDGER_TIMING_SELECT = "id,origin,created_at,entered_at,entry_recorded_at,entry_price::text,exited_at,close_recorded_at,outcome,plan_id,lifecycle,disposition,legacy_decision,discarded_at";
+const ledgerTiming = (changes: Row): Row => ({
+  origin: "PLANNED", entered_at: null, entry_recorded_at: null, entry_price: null, exited_at: null, close_recorded_at: null, outcome: null, plan_id: null,
+  lifecycle: "DRAFT", disposition: null, legacy_decision: null, discarded_at: null, user_id: UID, ...changes,
+});
+
 let client: FakePostgrest;
 let log: MockInstance;
 beforeEach(() => {
@@ -350,11 +357,11 @@ describe("evidence manifest", () => {
       ] },
       setup_screenshot_removals: { rows: [{ screenshot_id: legacyOrphan, user_id: UID, proposal_id: orphanProposal, recorded_at: "2026-10-16T08:00:00+00:00" }] },
       trade_revisions: { rows: [{ proposal_id: proposal, trade_id: planned, revision: 1, user_id: UID }] },
-      trade_ledger: { rows: [
-        { id: planned, origin: "PLANNED", created_at: "2026-10-14T06:00:00+00:00", entered_at: "2026-10-14T09:00:00+00:00",
-          entry_recorded_at: "2026-10-14T09:01:00+00:00", exited_at: "2026-10-14T10:30:00+00:00", close_recorded_at: "2026-10-14T10:31:00+00:00" },
-        { id: liveFirst, origin: "LIVE_FIRST", created_at: "2026-10-15T09:55:00+00:00", entered_at: null, entry_recorded_at: "2026-10-15T09:55:00+00:00",
-          exited_at: null, close_recorded_at: null },
+      trade_ledger: { numeric: ["entry_price"], rows: [
+        ledgerTiming({ id: planned, created_at: "2026-10-14T06:00:00+00:00", entered_at: "2026-10-14T09:00:00+00:00", entry_price: "1.10005",
+          entry_recorded_at: "2026-10-14T09:01:00+00:00", exited_at: "2026-10-14T10:30:00+00:00", close_recorded_at: "2026-10-14T10:31:00+00:00",
+          outcome: "WIN", plan_id: randomUUID(), lifecycle: "CLOSED" }),
+        ledgerTiming({ id: liveFirst, origin: "LIVE_FIRST", created_at: "2026-10-15T09:55:00+00:00", entry_recorded_at: "2026-10-15T09:55:00+00:00", lifecycle: "LIVE" }),
       ] },
     });
     mock.client = client;
@@ -377,7 +384,78 @@ describe("evidence manifest", () => {
       timing: "BEFORE_ENTRY", removedAt: null, downloadPath: `/api/screenshots/${legacyBefore}`, recordedAt: "2026-10-14T07:00:00+00:00",
     });
     expect(byId[legacyOrphan]).toMatchObject({ tradeId: null, label: "OTHER", timing: null, removedAt: "2026-10-16T08:00:00+00:00" });
-    expect(client.calls.find((call) => call.table === "trade_ledger")?.select).toBe("id,origin,created_at,entered_at,entry_recorded_at,exited_at,close_recorded_at");
+    // NUMERIC entry prices are read as text (PostgREST sends NUMERIC as a lossy JSON number).
+    expect(client.calls.find((call) => call.table === "trade_ledger")?.select).toBe(LEDGER_TIMING_SELECT);
+    // No plan here ended without an entry: nothing else is read to date one.
+    expect(client.calls.some((call) => call.table === "trade_dispositions" || call.table === "setup_human_decisions")).toBe(false);
+  });
+
+  it("dates what was recorded after a plan ended without an entry as After close, exactly like the trade page, whole and paged", async () => {
+    const [v1Draft, revision1, revision2, skippedPlan, skipPlanId, discarded, takenPlan, takenPlanId, takenProposal] = uuids(9);
+    const [legacyBeforeSkip, legacyAfterSkip, beforeSkip, staleAfterSkip, postAfterSkip, afterDiscard, takenLater] = uuids(7);
+    const image = { original_filename: "chart.png", mime_type: "image/png", byte_size: 2048, width: 1280, height: 720, sha256: "a".repeat(64) };
+    const v2 = (id: string, tradeId: string, phase: string, recordedAt: string) => ({
+      id, user_id: UID, trade_id: tradeId, storage_path: `${UID}/${tradeId}/${id}`, label: "OTHER", timeframe: "M15", caption: null, ...image,
+      phase, state_at_creation: "LOCKED", capture_method: "PASTE", copied_from: null, recorded_at: recordedAt,
+    });
+    const shot = (id: string, proposalId: string, uploadedAt: string) => ({
+      id, user_id: UID, proposal_id: proposalId, role: "M15", storage_path: `${UID}/${proposalId}/${id}`, ...image, uploaded_at: uploadedAt,
+    });
+    const decision = (proposalId: string, decided: string, recordedAt: string) => ({
+      id: randomUUID(), user_id: UID, proposal_id: proposalId, decision: decided, event_type: "HUMAN_DECISION", reason: null, risk_decision: "APPROVED",
+      ai_decision: "NOT_EVALUATED", recorded_at: recordedAt,
+    });
+    client = new FakePostgrest({
+      // V2 evidence: a plan skipped at 10:00 (before, stale pre-entry row after, post-trade row after); a draft discarded at
+      // 11:00; a plan taken in V1 and still waiting for its entry.
+      trade_evidence: { rows: [
+        v2(beforeSkip, skippedPlan, "PRE_ENTRY", "2026-10-14T09:30:00+00:00"),
+        v2(staleAfterSkip, skippedPlan, "PRE_ENTRY", "2026-10-14T10:15:00+00:00"),
+        v2(postAfterSkip, skippedPlan, "POST_TRADE", "2026-10-14T10:20:00+00:00"),
+        // Stored pre-entry before the database stored such records post-trade.
+        v2(afterDiscard, discarded, "PRE_ENTRY", "2026-10-14T11:30:00+00:00"),
+      ] },
+      // V1 screenshots of a draft whose latest V1 decision (on its other revision) is a skip at 08:00.
+      setup_screenshots: { rows: [
+        shot(legacyBeforeSkip, revision2, "2026-10-14T07:50:00+00:00"),
+        shot(legacyAfterSkip, revision2, "2026-10-14T08:10:00+00:00"),
+        shot(takenLater, takenProposal, "2026-10-14T12:30:00+00:00"),
+      ] },
+      trade_revisions: { rows: [
+        { proposal_id: revision1, trade_id: v1Draft, revision: 1, user_id: UID }, { proposal_id: revision2, trade_id: v1Draft, revision: 2, user_id: UID },
+        { proposal_id: takenProposal, trade_id: takenPlan, revision: 1, user_id: UID },
+      ] },
+      setup_human_decisions: { rows: [
+        decision(revision2, "TAKEN", "2026-10-14T07:40:00+00:00"), decision(revision1, "SKIPPED", "2026-10-14T08:00:00+00:00"),
+        decision(takenProposal, "SKIPPED", "2026-10-14T12:00:00+00:00"), decision(takenProposal, "TAKEN", "2026-10-14T12:10:00+00:00"),
+      ] },
+      trade_dispositions: { rows: [{ id: randomUUID(), user_id: UID, plan_id: skipPlanId, status: "SKIPPED", reason: "No retest.", recorded_at: "2026-10-14T10:00:00+00:00" }] },
+      trade_ledger: { numeric: ["entry_price"], rows: [
+        ledgerTiming({ id: v1Draft, created_at: "2026-10-14T07:00:00+00:00", lifecycle: "SKIPPED", legacy_decision: "SKIPPED" }),
+        ledgerTiming({ id: skippedPlan, created_at: "2026-10-14T09:00:00+00:00", plan_id: skipPlanId, lifecycle: "SKIPPED", disposition: "SKIPPED" }),
+        ledgerTiming({ id: discarded, created_at: "2026-10-14T10:30:00+00:00", lifecycle: "DISCARDED", discarded_at: "2026-10-14T11:00:00+00:00" }),
+        ledgerTiming({ id: takenPlan, created_at: "2026-10-14T11:50:00+00:00", plan_id: takenPlanId, lifecycle: "LOCKED", legacy_decision: "TAKEN" }),
+      ] },
+    });
+    mock.client = client;
+    const expected = {
+      [legacyBeforeSkip]: "BEFORE_ENTRY", [legacyAfterSkip]: "AFTER_CLOSE", [beforeSkip]: "BEFORE_ENTRY", [staleAfterSkip]: "AFTER_CLOSE",
+      [postAfterSkip]: "AFTER_CLOSE", [afterDiscard]: "AFTER_CLOSE", [takenLater]: "BEFORE_ENTRY",
+    };
+    const whole = (await exportJson("part=evidence-manifest")).document.manifest ?? [];
+    expect(Object.fromEntries(whole.map((item) => [item.id, item.timing]))).toEqual(expected);
+
+    client.calls.length = 0;
+    const paged: EvidenceManifestItem[] = [];
+    for (const table of ["trade_evidence", "setup_screenshots"]) paged.push(...((await exportJson(`part=evidence-manifest&table=${table}`)).document.manifest ?? []));
+    const sorted = (items: readonly EvidenceManifestItem[]) => [...items].sort((a, b) => compare(a.id, b.id));
+    expect(sorted(paged)).toEqual(sorted(whole));
+    // Pages read only the ends their rows need: the named disposition, and the V1 decisions of skipped trades' revisions.
+    const lookups = client.calls.filter((call) => (call.table === "trade_dispositions" || call.table === "setup_human_decisions") && call.gt === null);
+    expect(lookups.map((call) => [call.table, call.in?.[0], [...(call.in?.[1] ?? [])].sort()])).toEqual([
+      ["trade_dispositions", "plan_id", [skipPlanId]],
+      ["setup_human_decisions", "proposal_id", [revision1, revision2].sort()],
+    ]);
   });
 
   it("pages the manifest with the evidence rows, from page-scoped lookups, so a large account gets every item within the response budget", async () => {
@@ -400,7 +478,7 @@ describe("evidence manifest", () => {
       setup_screenshot_removals: { rows: screenshots.filter((_, n) => n % 4 === 0)
         .map((row) => ({ screenshot_id: row.id, user_id: UID, proposal_id: proposal, recorded_at: at(300) })) },
       trade_revisions: { rows: [{ proposal_id: proposal, trade_id: trade, revision: 1, user_id: UID }] },
-      trade_ledger: { rows: [{ id: trade, origin: "PLANNED", created_at: at(0), entered_at: at(500), entry_recorded_at: at(500), exited_at: null, close_recorded_at: null }] },
+      trade_ledger: { rows: [ledgerTiming({ id: trade, created_at: at(0), entered_at: at(500), entry_recorded_at: at(500), entry_price: "1.1", plan_id: randomUUID(), lifecycle: "LIVE" })] },
     });
     mock.client = client;
     const whole = (await exportJson("part=evidence-manifest")).document.manifest ?? [];

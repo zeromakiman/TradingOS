@@ -14,13 +14,26 @@ import { CitationIds } from "./technical";
  * details. Server-compatible: it composes the client Sheet primitives with server-rendered content.
  */
 
+/**
+ * A section of the full analysis. `note` is a deterministic caveat from Trading OS shown under the section heading,
+ * never AI text (a monthly review's "What improved" and "What degraded" carry one, `CHANGE_EVIDENCE_NOTE`).
+ */
+export type FullAnalysisSectionModel = AiCardSectionModel & { note?: string };
+
 export interface FullAnalysisSheetProps {
   /** Sheet title, for example "Setup analysis". */
   title: string;
   /** Every section with full texts (no truncation). */
-  sections: readonly AiCardSectionModel[];
+  sections: readonly FullAnalysisSectionModel[];
   /** Trigger label; "View full analysis" by default. */
   triggerLabel?: string;
+  /**
+   * The trigger's accessible name when several triggers share one label (history rows): it starts with the visible
+   * label, for example "View full analysis · Analyze Setup · Completed · Oct 14, 08:00".
+   */
+  triggerAriaLabel?: string;
+  /** "button" (default): a secondary button. "link": a compact text link for lists, with a 40px (44px touch) hit area. */
+  triggerStyle?: "button" | "link";
   /** Accessible description under the title, for example "Analyze Setup · Completed · Oct 14, 08:00". */
   description?: string;
   riskLine?: AiRiskLine | null;
@@ -39,7 +52,7 @@ export interface FullAnalysisSheetProps {
 /** The sheet's content; also usable inline (and in tests, where a closed Radix dialog renders nothing). */
 export function FullAnalysisBody({
   sections, riskLine, headline, assessments = [], facts = [], factsNote, limitations = [], technical, developerMode,
-}: Omit<FullAnalysisSheetProps, "title" | "triggerLabel" | "description">) {
+}: Omit<FullAnalysisSheetProps, "title" | "triggerLabel" | "triggerAriaLabel" | "triggerStyle" | "description">) {
   const citations = citationsOf(sections, headline);
   const hasDeterministic = Boolean(riskLine) || facts.length > 0 || Boolean(factsNote);
   return (
@@ -66,6 +79,11 @@ export function FullAnalysisBody({
         ).map(({ key, value: section }) => (
           <section key={key} className="flex flex-col gap-1.5">
             <h3 className="text-[0.8125rem] font-semibold text-text">{section.heading}</h3>
+            {section.note && (
+              <p role="note" className="t-caption" data-zone="trading-os-note">
+                {section.note}
+              </p>
+            )}
             <ul className="flex flex-col gap-3">
               {withKeys(section.items, item => item.text).map(({ key: itemKey, value: item }) => (
                 <li key={itemKey} className="flex flex-col gap-1.5">
@@ -99,11 +117,27 @@ export function FullAnalysisBody({
   );
 }
 
-export function FullAnalysisSheet({ title, triggerLabel = VIEW_FULL_ANALYSIS, description, ...body }: FullAnalysisSheetProps) {
+/**
+ * The compact trigger of a list row: link styling, and an invisible extension that reaches a 40px (44px on touch) hit
+ * area without making the row taller (§13.5). It grows over the text above it and only 4px down, so it never covers
+ * the row's Technical details toggle below.
+ */
+const LINK_TRIGGER =
+  "relative self-start text-[0.8125rem] after:absolute after:inset-x-0 after:-top-4 after:-bottom-1 after:content-[''] pointer-coarse:after:-top-5";
+
+export function FullAnalysisSheet({ title, triggerLabel = VIEW_FULL_ANALYSIS, triggerAriaLabel, triggerStyle = "button", description, ...body }: FullAnalysisSheetProps) {
+  const link = triggerStyle === "link";
   return (
     <Sheet>
       <SheetTrigger asChild>
-        <Button type="button" variant="secondary" size="sm" icon={<PanelRight aria-hidden="true" />}>
+        <Button
+          type="button"
+          variant={link ? "link" : "secondary"}
+          size="sm"
+          icon={<PanelRight aria-hidden="true" />}
+          aria-label={triggerAriaLabel}
+          className={link ? LINK_TRIGGER : undefined}
+        >
           {triggerLabel}
         </Button>
       </SheetTrigger>

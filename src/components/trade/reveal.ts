@@ -22,10 +22,27 @@ export type TradeTarget = (typeof TRADE_TARGETS)[keyof typeof TRADE_TARGETS];
 
 const TARGET_IDS: ReadonlySet<string> = new Set(Object.values(TRADE_TARGETS));
 
-/** The trade-page target a location hash names (`#close-trade` → `close-trade`), or null for any other hash. */
-export function tradeTargetOf(hash: string): TradeTarget | null {
+/**
+ * A trade-timeline item a link names: a journal entry `journal:<uuid>` or a (V1) event `event:<uuid>`, the DOM ids
+ * the timeline gives its items (`TimelineItem.id`, src/domain/timeline.ts). The source chips of a weekly, recent-trades
+ * or monthly AI review open them from the Review pages as `/trades/<id>#journal:<uuid>` (docs/V2_ARCHITECTURE.md §11.1).
+ */
+export type TimelineItemTarget = `journal:${string}` | `event:${string}`;
+
+const TIMELINE_ITEM = /^(?:journal|event):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isTimelineItem(target: string): target is TimelineItemTarget {
+  return TIMELINE_ITEM.test(target);
+}
+
+/**
+ * The trade-page target a location hash names (`#close-trade` → `close-trade`, `#journal:<uuid>` → that timeline
+ * item), or null for any other hash.
+ */
+export function tradeTargetOf(hash: string): TradeTarget | TimelineItemTarget | null {
   const id = hash.startsWith("#") ? hash.slice(1) : hash;
-  return TARGET_IDS.has(id) ? (id as TradeTarget) : null;
+  if (TARGET_IDS.has(id)) return id as TradeTarget;
+  return isTimelineItem(id) ? id : null;
 }
 
 const FOCUSABLE = "input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled])";
@@ -76,11 +93,12 @@ export function reveal(id: string, focusSelector: string = FOCUSABLE): boolean {
 
 /**
  * Brings a trade-page target into view the way the page's own actions do: `#journal` focuses the composer, `#technical-
- * details` opens the disclosure, every other target scrolls into view with its first control focused. A trade with a
- * position attaches screenshots in the journal composer, so `#add-screenshots` falls back to it when the Evidence stager
- * is not on the page. False when nothing could be shown (the target belongs to another state of the trade).
+ * details` opens the disclosure, a timeline item scrolls into view and takes focus itself, every other target scrolls
+ * into view with its first control focused. A trade with a position attaches screenshots in the journal composer, so
+ * `#add-screenshots` falls back to it when the Evidence stager is not on the page. False when nothing could be shown
+ * (the target belongs to another state of the trade, or the timeline does not show that record).
  */
-export function revealTradeTarget(target: TradeTarget): boolean {
+export function revealTradeTarget(target: TradeTarget | TimelineItemTarget): boolean {
   switch (target) {
     case TRADE_TARGETS.journal:
       return focusComposer();
@@ -89,8 +107,23 @@ export function revealTradeTarget(target: TradeTarget): boolean {
     case TRADE_TARGETS.addScreenshots:
       return reveal(target) || focusComposer();
     default:
-      return reveal(target);
+      return isTimelineItem(target) ? revealTimelineItem(target) : reveal(target);
   }
+}
+
+/**
+ * Scrolls a timeline item into view (its `scroll-mt` keeps it clear of the top bar) and focuses the item itself, not a
+ * control inside it, so a screen reader reads the record the link named. On a client navigation Next.js looks for the
+ * fragment while the loading skeleton shows, so the browser never scrolls to it on its own (`TradeHashFocus` calls this
+ * once the trade is on the page).
+ */
+function revealTimelineItem(id: TimelineItemTarget): boolean {
+  const item = document.getElementById(id);
+  if (!item) return false;
+  item.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
+  if (!item.hasAttribute("tabindex")) item.setAttribute("tabindex", "-1");
+  item.focus({ preventScroll: true });
+  return true;
 }
 
 /**

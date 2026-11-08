@@ -2,6 +2,7 @@ import { Calculator } from "lucide-react";
 import { cx } from "@/components/ui/cx";
 import type { TimeDisplay } from "@/domain/time-display";
 import type { TradeDetail } from "@/lib/trades-data";
+import { closeFormContext } from "./close-model";
 import { CloseTradeForm } from "./close-trade-form";
 import { closeMode, listInWords, outcomeView, riskBasisPreview, whenLabel } from "./model";
 import { TRADE_TARGETS } from "./reveal";
@@ -9,9 +10,11 @@ import { WorkspaceSection } from "./section";
 
 /**
  * Result section (docs/V2_ARCHITECTURE.md §3.4–3.5, §14.4). While the position is live: the close form (planned
- * trades: exit, time and fees; live-first trades: the exit price, or the net P&L when price math is impossible). Once
- * closed: realized R, net P&L and the outcome, with the calculation basis in words ("R based on locked risk" / "R based
- * on risk recorded after entry") and the exit facts. Server component.
+ * trades: exit, time and fees; live-first trades: the exit price, or the net P&L when price math is impossible), given
+ * the position's facts (`closeFormContext`) so its confirmation shows the net P&L and R before the close is recorded and
+ * the partial closes journaled while live give the average exit (§3.6). Once closed: realized R, net P&L and the
+ * outcome, with the calculation basis in words ("R based on locked risk" / "R based on risk recorded after entry") and
+ * the exit facts. Server component.
  */
 
 export interface ResultSectionProps {
@@ -43,6 +46,7 @@ function CloseSection({ detail, now, display }: ResultSectionProps) {
           entered={enteredAt ? { at: enteredAt, label: whenLabel(enteredAt, now, display) } : null}
           display={display}
           nowIso={now}
+          context={closeFormContext(detail)}
         />
       </div>
     </WorkspaceSection>

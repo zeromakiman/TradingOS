@@ -5,6 +5,7 @@
 // theme and, last on the phone, the width of every phone screen the run reached. finalCriteria() then judges the
 // criteria that need every flow's screens: no raw internals in any visible text (7), the account context shown on every
 // screen (11) and the live-note screens fitting the phone without sideways panning (18).
+import { accountsOf, passwordGrant, userRpc } from "../fixtures.mjs";
 import { scanVisibleText, screenOf, widerThanPhone } from "../rules.mjs";
 import { arrive, goto, hidden, layoutWidth, main, press, region, selectByLabel, textOf, until, visible, waitForText } from "../ui.mjs";
 import { aboveTheFold, openTrade, pick, tradeState } from "./common.mjs";
@@ -186,7 +187,11 @@ export default async function ux(run) {
     s.check(await visible(dialog, 5_000), "Discard… opens its confirmation");
     await page.keyboard.press("Escape");
     s.check(await hidden(dialog), "Escape closes the confirmation without discarding");
-    s.check(await discard.evaluate(el => el === document.activeElement), "focus returns to the Discard… button");
+    // Focus comes back once the dialog has finished closing (a frame or two after it is hidden), so it is polled; the
+    // time it took is recorded, so a slow return shows in the evidence instead of passing silently.
+    const closedAt = Date.now();
+    const returned = await until(() => discard.evaluate(el => el === document.activeElement), { timeout: 3_000, interval: 50 });
+    s.check(returned, "focus returns to the Discard… button", `${returned ? "after" : "not within"} ${Date.now() - closedAt} ms`);
     s.check((await tradeState(page)) === "Blocked", "the draft is unchanged");
     const selector = page.getByRole("button", { name: /^Trading Account:/ }).first();
     await press(selector, { tap });
@@ -283,6 +288,79 @@ export default async function ux(run) {
   });
 
   if (run.mobile) {
+    // Account names run up to 100 characters (the create form, the profile rename and the database all allow them), the
+    // seeded ones are short. For this step two of the user's accounts carry 100-character names (renamed the way the
+    // profile form does it), one of them without a single space (nothing to wrap at but the name itself), so Today, a
+    // live trade, Plan Trade, the account's dashboard and Manage pages and Settings are measured with them; their scans
+    // count in "phone-width" below. The seeded names are put back afterwards, whatever happened.
+    await run.step("long-account-names", `Phone: Today, a live trade, Plan Trade, the account pages, Review, AI history and Settings fit ${run.vp.width} px with 100-character account names`, async s => {
+      const p = run.page;
+      const { ftmo, personal } = user.showcase.accounts;
+      const long = {
+        [ftmo]: "FTMO Challenge Phase 2 · 200K Swing (Aggressive) · EURUSD and GBPUSD focus · London and NY sessions.",
+        // No spaces at all; the personal account holds the seeded live trade, so its trade page is measured with it too.
+        [personal]: "Personal_IC_Markets_12K_cTrader_DE40_and_NAS100_index_scalps_no_news_trading_Mon_to_Fri_only_v2vwxyz",
+      };
+      s.check(Object.values(long).every(name => name.length === 100), "both names are 100 characters long, the longest an account name can be");
+      const seededNames = Object.fromEntries(accountsOf(env.stack, user.id).filter(account => account.id in long).map(account => [account.id, account.name]));
+      const grant = await passwordGrant(env.stack, user.email, user.password);
+      s.check(grant.ok, "the synthetic user signs in to the local gateway", grant.error ?? undefined);
+      const rename = names => Promise.all(Object.entries(names).map(([id, displayName]) => userRpc(env.stack, grant.token, "update_account_profile", { p_account_id: id, p_input: { displayName } })));
+      const renamed = await rename(long);
+      try {
+        s.check(renamed.every(result => result.ok), "two accounts renamed through update_account_profile", renamed.map(result => result.message).filter(Boolean).join("; ") || undefined);
+        /** No sideways panning, and the tab bar (Today · Journal · New trade · Accounts · More) stays on the screen. */
+        const fitsPhone = async screen => {
+          const width = await layoutWidth(p);
+          s.check(width <= run.vp.width + 1, `${screen} fits ${run.vp.width} px`, `${width} px wide`);
+          const bar = await p.getByRole("navigation", { name: "Primary" }).first().boundingBox();
+          const onScreen = bar && bar.x >= 0 && bar.x + bar.width <= run.vp.width + 1 && bar.y + bar.height <= run.vp.height + 1;
+          s.check(onScreen, `${screen}: the tab bar is on the screen`, bar ? `${Math.round(bar.width)}×${Math.round(bar.height)} at ${Math.round(bar.x)},${Math.round(bar.y)}` : "no tab bar");
+        };
+        await goto(p, "/today?account=all");
+        await fitsPhone("Today (All Accounts)");
+        const today = await textOf(main(p));
+        s.check(Object.values(long).every(name => today.includes(name)), "Today keeps both names whole in its text (they are cut only on the screen)");
+        await s.shot("long-account-names-today");
+        const live = trades.todayLiveFirst ?? trades.todayPlannedLive;
+        if (live) {
+          await openTrade(p, live);
+          await fitsPhone("the live trade");
+          const chip = p.getByRole("link", { name: /^Trading account / }).first();
+          const box = await chip.boundingBox();
+          s.check(box && box.x + box.width <= run.vp.width + 1, "the trade header's account chip stays inside the screen", box ? `right edge ${Math.round(box.x + box.width)} px` : "no chip");
+          await s.shot("long-account-names-trade");
+        }
+        // Every other screen that prints a whole name: Plan Trade (form chip, risk check caption), the account's own Today
+        // (page header, status heading), its dashboard and Manage titles, and Settings' account list.
+        for (const [screen, path] of [
+          ["Plan Trade", `/trades/new?account=${ftmo}`],
+          ["Plan Trade (name without spaces)", `/trades/new?account=${personal}`],
+          ["Today (one account, name without spaces)", `/today?account=${personal}`],
+          ["the account dashboard (name without spaces)", `/accounts/${personal}`],
+          ["Manage account (name without spaces)", `/accounts/${personal}/manage`],
+          ["Review (one account, name without spaces)", `/review?account=${personal}`],
+          ["AI history (one account, name without spaces)", `/review/history?account=${personal}`],
+          ["Settings", "/settings"],
+        ]) {
+          await goto(p, path);
+          await fitsPhone(screen);
+          if (path.startsWith("/trades/new")) {
+            // The chip beside "‹ Today" shrinks for the name; the way back keeps its one line.
+            const back = await main(p).getByRole("link", { name: "Today", exact: true }).first().boundingBox();
+            s.check(back && back.height <= 48, `${screen}: "‹ Today" stays on one line beside the account chip`, back ? `${Math.round(back.width)}×${Math.round(back.height)}` : "no link");
+          }
+        }
+        await s.shot("long-account-names-settings");
+        s.evidence(18, `Today, the live trade, Plan Trade, the account pages, Review, AI history and Settings fit ${run.vp.width} px with two 100-character account names, one without spaces; the tab bar stays on the screen`);
+      } finally {
+        // Back to All Accounts (the account links above stored a single account as the context), then the seeded names.
+        await goto(p, "/today?account=all").catch(() => null);
+        const restored = await rename(seededNames).catch(error => [{ ok: false, message: String(error) }]);
+        if (!restored.every(result => result.ok)) s.info("the seeded account names could not be put back", restored.map(result => result.message).join("; "));
+      }
+    }, { criteria: [18] });
+
     // Last of the phone pass: every phone screen measured so far in this run (after each navigation, before each tap,
     // at each screenshot and step end, by every flow) must fit the device; one that pans sideways fails here by name.
     await run.step("phone-width", `Every phone screen the run reached fits ${run.vp.width} px (no sideways panning)`, async s => {

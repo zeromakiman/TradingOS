@@ -12,6 +12,8 @@ import { type ActionState, actionError, actionSuccess, FAILED_COPY, formOptional
  * `addJournalEntry` fields `tradeId`, `kind` (NOTE|DECISION|STOP_CHANGE|TARGET_CHANGE|PARTIAL_CLOSE|LESSON), `body?`,
  * `details?` (JSON object), `requestKey` → `data: { id }`. Phase and the lifecycle at creation are computed by the
  * database from server-side facts, never from the client. A retry with the same `requestKey` returns the same entry.
+ * Stop, target and partial-close entries are taken only while the trade is live: the database decides from its own
+ * facts (ENTRY_NOT_LIVE), so a page that still shows a closed trade as live gets the sentence below.
  */
 
 const D = Decimal.clone({ precision: 60 });
@@ -29,6 +31,12 @@ const COPY = {
   price: "Price must be a positive number with up to 8 decimals.",
   quantity: "Size must be a positive number with up to 8 decimals.",
   percent: "Percent must be more than 0 and less than 100.",
+} as const;
+
+/** Copy of the database's own refusals; ENTRY_NOT_LIVE is the composer's `JOURNAL_COPY.notLive`. */
+const RPC_COPY = {
+  INVALID_INPUT: "The entry was not accepted. Prices must match the instrument's tick size.",
+  ENTRY_NOT_LIVE: "Stop, target and partial-close entries can only be recorded while the trade is live.",
 } as const;
 
 type Details = Record<string, string>;
@@ -98,7 +106,7 @@ export async function addJournalEntry(_prev: ActionState<{ id: string }>, form: 
       p_trade_id: ids.data.tradeId, p_kind: ids.data.kind, p_body: checked.body, p_details: checked.details, p_request_key: ids.data.requestKey,
     });
     if (error) {
-      const message = rpcErrorCopy(error, { INVALID_INPUT: "The entry was not accepted. Prices must match the instrument's tick size." });
+      const message = rpcErrorCopy(error, RPC_COPY);
       if (message === FAILED_COPY) operationalFailure("database_write_failed");
       return actionError(message);
     }

@@ -2,7 +2,7 @@ import { CircleAlert, CircleCheck, Hourglass, Settings, Sparkles } from "lucide-
 import Link from "next/link";
 import { useId } from "react";
 import { AiBudgetSummary, aiBudgetAmounts, aiBudgetStatus } from "@/components/ai/ai-budget-summary";
-import { aiSettingsHref, dataToken, failureAccountingText } from "@/components/ai/model";
+import { AI_SETTINGS_PATH, aiSettingsHref, dataToken, failureAccountingText } from "@/components/ai/model";
 import { StaleNotice } from "@/components/ai/stale-revision-marker";
 import { AiTechnicalFields } from "@/components/ai/technical";
 import { StatusPill } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { Callout } from "@/components/ui/callout";
 import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cx } from "@/components/ui/cx";
 import { EmptyState } from "@/components/ui/empty-state";
+import { prefetchFor } from "@/components/ui/links";
 import { SectionHeader } from "@/components/ui/page-header";
 import { Pagination } from "@/components/ui/pagination";
 import { TechnicalDetails } from "@/components/ui/technical-details";
@@ -41,12 +42,11 @@ const STATUS_ICONS: Readonly<Record<AiHistoryStatus, { icon: typeof CircleCheck;
   IN_PROGRESS: { icon: Hourglass, className: "text-accent" },
 };
 
-/**
- * Settings → AI lists every account's budget; a single account's link selects that account (§9.2). Links that switch
- * the context ("AI settings" of one account in All Accounts, "Show every account") are never prefetched, and
- * ReviewContextScope loads them in full so the header follows.
+/*
+ * Settings → AI lists every account's budget (AI_SETTINGS_PATH); a single active account's link selects that account
+ * (§9.2). Links that carry `?account=` ("AI settings" of one account, "Show every account") are never prefetched, and
+ * ReviewContextScope loads those that switch the context in full so the header follows.
  */
-const AI_SETTINGS_PATH = "/settings#ai";
 
 function Subject({ entry, accountName }: { entry: HistoryEntryView; accountName: string | null }) {
   const { subject } = entry;
@@ -195,6 +195,8 @@ function Budgets({ content, display, now }: { content: HistoryContent; display: 
   if (content.budgets.length === 0) return null;
   if (content.budgets.length === 1) {
     const [{ account, budget }] = content.budgets;
+    // An archived account can never be the context (§9.2): its link opens Settings → AI, which lists it, unselected.
+    const settingsHref = aiSettingsHref(account.id, account.archived);
     return (
       <section aria-labelledby={headingId} className="flex flex-col gap-2">
         <SectionHeader
@@ -202,13 +204,13 @@ function Budgets({ content, display, now }: { content: HistoryContent; display: 
           title={BUDGET_TITLE}
           className="mb-0"
           actions={
-            <Link href={aiSettingsHref(account.id)} prefetch={false} className={ACTION_LINK}>
+            <Link href={settingsHref} prefetch={prefetchFor(settingsHref, undefined)} className={ACTION_LINK}>
               <Settings aria-hidden="true" className="size-3.5" />
               AI settings
             </Link>
           }
         />
-        <AiBudgetSummary accountName={account.name} budget={budget} timeDisplay={display} now={now} />
+        <AiBudgetSummary accountName={account.name} budget={budget} timeDisplay={display} now={now} archived={account.archived} />
       </section>
     );
   }

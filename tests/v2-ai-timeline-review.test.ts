@@ -36,6 +36,9 @@ const ids = {
   position: "f0000000-0000-4000-8000-000000000001",
   request: "70000000-0000-4000-8000-000000000001",
   reservation: "80000000-0000-4000-8000-000000000001",
+  /** V1 decisions (setup_human_decisions): one on the reviewed trade's revision, one on the sibling draft. */
+  decision: "d1000000-0000-4000-8000-000000000001",
+  siblingDecision: "d1000000-0000-4000-8000-000000000002",
 };
 const THESIS = "London swept the Asian low; waiting for an M5 order block first touch.";
 const bytes = (seed: string) => Buffer.from(`synthetic-chart-${seed}`);
@@ -147,7 +150,10 @@ function seed(): Fake {
     trades: [{ id: ids.trade, user_id: ids.user }, { id: ids.live, user_id: ids.user }],
     trade_ledger: [ledger(), liveLedger()],
     trade_revisions: [{ trade_id: ids.trade, user_id: ids.user, proposal_id: ids.proposal, revision: 1, created_at: "2026-09-01T06:00:00+00:00" }],
-    trade_plans: [{ id: ids.plan, user_id: ids.user, proposal, risk_result: v1Plan.risk_result, nominal_risk: "50", locked_at: "2026-09-01T07:00:00+00:00", trading_day: "2026-09-01" }],
+    trade_plans: [{
+      id: ids.plan, user_id: ids.user, proposal, risk_result: v1Plan.risk_result, nominal_risk: "50", locked_at: "2026-09-01T07:00:00+00:00", trading_day: "2026-09-01",
+      risk_evaluation_id: ids.evaluation,
+    }],
     strategy_versions: [{ id: ids.strategy, user_id: ids.user, account_id: ids.account, version: "ICT V1.0", rules: { minimum_rr: "3" }, created_at: "2026-01-01T00:00:00+00:00" }],
     risk_plan_versions: [{
       id: ids.risk, user_id: ids.user, version: "Risk Plan V1.0", effective_day: "2026-01-01", max_risk_percent: "0.5", default_risk_percent: null, max_daily_trades: 2,
@@ -321,6 +327,48 @@ describe("reviewTradeTimeline: request lifecycle", () => {
     expect(rpcArgs("finish_trade_timeline_review")).toEqual({
       p_id: ids.request, p_user_id: ids.user, p_status: "COMPLETED", p_interpretation: plannedOutput, p_error: null, p_raw: plannedOutput, p_reservation_id: ids.reservation,
     });
+  });
+
+  it("sends the plan's own evaluation as part of the lock, and the trade's V1 decisions in the trader's words", async () => {
+    // An "Earlier" entry typed in the lock's minute is stored at the lock instant; the lock writes its evaluation later.
+    fake.tables.trade_ledger = [ledger({ entered_at: "2026-09-01T07:00:00+00:00", legacy_decision: "TAKEN" })];
+    fake.tables.setup_risk_checks = [{ id: 1, proposal_id: ids.proposal, user_id: ids.user, risk: { id: ids.evaluation, result: v1Plan.risk_result, recorded_at: "2026-09-01T07:00:00.600000+00:00" } }];
+    fake.tables.setup_human_decisions = [
+      {
+        id: ids.decision, proposal_id: ids.proposal, user_id: ids.user, decision: "TAKEN", event_type: "MANUAL_OVERRIDE", reason: "Took it anyway: news was priced in.",
+        risk_decision: "BLOCKED", ai_decision: "BLOCKED", recorded_at: "2026-09-01T06:58:00+00:00",
+      },
+      {
+        id: ids.siblingDecision, proposal_id: ids.siblingProposal, user_id: ids.user, decision: "SKIPPED", event_type: "HUMAN_DECISION", reason: "Another draft.",
+        risk_decision: "APPROVED", ai_decision: "NOT_EVALUATED", recorded_at: "2026-09-01T06:59:00+00:00",
+      },
+    ];
+    const output = {
+      ...structuredClone(plannedOutput),
+      thesisCheck: { assessment: "CONSISTENT", text: "The lock's approval and the recorded override precede the entry.", sourceRefs: ["originalPlan", `check:${ids.evaluation}`, `event:${ids.decision}`] },
+    };
+    m.gate.mockImplementation(async (input: unknown, owner: unknown, ledgerApi: Parameters<typeof ledgerCalls>[2]) => {
+      await ledgerCalls(input, owner, ledgerApi);
+      return { output: structuredClone(output) };
+    });
+    expect(await reviewTradeTimeline(ids.trade, ids.request, [])).toMatchObject({ status: "COMPLETED" });
+    const facts = m.gate.mock.calls[0][0].context;
+    const item = (sourceId: string) => facts.timeline.find((entry: Row) => entry.sourceId === sourceId);
+    expect(item(`check:${ids.evaluation}`)).toMatchObject({ timing: "BEFORE_ENTRY", flags: [], recordedAt: "2026-09-01T07:00:00.600000+00:00" });
+    expect(item(`plan:${ids.plan}`)).toMatchObject({ timing: "BEFORE_ENTRY", flags: [] });
+    expect(item(`event:${ids.decision}`)).toMatchObject({
+      kind: "MANUAL_OVERRIDE", text: "Took it anyway: news was priced in.", timing: "BEFORE_ENTRY", flags: [], details: { decision: "TAKEN", riskDecision: "BLOCKED" },
+    });
+    // Only the trade's own revisions, read as the owner; the AI verdict of that time is earlier AI output and never sent.
+    expect(item(`event:${ids.siblingDecision}`)).toBeUndefined();
+    expect(fake.queries.find(query => query.table === "setup_human_decisions")?.filters).toEqual([["proposal_id", [ids.proposal]], ["user_id", ids.user]]);
+    expect(JSON.stringify(facts)).not.toMatch(/ai_?decision/i);
+    expect(rpcArgs("finish_trade_timeline_review")).toMatchObject({ p_status: "COMPLETED", p_error: null });
+  });
+
+  it("reads no V1 decisions for a trade recorded in V2", async () => {
+    expect(await reviewTradeTimeline(ids.trade, ids.request, [ids.preEntryShot])).toMatchObject({ status: "COMPLETED" });
+    expect(fake.queries.some(query => query.table === "setup_human_decisions")).toBe(false);
   });
 
   it("reviews a live-first trade with NO_PLAN_RECORDED facts", async () => {

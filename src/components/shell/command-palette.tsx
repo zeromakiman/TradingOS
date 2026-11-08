@@ -24,7 +24,7 @@ import { Dialog as RadixDialog } from "radix-ui";
 import { type KeyboardEvent, type MouseEvent, useEffect, useId, useMemo, useState, useTransition } from "react";
 import { Button } from "../ui/button";
 import { Kbd } from "../ui/kbd";
-import { useAccountContextSelection } from "./account-context-sync";
+import { useAccountContextSelection, useContextStored } from "./account-context-sync";
 import { switchAccountContext } from "./actions";
 import { readPaletteHistory, recentItemIds, rememberPaletteItem } from "./palette-history";
 import { buildPaletteItems, PALETTE_GROUP_LABELS, type PaletteIcon, type PaletteItem, paletteSections } from "./palette-items";
@@ -85,6 +85,7 @@ type Entry = { key: string; item: PaletteItem };
  */
 export function CommandPaletteBody({ index, context: rendered, userEmail, selectAccountAction, onClose }: CommandPaletteProps & { onClose: () => void }) {
   const context = useAccountContextSelection(rendered);
+  const noteStored = useContextStored();
   const currentHref = useCurrentHref();
   const router = useRouter();
   const [query, setQuery] = useState("");
@@ -138,11 +139,14 @@ export function CommandPaletteBody({ index, context: rendered, userEmail, select
     onClose();
     const value = item.accountValue;
     const plainClick = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
-    // On a page whose URL names a context (?account=), the switch follows the link (the URL decides what the page
-    // shows) and the shell stores the new context after the navigation.
-    if (value === undefined || !selectAccountAction || !plainClick || new URL(window.location.href).searchParams.has("account")) return;
+    if (value === undefined || !selectAccountAction || !plainClick) return;
     event.preventDefault();
-    startTransition(() => switchAccountContext(selectAccountAction, value, item.href, (target) => router.push(target)));
+    // On a page whose URL names a context (?account=), the URL decides what the page shows: the link is followed once
+    // the action has stored the choice, so every later page already renders it (as the header selector does).
+    const followLink = new URL(window.location.href).searchParams.has("account");
+    startTransition(async () => {
+      await switchAccountContext(selectAccountAction, value, item.href, (target) => router.push(target), { followLink, stored: noteStored });
+    });
   };
 
   return (

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { type ComponentType, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -19,7 +20,8 @@ vi.mock("next/navigation", async importOriginal => ({
 import { ENTRY_UNREACHABLE_COPY, JOURNAL_COMPOSER_ID, JournalComposer, type JournalComposerProps } from "@/components/trade/journal/composer";
 import {
   defaultLabelForLifecycle, EMPTY_JOURNAL_DRAFT, isPartialPercent, isPositiveDecimal, isTickAligned, JOURNAL_COPY, JOURNAL_KIND_LABELS, JOURNAL_KINDS, JOURNAL_PLACEHOLDERS,
-  type JournalDraft, journalEntryForm, journalEntryTitle, journalServerErrors, MAX_JOURNAL_BODY, tickCopy, timingHintForLifecycle, trimJournalBody, validateJournalDraft,
+  type JournalDraft, journalEntryForm, journalEntryTitle, journalKindsFor, journalServerErrors, LIVE_ONLY_KINDS, liveKindsNote, MAX_JOURNAL_BODY, tickCopy,
+  timingHintForLifecycle, trimJournalBody, validateJournalDraft,
 } from "@/components/trade/journal/composer-model";
 import { JOURNAL_COMPOSER_SELECTOR } from "@/components/shell/shortcuts";
 import { LIFECYCLES } from "@/domain/ledger";
@@ -51,6 +53,25 @@ describe("journal kinds", () => {
     expect(JOURNAL_KINDS).toEqual(["NOTE", "DECISION", "STOP_CHANGE", "TARGET_CHANGE", "PARTIAL_CLOSE", "LESSON"]);
     expect(JOURNAL_KINDS.map(kind => JOURNAL_KIND_LABELS[kind]).join(" · ")).toBe("Note · Decision · Stop · Target · Partial · Lesson");
     expect(JOURNAL_PLACEHOLDERS.NOTE).toBe("Add to trade journal…");
+  });
+
+  it("offers stop moves, target changes and partial closes only while the trade is live", () => {
+    // add_journal_entry refuses them in any other phase (ENTRY_NOT_LIVE): no position existed before the entry or after the close.
+    expect(LIVE_ONLY_KINDS).toEqual(["STOP_CHANGE", "TARGET_CHANGE", "PARTIAL_CLOSE"]);
+    expect(journalKindsFor("WHILE_LIVE")).toEqual(JOURNAL_KINDS);
+    expect(journalKindsFor("BEFORE_ENTRY")).toEqual(["NOTE", "DECISION", "LESSON"]);
+    expect(journalKindsFor("AFTER_CLOSE")).toEqual(["NOTE", "DECISION", "LESSON"]);
+    expect(LIFECYCLES.filter(lifecycle => journalKindsFor(timingHintForLifecycle(lifecycle)).includes("STOP_CHANGE"))).toEqual(["LIVE"]);
+  });
+
+  it("says why on a draft (its stop and target change with Edit draft) and on a locked plan, and nowhere else", () => {
+    expect(liveKindsNote("DRAFT", true)).toEqual({ text: "The stop and target are part of the plan: change them with Edit draft.", editDraft: true });
+    expect(JOURNAL_COPY.draftKinds.split("Edit draft")).toHaveLength(2);
+    // A draft of an archived account can't be edited: no pointer to an edit it can't take.
+    expect(liveKindsNote("DRAFT", false)).toBeNull();
+    expect(liveKindsNote("LOCKED", false)).toEqual({ text: "Stop moves, target changes and partial closes can be journaled once the entry is recorded.", editDraft: false });
+    for (const lifecycle of ["LIVE", "CLOSED", "REVIEWED", "SKIPPED", "CANCELLED", "DISCARDED"] as const) expect(liveKindsNote(lifecycle, true), lifecycle).toBeNull();
+    expect(JOURNAL_COPY.notLive).toBe("Stop, target and partial-close entries can only be recorded while the trade is live.");
   });
 });
 
@@ -191,6 +212,35 @@ describe("<JournalComposer>", () => {
     expect(sticky).toContain("max-md:sticky");
     expect(sticky).toContain("max-md:bottom-[calc(3.5rem_+_env(safe-area-inset-bottom))]");
     expect(renderToStaticMarkup(element(JournalComposer, props()))).not.toContain("max-md:sticky");
+  });
+
+  it("scrolls under the sticky top bar while docked, never over the account selector and search", () => {
+    // Both are sticky in the same stacking context, and the composer comes later in the page: on equal z-index it
+    // would paint over the top bar while it scrolls past it.
+    const css = readFileSync(new URL("../src/app/globals.css", import.meta.url), "utf8");
+    const topbar = Number(/\n {2}\.app-topbar \{[^}]*?z-index: (\d+);/.exec(css)?.[1]);
+    const tabbar = Number(/\n {2}\.mobile-tabbar \{[^}]*?z-index: (\d+);/.exec(css)?.[1]);
+    const overlay = Number(/\n {2}\.overlay \{[^}]*?z-index: (\d+);/.exec(css)?.[1]);
+    const docked = Number(/max-md:z-(\d+)/.exec(renderToStaticMarkup(element(JournalComposer, props({ sticky: true }))))?.[1]);
+    expect(docked).toBeGreaterThan(0);
+    expect(topbar).toBeGreaterThan(docked);
+    // Shell chrome stays under dialogs and sheets.
+    expect(topbar).toBeLessThan(overlay);
+    expect(tabbar).toBeLessThan(overlay);
+  });
+
+  it("offers Note · Decision · Lesson before the entry and after the close, with the page's reason under the chips", () => {
+    const chipsOf = (markup: string) => [...markup.matchAll(/<label class="chip-toggle"><input[^>]*value="([A-Z_]+)"[^>]*\/>([^<]+)<\/label>/g)].map(match => match[2]);
+    for (const timingHint of ["BEFORE_ENTRY", "AFTER_CLOSE"] as const) {
+      const markup = renderToStaticMarkup(element(JournalComposer, props({ timingHint })));
+      expect(chipsOf(markup), timingHint).toEqual(["Note", "Decision", "Lesson"]);
+      expect(markup).not.toContain("New stop price");
+      expect(markup).not.toContain("aria-describedby=\"journal-composer-kinds-note\"");
+    }
+    expect(chipsOf(renderToStaticMarkup(element(JournalComposer, props())))).toEqual(["Note", "Decision", "Stop", "Target", "Partial", "Lesson"]);
+    const noted = renderToStaticMarkup(element(JournalComposer, props({ timingHint: "BEFORE_ENTRY", kindsNote: JOURNAL_COPY.lockedKinds })));
+    expect(noted).toMatch(/<fieldset[^>]*aria-describedby="journal-composer-kinds-note"/);
+    expect(noted).toContain(`<p id="journal-composer-kinds-note" class="t-caption -mt-1">${JOURNAL_COPY.lockedKinds}</p>`);
   });
 
   it("captures pastes and drops on the whole trade page by default", () => {

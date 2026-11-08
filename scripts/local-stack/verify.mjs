@@ -7,9 +7,13 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
-import { GATEWAY_URL, fail, httpStatus, makePng, readStack, runMain } from "./lib.mjs";
+import { GATEWAY_URL, fail, httpStatus, makePng, readStack, runMain, sqlValue } from "./lib.mjs";
 
 const BUCKET = "setup-screenshots";
+/** The purge's confirmation phrase (supabase/migrations/0019_account_erasure.sql, src/lib/erasure.ts). */
+const ERASE_PHRASE = "ERASE ALL MY TRADING OS DATA";
+/** A SQL literal of a generated value (uuid, hex, number or fixed text). */
+const literal = value => (typeof value === "number" ? String(value) : `'${String(value).replace(/'/g, "''")}'`);
 const options = { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false } };
 
 await runMain(async () => {
@@ -85,14 +89,18 @@ await runMain(async () => {
   });
 
   let screenshot;
-  await check("Service-role upload + registration; owner download; other user, anon and public URL denied", async () => {
+  await check("Service-role upload; legacy registration closed to the service role; owner download; other user, anon and public URL denied", async () => {
     const proposal = { instrumentId: ctx.i.id, direction: "LONG", model: "OB_FIRST_TOUCH", entry: "1.10000", stop: "1.09800", target: "1.10600", riskPercent: "0.5", narrative: "Local stack verification (synthetic).", contractConfirmed: true, news: "UNKNOWN", contradiction: false };
     const proposalId = await data(a.rpc("save_setup_proposal", { p_account_id: account, p_proposal: proposal, p_key: randomUUID(), p_expected_risk_id: ctx.r.id, p_expected_observation_id: ctx.o.id }));
     const bytes = makePng(64, 40), imageId = randomUUID(), path = `${A.id}/${proposalId}/${imageId}`;
     const bucket = await data(admin.storage.getBucket(BUCKET));
     assert.equal(bucket.public, false); assert.equal(bucket.file_size_limit, 4194304);
     await data(admin.storage.from(BUCKET).upload(path, bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length), { contentType: "image/png", upsert: false }));
-    await data(admin.from("setup_screenshots").insert({ id: imageId, user_id: A.id, account_id: account, proposal_id: proposalId, role: "M5", storage_path: path, original_filename: "verify.png", width: 64, height: 40, byte_size: bytes.length, mime_type: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") }));
+    const row = { id: imageId, user_id: A.id, account_id: account, proposal_id: proposalId, role: "M5", storage_path: path, original_filename: "verify.png", width: 64, height: 40, byte_size: bytes.length, mime_type: "image/png", sha256: createHash("sha256").update(bytes).digest("hex") };
+    // V2 registers no legacy screenshots, so the service role keeps no insert grant on setup_screenshots (0019). The
+    // superuser stands in for a row that V1 registered.
+    assert.equal((await admin.from("setup_screenshots").insert(row)).error?.code, "42501", "the service role cannot insert legacy screenshots");
+    assert.equal(sqlValue(stack, `insert into public.setup_screenshots(${Object.keys(row).join(", ")}) values (${Object.values(row).map(literal).join(", ")}) returning id`), imageId);
     screenshot = { path, bytes };
     const own = await data(a.storage.from(BUCKET).download(path));
     assert.deepEqual(Buffer.from(await own.arrayBuffer()), bytes);
@@ -158,6 +166,29 @@ await runMain(async () => {
     await data(a.auth.signOut({ scope: "local" }));
     const after = await client().auth.getUser(token);
     assert.equal(after.error?.name, "AuthSessionMissingError");
+  });
+
+  await check("No user token can call a purge RPC, however fresh its password sign-in; the trusted server erases one user", async () => {
+    // A browser's own login carries exactly the claims of a re-authentication (amr password, now), so the database
+    // grants the purge to the service role only (src/lib/erasure.ts calls it after the password re-entry).
+    const fresh = client();
+    await data(fresh.auth.signInWithPassword({ email: A.email, password: A.password }));
+    const { claims } = await data(fresh.auth.getClaims());
+    assert.ok(claims.amr?.some(entry => entry.method === "password" && entry.timestamp >= Date.now() / 1000 - 120), "the token records a password sign-in of the last two minutes");
+    for (const [name, caller, code] of [["fresh login", fresh, "42501"], ["anonymous", anon, "42501"]]) {
+      const own = await caller.rpc("purge_user_trading_data", { p_user_id: A.id, p_confirm: ERASE_PHRASE });
+      assert.equal(own.error?.code, code, `${name}: purge_user_trading_data is denied`);
+      const legacy = await caller.rpc("purge_my_trading_data", { p_confirm: ERASE_PHRASE });
+      assert.equal(legacy.error?.code, "PGRST202", `${name}: the self-service purge no longer exists`);
+    }
+    assert.equal((await data(fresh.from("accounts").select("id"))).length, 1, "nothing was erased");
+    const purged = await data(admin.rpc("purge_user_trading_data", { p_user_id: A.id, p_confirm: ERASE_PHRASE }));
+    assert.ok(purged.deleted.accounts === 1 && purged.deleted.setup_screenshots === 1, "the service role erased the user's rows");
+    assert.deepEqual(purged.storagePaths, { legacy: [screenshot.path], evidence: [] });
+    await data(admin.storage.from(BUCKET).remove(purged.storagePaths.legacy));
+    assert.equal(sqlValue(stack, `select count(*) from public.accounts where user_id = ${literal(A.id)}`), "0");
+    await data(admin.auth.admin.deleteUser(A.id));
+    assert.ok((await admin.auth.admin.getUserById(A.id)).error, "the auth user is gone once nothing references it");
   });
 
   console.log(`LOCAL STACK VERIFY PASSED: ${checks.length} checks (throwaway users ${A.email}, ${B.email})`);

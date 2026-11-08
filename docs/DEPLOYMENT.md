@@ -9,7 +9,9 @@ Hard rules for every environment:
 - **AI stays off on Vercel Preview and production (`AI_ENABLED=false`)** until the real-provider acceptance that
   follows the independent audit. V2 development and every automated test ran without a single paid AI call.
 - **`TRADING_OS_ENABLE_MOCK_SYNC` is never set on Preview or production.** It enables a developer simulation of
-  platform sync; production platform sync does not exist in V2.
+  platform sync; production platform sync does not exist in V2. Before any real provider (cTrader, MT5) is accepted,
+  the gap documented in [V2_1_GAPS.md](V2_1_GAPS.md) must be closed: the daily limits do not see platform executions
+  that are held, unlinked or whose close was not recorded on a trade.
 - Synthetic data only outside production. Never point a Preview at the production database, and never run test or
   acceptance scripts against a real account.
 - Migrations are additive and applied once, in order. Never edit or re-run an applied file.
@@ -17,7 +19,7 @@ Hard rules for every environment:
 ## Architecture
 
 ```text
-Browser (Supabase session cookies, httpOnly context/preference cookies)
+Browser (HttpOnly Supabase session and account-context cookies, Secure on HTTPS; display preference cookies)
   → HTTPS → Vercel / Next.js 16 (Node 24): proxy, server-rendered pages, server actions, route handlers
       proxy (src/proxy.ts): refreshes the session (getClaims), marks every response private/no-store,
                             redirects signed-out page requests to /login, applies ?account= (stored on page loads only)
@@ -30,8 +32,9 @@ Browser (Supabase session cookies, httpOnly context/preference cookies)
 
 The service-role key is used only by the trusted server, for the complete list in V2_ARCHITECTURE.md §10.3: evidence
 upload, registration, cleanup and duplicate copies; the AI ledger and AI start/authorize/finish RPCs; mock connection
-ingest (developer mode, only when mock sync is enabled); erasure storage deletion and `auth.admin.deleteUser`. It never
-reaches the browser. Every other read and write uses the signed-in user's session.
+ingest (developer mode, only when mock sync is enabled); the erasure purge (`purge_user_trading_data`, after the typed
+DELETE and password re-entry), erasure storage deletion and `auth.admin.deleteUser`. It never reaches the browser.
+Every other read and write uses the signed-in user's session.
 
 ## Environment
 
@@ -63,11 +66,11 @@ remove the key before deploying V2 there.
 |---|---|
 | 0001–0007 | V1 foundation: immutable records and owner RLS, risk evaluator, strategy/risk baseline, proposals and evidence, private screenshot bucket, outcomes and analytics, audit hardening |
 | 0008–0014 | V1 AI: account budgets and reservations, trade reviews, pre-lock challenges, weekly/recent/monthly reviews, uncertainty resolution |
-| **0015_canonical_trades** | The Trade model: `trades`, draft `trade_revisions`, plan links, lifecycle events, live-first position facts and unplanned closes, live journal entries, V2 evidence (`trade_evidence`, removals, labels; private `trade-evidence` bucket and policies), tag sets, external losses, trading-account profiles and instrument versions, versioned risk policy (`create_risk_policy_version`), the `trade_ledger` view (one row per trade, lifecycle derived), the planned and live-first RPCs (which delegate every risk, lock, fill and outcome decision to the V1 functions), `private.active_risk_plan` (risk-plan precedence), an insert-only backfill of every V1 plan and unlocked proposal into a planned trade, and the schema marker `trading_os_schema()` |
+| **0015_canonical_trades** | The Trade model: `trades`, draft `trade_revisions`, plan links, lifecycle events, live-first position facts and unplanned closes, live journal entries, V2 evidence (`trade_evidence`, removals, labels; private `trade-evidence` bucket and policies), tag sets, external losses, trading-account profiles and instrument versions, versioned risk policy (`create_risk_policy_version`), the `trade_ledger` view (one row per trade, lifecycle derived), the planned and live-first RPCs (which delegate every risk, lock, fill and outcome decision to the V1 functions), `private.active_risk_plan` (risk-plan precedence), an insert-only backfill of every V1 plan and unlocked proposal into a planned trade, and the schema marker `trading_os_schema()`. Also: the deferred `plan_requires_trade` check (an API request that locks a plan without linking it to a trade rolls back with `PLAN_WITHOUT_TRADE`), V1 `save_setup_proposal` and `check_setup_risk` refusing archived accounts (`check_setup_risk` also refuses a NULL `p_lock`), duplicates moved to the account's current contract version, and stop/target/partial-close journal entries only while the trade is live (`ENTRY_NOT_LIVE`) |
 | **0016_risk_engine_usage** | Risk Engine 1.1 with report 1.2: `private.daily_usage` and `get_daily_risk_usage` (planned and live-first slots and risk, realized and external losses, open exposure), `private.risk_report_v12`; every engine path evaluates with the active risk plan and today's usage. Stored 1.0/1.1 reports keep their meaning |
 | **0017_platform_connections** | Connection-ready, read-only platform model: connections, external executions deduplicated by `(connection_id, external_id)`, appended closes, connection events, append-only trade/execution links, overview views. Only the MOCK provider is accepted; ingest is service-only |
-| **0018_trade_ai_timeline** | AI on V2 drafts (latest revision only, V2 evidence), the timeline-aware trade review (`trade_timeline_reviews`, results, service-only RPCs, the `trade_ai_activity` view, AI review counts in `trade_ledger`), periodic reviews accepting the compact V2 facts, and release of provably unsent AI requests (`ai_request_generations`) |
-| **0019_account_erasure** | Owner-requested erasure (`purge_my_trading_data`: one transaction, a password sign-in from the last 300 seconds, no AI request in flight, catalog-driven delete order, completeness check, de-identified receipt); statement-level TRUNCATE guards; service-role DML revoked except the documented legacy inserts; foreign-key lookup indexes; the V1 entry points that could bypass the trade model (`lock_trade_plan`, `evaluate_trade_plan`, `import_locked_setup`, `create_risk_version`, `record_observation`, `record_setup_decision`) revoked from `authenticated`. **Must stay the last migration** |
+| **0018_trade_ai_timeline** | AI on V2 drafts (latest revision only, V2 evidence), the timeline-aware trade review (`trade_timeline_reviews`, results, service-only RPCs, the `trade_ai_activity` view, AI review counts in `trade_ledger`), periodic reviews accepting the compact V2 facts, and the zero-cost release of dispatched AI requests that never reached the provider (`ai_request_generations` records the generation commit; SQL then refuses a release) |
+| **0019_account_erasure** | Owner-requested erasure (`purge_user_trading_data(p_user_id, p_confirm)`: executable by `service_role` only, called by the trusted server after the typed DELETE and password re-entry, so no user token can call it; one transaction, no AI request in flight, catalog-driven delete order, completeness check, de-identified receipt); statement-level TRUNCATE guards; service-role DML revoked except inserts on `setup_evaluation_passes` and `evaluator_versions` (V2 registers no legacy `setup_screenshots`); foreign-key lookup indexes; the V1 entry points that could bypass the trade model (`lock_trade_plan`, `evaluate_trade_plan`, `import_locked_setup`, `create_risk_version`, `record_observation`, `record_setup_decision`) revoked from `authenticated`. **Must stay the last migration** |
 
 ### Schema gate ("Database update required")
 
@@ -108,7 +111,9 @@ For `https://<your-exact-domain>`: set Supabase **Site URL** to that origin; all
 `https://<your-exact-domain>/update-password` for password recovery (see [PASSWORD_RECOVERY.md](PASSWORD_RECOVERY.md));
 keep `http://127.0.0.1:3000/...` only for local development; avoid wildcards. Sign-in is password-based through a server
 action; there is no OAuth, magic link or `/auth/callback`. Keep **Allow new users to sign up** disabled and provision
-confirmed users in the dashboard.
+confirmed users in the dashboard. `/update-password` accepts only PKCE recovery links (`?code=`) and sets a new password
+only on a session whose `amr` claim has a `recovery` entry from the last 15 minutes; verify on the hosted project that
+a recovery link's session carries it (PASSWORD_RECOVERY.md) before release.
 
 Changing the password (Settings → Security) verifies the current password with a separate sign-in, sets the new one on
 that freshly verified session, keeps this browser signed in with it, and signs out every other session.
@@ -127,9 +132,14 @@ database backup. Rehearse restores into a separate project; never test a restore
 
 ## Operational notes
 
-- Every response is `private, no-store`. The account context lives in httpOnly cookies (`tos_account`, `tos_last_account`);
-  theme, time display, sidebar and developer mode in preference cookies. `?account=` stores the context only on a page
-  load; client-side navigations store it through the shell, and prefetches never do.
+- Every response is `private, no-store`. The Supabase session cookies are HttpOnly and SameSite=Lax; no browser code
+  creates a Supabase client or reads them. The account context lives in HttpOnly cookies (`tos_account`,
+  `tos_last_account`); theme, time display, sidebar and developer mode in preference cookies. Session and context
+  cookies are Secure when the request came over HTTPS: the URL protocol in the proxy; the Origin header, else
+  X-Forwarded-Proto, in server actions (`src/lib/cookie-security.ts`). `?account=` stores the context only on a page
+  load; client-side navigations store it through the shell, and prefetches never do. Sign-out, password reset and
+  account deletion remove both context cookies; a sign-in (password, or a recovery link) keeps only All Accounts and the
+  signed-in person's own account ids, so a shared browser never carries the previous person's accounts.
 - Unknown, foreign and malformed trade or account ids render the not-found state inside the app shell. Because those
   pages stream a loading skeleton first, the HTTP status is 200 with `noindex` (a "soft 404"; Next.js commits the
   status before a streamed page can call `notFound()`); nothing about the record is revealed (the page for another

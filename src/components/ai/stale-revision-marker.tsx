@@ -1,10 +1,11 @@
 import { History } from "lucide-react";
-import { STALE_ANALYSIS_NOTE, staleRevisionLabel } from "@/domain/ai-summary";
+import { STALE_ANALYSIS_NOTE } from "@/domain/ai-summary";
 import { cx } from "../ui/cx";
 
 /**
  * Marker on a pre-trade analysis of an earlier draft revision (docs/V2_ARCHITECTURE.md §11.1, §15):
- * "Based on draft revision 2 · current revision is 3". Such an analysis is never presented as current.
+ * "Based on draft revision 2 · current revision is 3" (`staleRevisionLabel`). Such an analysis is never presented as
+ * current; an analysis of the current revision has no marker.
  */
 
 /** The stale-analysis notice with any marker text (AiCard renders `staleNote` with it). */
@@ -24,10 +25,4 @@ export function StaleNotice({ text, className }: { text: string; className?: str
       </span>
     </p>
   );
-}
-
-/** Renders nothing while the analysis belongs to the current revision. */
-export function StaleRevisionMarker({ analysisRevision, currentRevision, className }: { analysisRevision: number; currentRevision: number; className?: string }) {
-  const label = staleRevisionLabel(analysisRevision, currentRevision);
-  return label === null ? null : <StaleNotice text={label} className={className} />;
 }

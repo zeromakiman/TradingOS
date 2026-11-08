@@ -3,7 +3,8 @@
  * drops to the page body). When the control that had focus goes away after doing its job (a confirmation succeeds and
  * the page update that follows replaces its trigger, a filter chip removes itself), focus moves to a stable element
  * instead. Focus that the person moved somewhere else in the meantime is left alone. Browser-only: call these from
- * event handlers and effects of client components. (Generalised from src/components/accounts/focus.ts.)
+ * event handlers and effects of client components. (Generalised from src/components/accounts/focus.ts, which still
+ * holds restoreFocusAfterDialog and restoreFocusWhenGone for the Accounts and Today screens.)
  */
 
 /** Whether focus is lost: on the page body (where browsers leave it when the focused element is removed) or nowhere. */
@@ -40,28 +41,6 @@ export function onceReady(ready: () => boolean, then: () => void, frames = FOCUS
 }
 
 const noDialogOpen = () => !document.querySelector(OPEN_DIALOG);
-
-/**
- * Once no dialog is open any more, focuses `target()` (evaluated then, so it sees the updated page) if focus is lost.
- * A dialog that is still open traps focus and would pull it back, so the target waits for the dialog to be gone.
- */
-export function restoreFocusAfterDialog(target: () => HTMLElement | null | undefined): void {
-  onceReady(noDialogOpen, () => {
-    if (focusLost()) focusElement(target());
-  });
-}
-
-/**
- * After a successful action whose control is replaced by the page update that follows, focuses `target()` once
- * `origin` (the element around that control; null when it is already gone) has left the page, if focus went with it.
- * The update can be committed before or several frames after the action's result arrives, so this waits for it.
- */
-export function restoreFocusWhenGone(origin: Element | null | undefined, target: () => HTMLElement | null | undefined): void {
-  const gone = () => !origin?.isConnected;
-  onceReady(gone, () => {
-    if (gone() && focusLost()) focusElement(target());
-  });
-}
 
 /**
  * After a dialog's action succeeded: watches for a short while (no dialog open any more) and, if focus drops to the page

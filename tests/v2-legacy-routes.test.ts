@@ -55,6 +55,9 @@ import LegacyRecentTradesReviewPage from "@/app/edge/recent/page";
 import LegacyWeeklyReviewPage from "@/app/edge/weekly/page";
 import LegacyPlanPage from "@/app/journal/[id]/page";
 import LegacyPreviewPage from "@/app/preview/page";
+import { parseExportRequest } from "@/app/edge/export/contract";
+import { edgeFilters, parseEdgeQuery } from "@/components/edge/query";
+import { parseTradeFilters } from "@/lib/trades-data";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const APP = path.join(ROOT, "src", "app");
@@ -294,6 +297,38 @@ describe("legacy links answer with real HTTP redirects and 404s, not a streamed 
   it("the guard recognises a Suspense around children and ignores one around a sibling", () => {
     expect(suspendsChildren("<body><Suspense fallback={<Spinner />}>{children}</Suspense></body>")).toBe(true);
     expect(suspendsChildren("<body>{children}<Suspense fallback={null}><SignOutCleanup /></Suspense></body>")).toBe(false);
+  });
+});
+
+describe("V1 bookmarks of the pages that stay keep their filters (§1.2)", () => {
+  const NOW = "2026-10-23T19:00:00.000Z";
+  const STRATEGY = "30000000-0000-4000-8000-00000000000a";
+  const RISK = "40000000-0000-4000-8000-00000000000a";
+
+  it("/journal?status=…&outcome=… lists the same trades as V1 (state and result filters); V1's page and proposals have no V2 meaning", () => {
+    // bc5441c `journalFilters`: status LOCKED | TAKEN | CLOSED | SKIPPED | CANCELLED, outcome WIN | LOSS | BREAKEVEN.
+    expect(parseTradeFilters({ account: USER, status: "CLOSED", outcome: "WIN", page: "2", proposals: "1" })).toEqual({
+      filters: { states: ["CLOSED", "REVIEWED"], result: "WIN" }, invalid: [],
+    });
+    expect(parseTradeFilters({ status: "TAKEN", outcome: "BREAKEVEN" }).filters).toEqual({ states: ["LIVE"], result: "BREAKEVEN" });
+    // Never silently widened: a value V1 never wrote is named in the page's "couldn't be read" notice.
+    expect(parseTradeFilters({ status: "ARCHIVED", outcome: "MAYBE" }).invalid).toEqual(["outcome", "status"]);
+  });
+
+  it("/edge?from=…&to=…&period=…&outcome=… applies its V1 filters on the page and selects the same trades as its CSV", () => {
+    const v1 = { from: "2026-09-01", to: "2026-09-30", outcome: "LOSS", weekday: "Monday", strategy: STRATEGY, risk: RISK, session: "ASIAN_RANGE", instrument: "eurusd" };
+    const page = parseEdgeQuery(v1, NOW);
+    expect(edgeFilters(page)).toEqual({
+      closedFrom: "2026-09-01", closedTo: "2026-09-30", session: "ASIA", instrument: "EURUSD", weekday: "Monday", strategyVersionId: STRATEGY, riskPlanVersionId: RISK,
+      result: "LOSS",
+    });
+    expect(page.invalid).toEqual([]);
+    expect(parseExportRequest(new URLSearchParams(v1), NOW)).toEqual({
+      ok: true, request: { scope: { mode: "context" }, filters: edgeFilters(page), withoutEntryTime: false, last: null },
+    });
+    // period=month is This month on both; V1's last-30 window is kept by the CSV and announced by the page.
+    expect(parseEdgeQuery({ period: "month" }, NOW)).toMatchObject({ range: "month", closedFrom: "2026-10-01", closedTo: "2026-10-23" });
+    expect(parseEdgeQuery({ period: "last30" }, NOW)).toMatchObject({ range: "all", lastClosed: 30, invalid: [] });
   });
 });
 

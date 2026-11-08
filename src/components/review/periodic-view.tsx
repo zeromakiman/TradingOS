@@ -6,6 +6,7 @@ import { aiSettingsHref } from "@/components/ai/model";
 import { PeriodicReviewPanel } from "@/components/ai/periodic-review-panel";
 import { Card, CardBody, CardHeader, CardTitle } from "@/components/ui/card";
 import { cx } from "@/components/ui/cx";
+import { prefetchFor } from "@/components/ui/links";
 import { SectionHeader } from "@/components/ui/page-header";
 import type { TimeDisplay } from "@/domain/time-display";
 import { BUDGET_TITLE, FACTS_UNAVAILABLE } from "./copy";
@@ -31,7 +32,8 @@ const FACT_ICONS: Readonly<Record<FactRow["tone"], { icon: typeof CircleCheck; c
  * Deterministic counts of the period: what the review covers and what it leaves out (live-first, imported), or, while
  * the period runs, what closed so far. The Journal link sits beside the heading, so the run button below stays within
  * the first screen on a phone. In All Accounts it switches the context to the reviewed account (ReviewContextScope
- * loads it in full).
+ * loads it in full); an archived account, which can never be the context, opens in All Accounts with the read-only
+ * account filter.
  */
 export function PeriodFacts({ facts }: { facts: PeriodFactsModel }) {
   const headingId = useId();
@@ -44,8 +46,8 @@ export function PeriodFacts({ facts }: { facts: PeriodFactsModel }) {
         {facts.journal && (
           <Link
             href={facts.journal.href}
-            // A link that switches the account context must not be prefetched (§9.2).
-            prefetch={facts.journal.switchesContext ? false : undefined}
+            // A link that carries `?account=` is never prefetched (§9.2).
+            prefetch={prefetchFor(facts.journal.href, undefined)}
             aria-label={facts.journal.description}
             className={INLINE_ACTION_LINK}
           >
@@ -95,6 +97,9 @@ function ScopeCard({ content }: { content: PeriodicContent }) {
 
 function BudgetSection({ content, display, now }: { content: PeriodicContent; display: TimeDisplay; now: Date }) {
   const headingId = useId();
+  // The link selects an active account in Settings (§9.2), so it is never prefetched; in All Accounts it switches the
+  // context and ReviewContextScope loads it in full. An archived account can't be selected: Settings → AI lists it.
+  const settingsHref = aiSettingsHref(content.account.id, content.account.archived);
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-2">
       <SectionHeader
@@ -103,10 +108,8 @@ function BudgetSection({ content, display, now }: { content: PeriodicContent; di
         className="mb-0"
         actions={
           <Link
-            href={aiSettingsHref(content.account.id)}
-            // The link selects this account in Settings (§9.2), so it is never prefetched; in All Accounts it switches the
-            // context and ReviewContextScope loads it in full.
-            prefetch={false}
+            href={settingsHref}
+            prefetch={prefetchFor(settingsHref, undefined)}
             className={ACTION_LINK}
           >
             <Settings aria-hidden="true" className="size-3.5" />
@@ -114,7 +117,7 @@ function BudgetSection({ content, display, now }: { content: PeriodicContent; di
           </Link>
         }
       />
-      <AiBudgetSummary accountName={content.account.name} budget={content.budget} timeDisplay={display} now={now} />
+      <AiBudgetSummary accountName={content.account.name} budget={content.budget} timeDisplay={display} now={now} archived={content.account.archived} />
     </section>
   );
 }

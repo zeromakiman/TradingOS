@@ -1,8 +1,8 @@
-import {withOperationSources,withPeriodicSourcesV2} from "./citation-sources";
+import {withOperationSources,verifiedPeriodicFactsV2} from "./citation-sources";
 import {z} from "zod";
 import {metrics,enrichTrades,type JournalTrade} from "@/domain/analytics";
 import {tradeReviewContext,type ReviewEvent} from "./trade-review-context";
-import {PERIODIC_RECORD_RULES,periodicTrade,snapshotVersions,type PeriodicTradeSource} from "./periodic-facts";
+import {namedVersions,PERIODIC_RECORD_RULES,periodicTrade,snapshotVersions,type PeriodicTradeSource} from "./periodic-facts";
 import {compactEdge,periodicRecordCount,PERIODIC_V2_LIMITS} from "./periodic-limits";
 /** Bounds of the V1 facts (RECENT_TRADES_FACTS_V1, kept for stored history). New requests use PERIODIC_V2_LIMITS. */
 export const RECENT_LIMITS=Object.freeze({events:300,bytes:128000});
@@ -46,16 +46,16 @@ export function recentTradesContextV2(accountId:string,requested:10|20|30,source
  if(sources.length>requested||periodicRecordCount(sources)>PERIODIC_V2_LIMITS.RECENT_TRADES_ANALYSIS.records[requested])throw new Error("Sample exceeds bounded analysis limits; nothing was omitted.");
  const ids=new Set<string>(),records=new Set<string>();
  const captured=Date.parse(capturedAt),upTo=(time:string|null)=>time===null||(Number.isFinite(Date.parse(time))&&Date.parse(time)<=captured);
- const clocks=enrichTrades(sources.map(s=>s.trade));
+ const clocks=enrichTrades(sources.map(s=>s.trade)),named=namedVersions(sources);
  const trades=sources.map((s,i)=>{
   if(s.trade.account_id!==accountId||s.plan.account_id!==accountId||s.plan.id!==s.trade.id||s.trade.status!=="CLOSED"||s.trade.realized_r===null||!s.trade.exited_at||!Number.isFinite(Date.parse(s.trade.exited_at))||Date.parse(s.trade.exited_at)>captured||ids.has(s.trade.id)||records.has(s.tradeRecordId))throw new Error("Recent trade scope mismatch");
   if(s.strategy.id!==s.plan.strategy_version_id||s.risk.id!==s.plan.risk_plan_version_id)throw new Error("Recent version mismatch");
   if(s.events.some(e=>!Number.isFinite(Date.parse(e.occurred_at))||!upTo(e.occurred_at)||!upTo(e.recorded_at))||s.journal.some(e=>!upTo(e.recordedAt))||!upTo(s.tags?.recordedAt??null))throw new Error("Recent event scope mismatch");
   ids.add(s.trade.id);records.add(s.tradeRecordId);
-  return periodicTrade(s,{session:clocks[i].session,weekday:clocks[i].weekday});
+  return periodicTrade(s,{session:clocks[i].session,weekday:clocks[i].weekday,named});
  });
  const edge=compactEdge(metrics(sources.map(s=>s.trade)));
- return withPeriodicSourcesV2("RECENT_TRADES_ANALYSIS",{version:"RECENT_TRADES_FACTS_V2",capturedAt,currency,
+ return verifiedPeriodicFactsV2("RECENT_TRADES_ANALYSIS",{version:"RECENT_TRADES_FACTS_V2",capturedAt,currency,
   sample:{requested,actual:trades.length,tradeIds:trades.map(t=>t.tradeId),label:edge.sample,fewerThanRequested:trades.length<requested,caveat:(trades.length<requested?"Fewer completed trades are available than requested. ":"")+(trades.length<30?"Small sample: patterns are tentative, not established behavioral conclusions.":"Thirty trades are a limited sample; patterns remain tentative and do not prove behavioral causes."),ordering:"Persisted exit timestamp descending (PostgreSQL microseconds), then plan UUID ascending for exact ties."},
   scope:`Only the selected most recent completed planned trades of this account, their original versions, and the journal entries, events and tags recorded up to the capture time. Live-first and imported trades are not included. No open trades, other account history, screenshots, prior AI output or account balances. Money amounts are in ${currency}. Sample is refreshed on explicit submission; exact included IDs are preserved. ${PERIODIC_RECORD_RULES}`,
   ...snapshotVersions(sources),edge,trades});

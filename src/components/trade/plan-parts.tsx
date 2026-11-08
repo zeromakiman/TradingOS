@@ -5,6 +5,7 @@ import { cx } from "@/components/ui/cx";
 import { Disclosure } from "@/components/ui/disclosure";
 import type { ExplainedIssue } from "@/domain/risk-explain";
 import type { TimeDisplay } from "@/domain/time-display";
+import { reasonWithCount } from "@/domain/trade-state";
 import type { CheckView } from "@/lib/trades-data";
 import { TRADE_COPY } from "./copy";
 import { type PlanFact, whenLabel } from "./model";
@@ -122,7 +123,8 @@ export function CheckHistory({ checks, now, display }: { checks: readonly CheckV
     <Disclosure summary={`Check history · ${checks.length} checks`}>
       <ol className="flex flex-col divide-y divide-border">
         {withKeys(ordered, check => check.recordedAt).map(({ key, value: check }) => {
-          const reason = check.explained.blocking[0];
+          // The first reason, and how many more the check found (§10).
+          const reason = reasonWithCount(check.explained.blocking);
           return (
             <li key={key} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2">
               <span className="t-caption num w-32 shrink-0">
@@ -130,7 +132,7 @@ export function CheckHistory({ checks, now, display }: { checks: readonly CheckV
                 {check.revision !== null && ` · rev ${check.revision}`}
               </span>
               <span className={cx("font-medium", check.decision === "APPROVED" ? "text-pos" : "text-neg")}>{check.decision === "APPROVED" ? "Approved" : "Blocked"}</span>
-              {reason && <span className="min-w-0 flex-1 text-text-2">{reason.detail}</span>}
+              {reason && <span className="min-w-0 flex-1 text-text-2">{reason}</span>}
             </li>
           );
         })}

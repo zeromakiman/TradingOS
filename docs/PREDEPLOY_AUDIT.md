@@ -2,6 +2,16 @@
 
 Audit completed 2026-09-14 against the actual Next.js production build and the Trading OS Supabase project. Scope: UX V1.1 plus migrations 0001–0007. **GO FOR PRIVATE DEPLOYMENT**, subject to the normal deployment prerequisites in [the runbook](DEPLOYMENT.md). No deployment was performed.
 
+> **V2 note.** This is the V1 audit; its results are kept as recorded. In V2 the two audit scripts it cites changed:
+> `scripts/verify-audit-flows.mjs` uploads through the V2 evidence route `POST /api/trades/[id]/evidence` on a Plan Trade
+> draft (twenty-five concurrent uploads admit exactly twenty-four active screenshots, the V2 limit per trade; after a
+> soft removal one more is admitted, then 409), and `scripts/verify-audit-live.mjs` reads V2 data and adds V2 checks
+> (another user's trade page and evidence, the `trade-evidence` bucket, evidence removal and relabelling, the V2
+> tables). Both take `--users=<file>` and `--out=<file>` (point local runs under `.local/`; the defaults write the
+> tracked JSON files below), and the live script `--ai-enabled` for a server running AI. The V1 upload route
+> `POST /api/setups/[id]/screenshots` no longer exists and V2 registers no `setup_screenshots` row (0019 also revokes
+> the service role's insert on that table); legacy screenshots stay readable.
+
 There are no unresolved critical/high findings or known code blockers for private personal use. This conclusion is bounded by the verified manual/full-position workflow; it is not a hosted-environment or disaster-recovery certification. AI stayed disabled and the local production process ran with an empty OpenAI key. No paid API credits were used.
 
 ## Findings by severity

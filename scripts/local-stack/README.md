@@ -30,14 +30,15 @@ Everything the stack creates lives under the git-ignored `.local/` folder (plus 
 node scripts/local-stack/start.mjs            # download/init if needed, apply migrations, start services
 node scripts/local-stack/provision-users.mjs  # v2.owner@example.test + v2.other@example.test
 node scripts/local-stack/env.mjs              # .env.local -> local gateway, AI_ENABLED=false
-node scripts/local-stack/verify.mjs           # optional API conformance checks (auth/REST/storage/RLS)
-node scripts/local-stack/browser-smoke.mjs    # starts the app, runs the V1 UI smoke, stops the app
+node scripts/local-stack/verify.mjs           # optional API conformance checks (auth/REST/storage/RLS/erasure privilege)
+node scripts/local-stack/seed-v2.mjs          # optional V2 dataset (see "V2 dataset & screenshots")
 node scripts/local-stack/stop.mjs             # stops everything (PostgreSQL included)
 node scripts/local-stack/status.mjs           # confirm "Stack status: stopped"
 ```
 
 To use the app manually after `start.mjs` + `env.mjs`: `npx pnpm@11.19.0 dev`, open
-<http://127.0.0.1:3000/login> and sign in with a user from `.local/integration-users.json`.
+<http://127.0.0.1:3000/login> and sign in with a user from `.local/integration-users.json` (empty) or
+`.local/seed-v2-users.json` (seeded). The V2 browser acceptance is `acceptance/run.mjs` (see "Browser acceptance").
 
 ## Commands
 
@@ -49,8 +50,8 @@ To use the app manually after `start.mjs` + `env.mjs`: `npx pnpm@11.19.0 dev`, o
 | `reset.mjs [--hard] [--through=NNNN]` | Drops and recreates the `postgres` database, wipes `.local/storage` and the local mailbox, re-applies bootstrap + migrations, restarts services and re-provisions the synthetic users if they existed. Keys stay the same. `--hard` deletes and re-initializes the whole cluster. |
 | `provision-users.mjs` | Creates/repairs the two confirmed synthetic users through the gateway admin API and writes `.local/integration-users.json` (`{"project":"http://127.0.0.1:54321","users":[{id,email,password},…]}`, the format `scripts/verify-*.mjs` read). `users[0]` = owner, `users[1]` = other. |
 | `env.mjs [--force]` | Writes `.env.local` with the gateway URL, local `sb_publishable_local_…` / `sb_secret_local_…` keys, `AI_ENABLED=false`. Refuses to replace an `.env.local` that points elsewhere unless `--force` (which first renames it to `.env.local.backup-<time>`). |
-| `verify.mjs` | 9 API-level checks through `@supabase/supabase-js` with throwaway `verify-<run>-a/b@example.test` users. |
-| `browser-smoke.mjs [--browser=edge\|chrome] [--reuse-app] [--headed] [--record-values] [--desktop=WxH] [--mobile=WxH]` | V1 UI smoke with playwright-core + installed Edge/Chrome (headless). See below. |
+| `verify.mjs` | 10 API-level checks through `@supabase/supabase-js` with throwaway `verify-<run>-a/b@example.test` users: password sign-in and `getClaims`, refresh rotation, admin API, RPC + owner RLS, storage (service-role upload; legacy `setup_screenshots` registration is closed to the service role and done as superuser), storage guards, the user-delete FK, PKCE recovery, sign-out, and the erasure privilege (no user token, however fresh its sign-in, can call a purge RPC; the trusted server erases one user). |
+| `browser-smoke.mjs [--browser=edge\|chrome] [--reuse-app] [--headed] [--record-values] [--desktop=WxH] [--mobile=WxH]` | **V1** UI smoke with playwright-core + installed Edge/Chrome (headless). It drives V1 pages and the V1 upload route that V2 replaced or removed, so it works only against a V1 build (`bc5441c`); V2 uses `acceptance/run.mjs`. See below. |
 
 ### Ports
 
@@ -59,7 +60,7 @@ To use the app manually after `start.mjs` + `env.mjs`: `npx pnpm@11.19.0 dev`, o
 | 54321 | Gateway (`NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321`) |
 | 54322 | PostgreSQL 17.6 (loopback only, SCRAM passwords) |
 | 54330 / 54331 | PostgREST API / admin (`/ready`, `/live`) |
-| 3000 | Next.js dev server (browser smoke) |
+| 3000 | Next.js dev server (`next dev`, or the one `screenshot.mjs --start-app` / `browser-smoke.mjs` start) |
 
 ### Files
 
@@ -67,6 +68,9 @@ To use the app manually after `start.mjs` + `env.mjs`: `npx pnpm@11.19.0 dev`, o
 |---|---|
 | `.local/stack.json` | Local secrets: Postgres superuser + `authenticator` passwords, HS256 JWT secret, publishable/secret keys. Generated once; reused by reset. |
 | `.local/integration-users.json` | Synthetic user credentials (owner, other). |
+| `.local/seed-v2-users.json` | Credentials and showcase ids of the users `seed-v2.mjs` seeded (and the acceptance runner's seeded users). |
+| `.local/mock-openai-scenarios.json`, `.local/logs/mock-openai.log` | The local OpenAI mock's failure scenarios (optional) and its request log. |
+| `.local/acceptance/<run-id>/` | Browser acceptance results, screenshots and downloads. |
 | `.env.local` | App configuration written by `env.mjs`. |
 | `.local/logs/` | `postgres.log`, `postgrest.log`, `gateway.log` (method, path, status - never query strings), `app.log`, `auth-mail.jsonl` (recovery "emails"). |
 | `.local/pids/` | `postgrest.pid`, `gateway.pid`, `app.pid`. PostgreSQL uses `.local/pgdata/postmaster.pid`. |
@@ -112,8 +116,11 @@ token), `GET /settings`, `GET /health`, `GET /.well-known/jwks.json` (empty: HS2
 role only): `POST/GET /admin/users`, `GET/PUT/DELETE /admin/users/{id}` (DELETE fails with 500
 `Database error deleting user` while public tables still reference the user, like a real FK),
 `POST /admin/generate_link` (type `recovery`). Passwords use scrypt. Access tokens are HS256,
-1 hour, with `sub`, `aud`, `role`, `email`, `session_id`, `aal`, `amr`, `is_anonymous`. Refresh tokens
-rotate, with GoTrue's 10-second replay tolerance and reuse detection.
+1 hour, with `sub`, `aud`, `role`, `email`, `session_id`, `aal`, `amr`, `is_anonymous`. As in GoTrue, the PKCE
+exchange of a recovery link starts a session whose `amr` is `[{"method":"recovery","timestamp":…}]` (a password grant
+gives `password`), and refreshes keep it; `/update-password` accepts a new password only on such a session from the
+last 15 minutes (docs/PASSWORD_RECOVERY.md). Refresh tokens rotate, with GoTrue's 10-second replay tolerance and reuse
+detection.
 
 **Password recovery locally**: no email is sent. Each link is appended to
 `.local/logs/auth-mail.jsonl` and the gateway log, and is available to scripts with the secret key:
@@ -134,6 +141,11 @@ policies from `0005_private_screenshot_storage.sql` decide access. Errors use Su
 legacy shape: HTTP 400 with `{"statusCode":"404","code":"NoSuchKey","error":"not_found",…}`.
 
 ## Browser smoke test (V1 UI)
+
+This is the smoke test of the V1 UI, kept for rehearsing a V1 build (for example before an upgrade, with
+`reset.mjs --through=0014`). V2 redirects `/analyze` to Plan Trade and removed the V1 upload route
+`/api/setups/[id]/screenshots`, so against the V2 app it fails at its Analyze step; the V2 browser checks are
+`acceptance/run.mjs` and `screenshot.mjs` below.
 
 `browser-smoke.mjs` starts `npx pnpm@11.19.0 dev` (detached; Supabase variables are passed
 explicitly so the app can only reach the local gateway, and the repo's
@@ -184,10 +196,18 @@ and use the real clock: two locks per strategy day, and identical repeated propo
 
 ## Repository scripts
 
-`.local/integration-users.json` uses the format expected by `scripts/verify-*.mjs`. Note that several
-of those scripts write reports to tracked `docs/*.json` files, and `verify-live.mjs` still calls the
-unkeyed `append_plan_note(uuid,text)` that migration 0007 revoked (it fails exactly as it would on
-the hosted project). Run copies under `.local/` if you need them without touching tracked files.
+`.local/integration-users.json` uses the format expected by `scripts/verify-*.mjs`. Several of those scripts write
+reports to tracked `docs/*.json` files by default:
+
+- `verify-audit-live.mjs [--users=<file>] [--out=<file>] [--ai-enabled]` and `verify-audit-flows.mjs [--users=<file>]
+  [--out=<file>]` run on V2 data (a planned trade with its locked plan and a V2 screenshot of `users[1]`; seed it
+  first). Point `--out` under `.local/` for local runs. `--ai-enabled` is for a server running AI (the local mock): the
+  legacy evaluator route must then refuse a request without a valid body (the check requires status 400 with the route's
+  exact error message) and create no evaluation, instead of answering DISABLED.
+  Checks that need V1-only rows (legacy screenshots, failed evaluator history) print SKIPPED when the user has none.
+- `verify-live.mjs` (`test:live`) is the V1 live check. It calls `lock_trade_plan` and `evaluate_trade_plan`, which
+  0019 revokes from `authenticated`, and the unkeyed `append_plan_note(uuid,text)` that 0007 revoked, so it fails on a
+  V2 database exactly as it would on the hosted project.
 
 ## Troubleshooting
 
@@ -266,9 +286,17 @@ How it writes:
   so each helper performs exactly the inserts of the named RPC at an explicit past time, with the same validation.
   Drafts and locks are evaluated by `private.risk_report_v12` with `private.daily_usage` as of that moment (Dead Pool,
   slots, caps, stale equity apply; a lock the engine would block aborts the seed); stored phases come from
-  `private.trade_phase` / `private.trade_lifecycle`. Insert-only: nothing is updated or deleted, no trigger disabled.
+  `private.trade_phase` / `private.trade_lifecycle`, and stop moves, target changes and partial closes are written only
+  while the trade is LIVE, as `add_journal_entry` requires (`ENTRY_NOT_LIVE`). Insert-only: nothing is updated or
+  deleted, no trigger disabled.
 - AI facts, contracts, pricing and output validation come from the application's own modules under `src/` (loaded with
   Node's `--experimental-transform-types`; the script re-launches itself with it).
+- AI pricing is resolved once, before any user is touched (`seed-ai-pricing.mjs`, typed by `seed-ai-pricing.d.mts`):
+  the seeded operations are priced at now while their reviewed profile is valid, as the app's gate does. From a
+  profile's `validUntil` on (the gpt-5.4-mini profile ends 2026-11-12 00:00 UTC) the app refuses every new AI request
+  until `src/ai/pricing.ts` is reviewed, while the seed prices its synthetic history at the profile's last reviewed
+  instant and prints "AI pricing … expired …". Any other pricing error (unknown profile, model mismatch) stops the seed
+  before anything is written.
 
 Rules: a user that already has data is refused (nothing changes) unless `--reset-users`, which seeds a fresh
 `local+r2@…` (`+r3`, …) instead of deleting anything. Credentials go to `.local/seed-v2-users.json` (git-ignored),
@@ -317,8 +345,10 @@ and lists the known ones. In PowerShell quote such arguments (`"@todayBlocked"`)
 two calls `src/ai/provider.ts` makes, `POST https://api.openai.com/v1/responses/input_tokens` and
 `POST https://api.openai.com/v1/responses`, from `mock-openai-generator.mjs` (pure and deterministic, no I/O). Every AI
 flow then runs end to end through the real request gate, budget ledger, server-side validators and AI history against
-the local stack: Analyze Setup, Challenge My Bias, Review Trade (V1 and the timeline review), Weekly Review, Recent
-Trades, Monthly Review and the legacy setup evaluator.
+the local stack: Analyze Setup, Challenge My Bias, the timeline-aware Review Trade, Weekly Review, Recent Trades and
+Monthly Review. The mock also answers the schemas of V1 Review Trade (`review_trade_v1`) and the legacy setup evaluator
+(`ict_setup_v2`), but V2 starts neither: V1 Review Trade has no entry point in V2 (its stored results still render),
+and the legacy evaluator is refused before any provider call because its pricing review expired (Known limits).
 
 ### Start
 
@@ -343,9 +373,11 @@ $env:NODE_OPTIONS="--import=./scripts/local-stack/mock-openai.mjs"; npx pnpm@11.
   server) loads the preload, so stderr shows one `[mock-openai] active (pid …)` line per process. **No such line means
   the mock is not loaded: stop the server.**
 - AI must be ON for the account. The seeded FTMO 100K (EUR 10 budget) and Personal 12K (EUR 3) accounts are; Demo 100K is
-  OFF and shows the "AI is OFF" state. On the seeded data a mock answer settles about EUR 0.004-0.03 (about
-  3,000-30,000 input and 250-600 output tokens; per-flow figures under Known limits), so the AI budget summary shows
+  off and shows the "Off" status ("AI is off for this account. …"). On the seeded data a mock answer settles about EUR 0.004-0.021 (about
+  2,900-20,600 input and 250-620 output tokens; per-flow figures under Known limits), so the AI budget summary shows
   plausible usage; each request reserves about EUR 0.04-0.07 first.
+- The gpt-5.4-mini pricing profile is reviewed until 2026-11-12 00:00 UTC. From then on the app refuses every AI request
+  ("AI pricing requires review before requests can run.") until `src/ai/pricing.ts` is reviewed, mock or not.
 - As with any manual `next dev`, restore the tracked `next-env.d.ts` before committing.
 
 ### Guards (fail closed)
@@ -372,8 +404,11 @@ $env:NODE_OPTIONS="--import=./scripts/local-stack/mock-openai.mjs"; npx pnpm@11.
 
 ### What it answers
 
-- **`input_tokens`**: `{"input_tokens": n}` with n = ceil(UTF-8 bytes of the count body / 4), so oversized facts are
-  still refused by the app's own limits (`INPUT_LIMIT_EXCEEDED`). Exception: a `data:image/…;base64` URL is counted like
+- **`input_tokens`**: `{"input_tokens": n}` with n = ceil(UTF-8 bytes of the count body / 4). The app's own pre-flight
+  estimate (`src/ai/request-estimate.ts`) is never below that figure and refuses an oversized request
+  (`INPUT_LIMIT_EXCEEDED`) before anything is reserved, so such a request never reaches the mock; the
+  `input_limit_exceeded` scenario below exercises a provider count above the limit. Exception: a
+  `data:image/…;base64` URL is counted like
   OpenAI's high-detail image tiles (85 + 170 per 512 px tile after fitting into 2048 px and scaling the short side to
   768 px; an unreadable header counts 1,445) instead of by its base64 length. Counted as text, a single 60 KB seeded
   chart would be about 20,000 tokens and every screenshot request would exceed the 16,000-32,000 token operation limits.
@@ -421,7 +456,7 @@ unknown scenario or field, answers every generation call as a refusal and logs `
 | `foreign_source` | One citation outside the allowed ids | – | Settled | Failed: invalid-output code; timeline review `FOREIGN_REVIEW_SOURCE`; V1 Review Trade `REVIEW_FAILED`; legacy evaluator `INVALID_OUTPUT` |
 | `hindsight_citation` | Timeline review: the thesis check cites an after-close record. Other schemas: as `foreign_source` | – | Settled | Timeline review failed: `HINDSIGHT_CITATION` "The AI supported the thesis check with records made after entry." |
 | `trading_directive` | First text field becomes "Take the trade at the next touch of the zone." | – | Settled | Failed: invalid-output code; timeline review `TRADING_DIRECTIVE`. App gap: V1 Review Trade and the legacy evaluator have no directive check and complete with that sentence |
-| `http_500` | HTTP 500 `server_error`, no usage | `MODEL_ERROR` | **Held** (UNCERTAIN) | Failed: `ACCOUNTING_UNCERTAIN` "The provider's usage could not be confirmed, so the reserved amount stays held for review." |
+| `http_500` | HTTP 500 `server_error`, no usage | `MODEL_ERROR` | **Held** (UNCERTAIN) | Failed: "The AI provider's usage could not be confirmed." and "The amount held for this attempt stays until an accounting review confirms the cost or releases it; nothing beyond it was charged." (code `ACCOUNTING_UNCERTAIN` in Technical details) |
 | `http_429` | HTTP 429 `rate_limit_exceeded` | `RATE_LIMIT` | **Held** | as `http_500` |
 | `http_401` | HTTP 401 `invalid_api_key` | `OPENAI_AUTH` | **Held** | as `http_500` |
 | `http_403` | HTTP 403 model access | `MODEL_ACCESS` | **Held** | as `http_500` |
@@ -429,11 +464,17 @@ unknown scenario or field, answers every generation call as a refusal and logs `
 | `count_unavailable` | HTTP 503 from `input_tokens`; no generation call | `INPUT_COUNT_UNAVAILABLE` | **Held** | as `http_500` |
 | `input_limit_exceeded` | `input_tokens` = 1,000,000; no generation call | `INPUT_LIMIT_EXCEEDED` | **Held** | as `http_500` |
 
-The `ProviderError` code is stored on the usage row; failed requests show the copy from `src/lib/ai-history.ts`.
-**A held (UNCERTAIN) reservation blocks AI for the whole account** ("AI accounting requires review. No further AI
-requests can run.") until it is resolved. Run those scenarios last, or on an account you do not need (for example
-Personal 12K, or a fresh user from `seed-v2.mjs --reset-users`). On the local stack only, the superuser (psql, see
-Files) can release them:
+The `ProviderError` code is stored on the usage row; failed requests show the reason from `src/lib/ai-history.ts` and
+the accounting outcome from `failureAccountingText` in `src/components/ai/model.ts`. Every scenario that fails after
+the app contacted the provider without usable usage is **held**, the count failures included: the input-count request
+itself reaches the provider, and whether counting is billed is not established (docs/AI_BUDGET_REVIEW.md), so the
+request gate releases a reservation at zero cost only when no provider request of any kind was issued.
+**A held (UNCERTAIN) reservation pauses AI for the whole account** (status "Paused — needs review": "AI requests for
+this account are paused until an accounting review confirms the cost or releases the hold.") until it is resolved. Run
+those scenarios last, or on an account you do not need (for example Personal 12K, or a fresh user from
+`seed-v2.mjs --reset-users`). On the local stack only, the superuser (psql, see Files) can release them; the history
+row then reads "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount
+was released.":
 
 ```sql
 select private.resolve_ai_uncertainty(gen_random_uuid(), u.reservation_id, 'NO_PROVIDER_USAGE_CONFIRMED',
@@ -462,23 +503,25 @@ could not be read). Keys, headers, prompts, facts and outputs are never logged.
 ### Known limits
 
 - The legacy setup evaluator (`ict_setup_v2`, gpt-6-astra) is served for all three stages, but the app itself refuses
-  that operation since its pricing review expired (`AI_PRICING.validUntil` 2026-10-22): the analyze page reports that
-  the AI provider or budget-accounting configuration requires review, before any provider call. The mini operations'
-  pricing (`MINI_PRICING.validUntil`) expires on 2026-11-12.
-- Token counts are estimates, not OpenAI's tokenizer (dense JSON would count even more), and reasoning tokens are
-  always 0. With the seeded data, whose 29 KB written strategy is part of every facts snapshot, the app's facts-size
-  limits admit requests above an operation's input limit. Recent Trades with a sample of 20 (about 117 KB of facts,
-  about 35,000 estimated tokens against 32,000) and Weekly Review of a week close to the 96 KB scope limit end as
-  `INPUT_LIMIT_EXCEEDED`, which holds the reservation (see above). Samples of 10 (about 23,000 tokens) and weeks with
-  one or two trades (about 12,000 and 22,000) pass; a sample of 30 or a week with three or more trades stops earlier at
-  the app's own size limit, without a reservation. Analyze Setup and Challenge My Bias use about 11,000 tokens plus
+  that operation since its pricing review expired (`AI_PRICING.validUntil` 2026-10-22), before any provider call; V2
+  links it from nowhere (`POST /api/setups/[id]/analyze` is kept for compatibility). The mini operations' pricing
+  (`MINI_PRICING.validUntil`) expires on 2026-11-12 00:00 UTC, after which every AI flow is refused the same way.
+- Token counts are estimates, not OpenAI's tokenizer, and reasoning tokens are always 0. The mock counts
+  ceil(bytes / 4); the app's pre-flight estimate counts dense facts (ids, timestamps, decimals) higher and refuses a
+  request above the operation's input limit before anything is written or reserved, so an oversized sample never
+  reaches the mock and holds no budget (Recent Trades names the largest sample that fits; a month falls back to its
+  deterministic summary). The V2 facts carry no written strategy and are written compactly (docs/V2_ARCHITECTURE.md
+  §11.5): on the seeded traders (80-95 records in their last 30 trades), the last 30 trades of Recent Trades estimate
+  28,800-30,100 of the 32,000-token limit (the mock counts up to about 79 KB, about 20,000 tokens), so Recent 30 is
+  usable in acceptance; a weekly review's count body is about 20 KB and a monthly one about 39 KB. Analyze Setup and
+  Challenge My Bias count about 3,000 tokens plus
   1,105 per selected 1280×720 screenshot, against 16,000.
-- Settled charge per mock answer (gpt-5.4-mini pricing; measured on the facts the seeded stack persists, or on
-  seeded-size facts for the periodic reviews): Analyze Setup 11,300-13,600 input tokens, EUR 0.0125-0.015; Challenge My
-  Bias 11,100-13,400, EUR 0.0115-0.014; Review Trade (timeline) 3,200-10,100, EUR 0.004-0.011; Weekly Review with one
-  or two trades 11,800-21,600, EUR 0.013-0.022; Recent Trades 17,000-29,300 (5-15 trades), EUR 0.018-0.029; Monthly
-  Review 16,900-26,800 in detailed mode, EUR 0.018-0.027, about 5,000 (EUR 0.007) in deterministic summary mode.
-  Output is 250-600 tokens.
+- Settled charge per mock answer (gpt-5.4-mini pricing; mock answers on the local stack between 2026-10-28 and
+  2026-11-08, `ai_usage_records`): Analyze Setup 3,100-5,700 input tokens, EUR 0.005-0.008; Challenge My Bias about
+  2,900, EUR 0.004; Review Trade (timeline) 3,200-7,300, EUR 0.004-0.008; Weekly Review 4,700-6,600, EUR 0.007-0.008;
+  Recent Trades 10,700-20,600, EUR 0.012-0.021; Monthly Review 8,900-12,900, EUR 0.011-0.015. Output is 250-620 tokens.
+  Each request first reserves its maximum (EUR 0.040 for Challenge My Bias up to EUR 0.067 for Recent Trades and
+  Monthly Review).
 - Real Structured Outputs would never return `schema_violation` or `foreign_source` outputs. Those scenarios test the
   server-side validators.
 - Repeating an identical request body returns the identical output.
@@ -555,13 +598,13 @@ when `seed-v2.mjs` would refuse to start (within a few minutes of 12:00 or 24:00
 
 | Flow | What it proves (master specification §64) |
 |---|---|
-| `planned` | Onboarding creates a Trading Account; Plan Trade with a risk above the maximum shows the exact BLOCKED sentence in the live preview; on the desktop a chart is pasted (a real Ctrl+V key press answered with a `paste` event carrying PNG bytes) and another dropped (`DataTransfer` drop), on the phone one is added through "Choose files" and one through "Take photo" (the system pickers); Save draft opens the trade as Blocked with the reason in the Plan section and "Edit draft" as the next action (and, AI being off for a new account, no paid AI tool); Edit draft saves revision 2 of the **same** trade; Ready to lock; the optional AI step (consent for the new account in Settings → AI, then "Analyze setup · ≈ €…" on the ready draft against the mock, its card led by "Risk Engine · Approved", Lock plan still the next action); Lock plan (the dialog lists what becomes immutable); the locked plan's edit page shows no editor, and the owner's own session calling `revise_trade_draft` and `discard_trade_draft` directly is refused with `DRAFT_NOT_EDITABLE` while the trade keeps its revisions; Record entry (pre-filled); a live note with a screenshot without leaving the trade (pasted with Ctrl+V on the desktop, attached through "Attach screenshots" and the system picker on the phone); Close; a lesson after close lands in After close only; tags and Mark reviewed; the timeline bands |
-| `live-first` | Record Live Trade with account, instrument, direction and entry price only; "No pre-trade plan was recorded before execution." and "No pre-trade plan recorded"; no stepper and no pre-trade AI tools; a timestamped note, a screenshot (dropped onto the composer on the desktop, "Take photo" on the phone) and a Decision while live; close with the platform's net P&L (no size, so P&L can't be calculated); an explanation after close is listed under After close and never as Before entry evidence; Mark reviewed |
+| `planned` | Onboarding creates a Trading Account; Plan Trade with a risk above the maximum shows the exact BLOCKED sentence in the live preview; on the desktop a chart is pasted (a real Ctrl+V key press answered with a `paste` event carrying PNG bytes) and another dropped (`DataTransfer` drop), on the phone one is added through "Choose files" and one through "Take photo" (the system pickers); Save draft opens the trade as Blocked with the reason in the Plan section and "Edit draft" as the next action (and, AI being off for a new account, no paid AI tool); Edit draft saves revision 2 of the **same** trade; Ready to lock; the optional AI step (consent for the new account in Settings → AI, then "Analyze setup · ≈ €…" on the ready draft against the mock, its card led by "Risk Engine · Approved", Lock plan still the next action); Lock plan (the dialog lists what becomes immutable); the locked plan's edit page shows no editor, and the owner's own session calling `revise_trade_draft` and `discard_trade_draft` directly is refused with `DRAFT_NOT_EDITABLE` while the trade keeps its revisions; Record entry (pre-filled); a live note with a screenshot without leaving the trade (pasted with Ctrl+V on the desktop, attached through "Attach screenshots" and the system picker on the phone); Close: Enter in the exit price (a tap on the phone) only opens "Close this trade?", nothing is recorded until it is confirmed there, and `close-preview` requires the confirmation's net P&L and realized R to equal what the close then recorded; a lesson after close lands in After close only; tags and Mark reviewed; the timeline bands |
+| `live-first` | Record Live Trade with account, instrument, direction and entry price only; "No pre-trade plan was recorded before execution." and "No pre-trade plan recorded"; no stepper and no pre-trade AI tools; a timestamped note, a screenshot (dropped onto the composer on the desktop, "Take photo" on the phone) and a Decision while live; close with the platform's net P&L (no size, so P&L can't be calculated), confirmed in "Close this trade?", which shows the reported +$42.50 (Win) and the exit first; an explanation after close is listed under After close and never as Before entry evidence; with grade B picked but not saved, "Save tags and mark reviewed" saves the tags and marks the trade reviewed: the tags form reads saved and editable again, and B is still set after a reload |
 | `analytics` | Journal (grouping, search, origin filter, row → trade); EDGE headline statistics with the sample caveat, money per currency, every chart with its table view; statistic → trades (Net R by model → OTE trades); calendar day → trades → trade; trade → evidence viewer (Escape closes); All Accounts → account → day → trade → evidence by clicking only; a trade locked under Risk Plan V1.0 still shows V1.0 while the account's active plan is newer |
-| `accounts` | All Accounts is a context (selector option "Aggregate of every trading account", no table row, no stored account); an account dashboard in its own currency; switching context with the header selector and seeing it on Journal, Today, EDGE, Review and Settings; account-scoped EDGE and Journal; money never added across currencies; New account (GBP); Archive; archived accounts are not offered by Plan Trade or Record Live Trade, `?account=<archived>` falls back to All Accounts with a notice, and `record_live_trade` and `create_planned_trade` called directly with the user's own session must refuse it with `ACCOUNT_ARCHIVED` (no trade is stored on it) |
+| `accounts` | All Accounts is a context (selector option "Aggregate of every trading account", no table row, no stored account); an account dashboard in its own currency, opened from the Accounts list, which makes that account the context (the header names it) and offers Plan Trade and Record Live Trade once each on it (`?account=<id>`); switching context with the header selector and seeing it on Journal, Today, EDGE, Review and Settings; account-scoped EDGE and Journal; money never added across currencies; New account (GBP), whose dashboard opens as the context and offers Plan Trade and Record Live Trade once each, on the new account; Archive; archived accounts are not offered by Plan Trade or Record Live Trade, `?account=<archived>` falls back to All Accounts with a notice, and `record_live_trade` and `create_planned_trade` called directly with the user's own session must refuse it with `ACCOUNT_ARCHIVED` (no trade is stored on it) |
 | `ai` | Budget summary per account; on a blocked draft the primary action is Edit draft and AI is only "Analyze blocked setup anyway · ≈ €…" (secondary, nothing sent on load); Analyze Setup, Challenge My Bias, the timeline-aware Review Trade, Weekly Review, Recent Trades and Monthly Review against the mock (each request is matched to a `status=200` line of `.local/logs/mock-openai.log`); concise cards with friendly sources; each "View full analysis" sheet carries the card's title, every item the card shows in full (the card shows first sentences) and something the card leaves out (another section, item or the AI's limitations); the Review history lists the run's Monthly, Recent Trades and Weekly reviews first as compact rows; usage grows in the budget; one failure (`weekly_review_v1: http_500` in `.local/mock-openai-scenarios.json` for a single request, then restored) is reported as held for review and pauses that account's AI |
-| `settings` | Theme and time display; a new risk-plan version that starts tomorrow; a profile revision, "Confirm unchanged", an external loss added and removed; the Connections copy (cTrader and MT5 planned, read-only scope) and the mock platform (connect, Simulate sync, imported trades in the Journal, disconnect keeps them); Export my data: the ZIP is downloaded and checked (every part belongs to the user, every table holds exactly the user's stored rows, no other user's id or email anywhere, one CSV row per trade, every screenshot present with its SHA-256); Delete Trading OS account on the `erase-*` user: a wrong password gets the server's own answer ("That password is not correct. Nothing was deleted." in an alert), and once the form is idle again every tenant table, the login, the storage objects and the stored files are compared with the moment before the attempt; then DELETE + password deletes it, the browser lands on `/login?reason=account_deleted`, sign-in fails, and superuser SQL finds no row in any tenant table, no auth user, no storage object or file, one new de-identified erasure receipt, and another user's rows unchanged |
-| `ux` | The next action of every state above the fold; core actions never inside a collapsed disclosure; the command palette (Ctrl+K, `/`, Enter, Escape); the `?`, `P` and `L` shortcuts; the skip link and a visible focus ring of at least 2 px; the Tab order of Plan Trade; Escape closes dialogs and menus and returns focus; the editor of the seeded draft blocked for two reasons (both listed, a risk preset clicked or tapped without saving, the page within the screen width); on the phone a live note from Today's live card with taps only; Today at a glance; the dark theme tokens on key screens; last on the phone, every phone screen the run reached fits 393 px |
+| `settings` | Theme and time display; a new risk-plan version that starts tomorrow; a profile revision, "Confirm unchanged", an external loss added and removed; the Connections copy (cTrader and MT5 planned, read-only scope) and the mock platform (connect, Simulate sync, imported trades in the Journal, disconnect keeps them); Export my data: the ZIP is downloaded and checked (every part belongs to the user, every table holds exactly the user's stored rows, no other user's id or email anywhere, one CSV row per trade, every screenshot present with its SHA-256); Delete Trading OS account on the `erase-*` user: one of its accounts is first chosen in the header selector on Settings, so both context cookies (`tos_account`, `tos_last_account`) hold its id, and they still do right before the deletion; a wrong password gets the server's own answer ("That password is not correct. Nothing was deleted." in an alert), and once the form is idle again every tenant table, the login, the storage objects and the stored files are compared with the moment before the attempt; then DELETE + password deletes it, the browser lands on `/login?reason=account_deleted`, sign-in fails, and superuser SQL finds no row in any tenant table, no auth user, no storage object or file, one new de-identified erasure receipt, another user's rows unchanged, and neither context cookie left in the browser |
+| `ux` | The next action of every state above the fold; core actions never inside a collapsed disclosure; the command palette (Ctrl+K, `/`, Enter, Escape); the `?`, `P` and `L` shortcuts; the skip link and a visible focus ring of at least 2 px; the Tab order of Plan Trade; Escape closes dialogs and menus and returns focus; the editor of the seeded draft blocked for two reasons (both listed, a risk preset clicked or tapped without saving, the page within the screen width); on the phone a live note from Today's live card with taps only; Today at a glance; the dark theme tokens on key screens; on the phone only (`long-account-names`), two accounts of the shared `history` user renamed to 100-character names (one without spaces) through `update_account_profile`: Today (All Accounts and one account), a live trade (its header's account chip inside the screen), Plan Trade ("‹ Today" on one line), the account dashboard, Manage and Settings fit 393 px with the tab bar on the screen, then the seeded names are put back; last on the phone, every phone screen the run reached fits 393 px |
 
 ### The real clock
 
@@ -664,7 +707,9 @@ captured every published image; any other run (failed, interrupted, partial, or 
 - The operating-system clipboard is never touched (a headless browser on Windows could share it with the desktop).
 - Only the run's own users are changed; exactly one per viewport (`erase-*`) is deleted, through the app. The planned
   flow's direct `revise_trade_draft` and `discard_trade_draft` calls on the locked plan are expected to be refused; the
-  `ux` flow changes a risk preset in the editor of the shared `history` user's blocked draft without saving it.
+  `ux` flow changes a risk preset in the editor of the shared `history` user's blocked draft without saving it, and on
+  the phone renames two of that user's accounts for its `long-account-names` step and renames them back (new profile
+  revisions; the history keeps the long names).
 
 ### Pure rules and tests
 

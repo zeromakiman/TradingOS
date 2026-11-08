@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { GalleryItem } from "@/components/evidence/gallery-model";
 import { TradeTimeline, type TradeTimelineProps } from "@/components/trade/journal/timeline";
-import { RECORDED_GAP_MINUTES, spansSeveralDays, timelineTime, timelineTimeLabel } from "@/components/trade/journal/timeline-model";
+import { RECORDED_GAP_MINUTES, spansSeveralDays, timelineTime } from "@/components/trade/journal/timeline-model";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
 import { STRATEGY_TIME, type TimeDisplay } from "@/domain/time-display";
 import { buildTimeline, type TimelineInputs, type TimelineItem } from "@/domain/timeline";
@@ -11,6 +11,12 @@ import { buildTimeline, type TimelineInputs, type TimelineItem } from "@/domain/
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const RAW_CODES = /\b(BEFORE_ENTRY|WHILE_LIVE|AFTER_CLOSE|PRE_ENTRY|POST_TRADE|STOP_CHANGE|TARGET_CHANGE|PARTIAL_CLOSE|RECORDED_AFTER_EXECUTION_BEGAN|EVIDENCE_ADDED|EVIDENCE_REMOVED|AI_ANALYSIS|JOURNAL|COMPLETED|REVIEW_TRADE_TIMELINE)\b/;
 const UTC: TimeDisplay = { mode: "utc" };
+
+/** The time as the timeline renders it: the time, then " · recorded …" when the recording time is shown. */
+function timelineTimeLabel(item: Pick<TimelineItem, "at" | "recordedAt">, display: TimeDisplay, withDay = false): string {
+  const time = timelineTime(item, display, withDay);
+  return time.recorded ? `${time.main} · recorded ${time.recorded}` : time.main;
+}
 
 const ID = {
   trade: "00000000-0000-4000-8000-000000000001", account: "00000000-0000-4000-8000-000000000002", plan: "00000000-0000-4000-8000-0000000000a1",
@@ -75,7 +81,11 @@ describe("timeline time rule (spec §5.4)", () => {
     expect(timelineTimeLabel({ at: "2026-09-04T12:45:00Z", recordedAt: "2026-09-04T13:20:00Z" }, STRATEGY_TIME)).toBe("07:45 · recorded 08:20");
     expect(timelineTimeLabel({ at: "2026-09-04T15:00:00Z", recordedAt: "2026-09-04T15:05:00Z" }, STRATEGY_TIME)).toBe("10:00");
     expect(timelineTimeLabel({ at: "2026-09-04T15:00:00Z", recordedAt: "2026-09-04T15:05:00.000001Z" }, STRATEGY_TIME)).toBe("10:00 · recorded 10:05");
-    expect(timelineTimeLabel({ at: "2026-09-04T12:45:00Z", recordedAt: "2026-09-05T13:20:00Z" }, UTC)).toBe("12:45 · recorded Sep 5, 13:20");
+    // Recorded on another day: both times carry their day, so the event is never read as made on the recording day.
+    expect(timelineTimeLabel({ at: "2026-09-04T12:45:00Z", recordedAt: "2026-09-05T13:20:00Z" }, UTC)).toBe("Sep 4, 12:45 · recorded Sep 5, 13:20");
+    expect(timelineTimeLabel({ at: "2026-09-15T08:15:00Z", recordedAt: "2026-10-31T01:34:00Z" }, STRATEGY_TIME)).toBe("Sep 15, 03:15 · recorded Oct 30, 20:34");
+    // 23:58 recorded 00:01 is not shown as recorded (three minutes), so neither time needs its day.
+    expect(timelineTimeLabel({ at: "2026-09-05T04:58:00Z", recordedAt: "2026-09-05T05:01:00Z" }, STRATEGY_TIME)).toBe("23:58");
     expect(timelineTimeLabel({ at: "2026-09-04T12:45:00Z", recordedAt: "2026-09-04T13:20:00Z" }, STRATEGY_TIME, true)).toBe("Sep 4, 07:45 · recorded Sep 4, 08:20");
   });
 
@@ -96,6 +106,11 @@ describe("timeline time rule (spec §5.4)", () => {
     // 04:30 UTC on Sep 5 is still Sep 4 in strategy time.
     expect(spansSeveralDays([{ at: "2026-09-04T12:00:00Z" }, { at: "2026-09-05T04:30:00Z" }], STRATEGY_TIME)).toBe(false);
     expect(spansSeveralDays([{ at: "2026-09-04T12:00:00Z" }, { at: "not a time" }], STRATEGY_TIME)).toBe(false);
+    // The recording times shown count too: one day of events recorded on another day still needs dates.
+    expect(spansSeveralDays([{ at: "2026-09-15T08:15:00Z", recordedAt: "2026-10-31T01:34:00Z" }, { at: "2026-09-15T11:00:00Z", recordedAt: "2026-09-15T11:00:00Z" }], STRATEGY_TIME)).toBe(true);
+    expect(spansSeveralDays([{ at: "2026-09-15T08:15:00Z", recordedAt: "2026-09-15T12:00:00Z" }], STRATEGY_TIME)).toBe(false);
+    // A recording time that is not shown (within five minutes) decides nothing.
+    expect(spansSeveralDays([{ at: "2026-09-05T04:58:00Z", recordedAt: "2026-09-05T05:01:00Z" }], STRATEGY_TIME)).toBe(false);
   });
 });
 
@@ -152,7 +167,7 @@ describe("<TradeTimeline>", () => {
     const ai = ITEMS.find(item => item.kind === "AI_ANALYSIS") as TimelineItem;
     const row = new RegExp(`<li id="ai:${ID.ai}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? "";
     expect(row).toContain(ai.title);
-    expect(row).toContain(`<p class="min-w-0 flex-1 t-meta">${ai.title}</p>`);
+    expect(row).toContain(`<p class="min-w-0 flex-1 basis-32 t-meta">${ai.title}</p>`);
     expect(row).toContain('class="relative scroll-mt-24 py-1.5"');
     expect(row).toMatch(/line-clamp-2[^>]*>Disciplined management; the entry came a little early\.</);
   });
@@ -187,6 +202,38 @@ describe("<TradeTimeline>", () => {
     const markup = renderToStaticMarkup(element(TradeTimeline, { items, timeDisplay: STRATEGY_TIME }));
     expect(markup).toContain(">Sep 4, 07:45</time>");
     expect(markup).toContain(">Sep 5, 08:00</time>");
+  });
+
+  it("dates an imported entry recorded weeks later, and every other time of that timeline", () => {
+    // Imported on Oct 30 (20:34 UTC−5): the platform reported the entry on Sep 15 and the exit the same day.
+    const imported = ledger({
+      origin: "IMPORTED", created_at: "2026-10-31T01:34:00Z", entered_at: "2026-09-15T08:15:00Z", entry_recorded_at: "2026-10-31T01:34:00Z", entry_price: "1.27",
+      exited_at: "2026-09-15T11:00:00Z", close_recorded_at: "2026-10-31T01:34:00Z", exit_price: "1.26", net_pnl: "100", lifecycle: "CLOSED",
+    });
+    const items = buildTimeline({ trade: imported });
+    const markup = renderToStaticMarkup(element(TradeTimeline, { items, timeDisplay: STRATEGY_TIME })).replaceAll("<!-- -->", "");
+    expect(markup).toContain(">Sep 15, 03:15<span> · recorded Oct 30, 20:34</span></time>");
+    expect(markup).toContain(">Sep 15, 06:00<span> · recorded Oct 30, 20:34</span></time>");
+    expect(markup).not.toMatch(/>\d\d:\d\d<span> · recorded/);
+  });
+
+  it("shows decisions recorded in V1 with the trader's reason, an override as Taken despite a block", () => {
+    const items = buildTimeline({
+      trade: ledger({ lifecycle: "DRAFT", legacy_decision: "TAKEN", created_at: "2026-09-04T11:55:00Z" }),
+      legacyDecisions: [{
+        id: ID.note1, decision: "TAKEN", eventType: "MANUAL_OVERRIDE", reason: "Took it anyway: news was priced in.", riskDecision: "BLOCKED",
+        aiDecision: "NOT_EVALUATED", recordedAt: "2026-09-04T12:10:00Z",
+      }],
+    });
+    const markup = renderToStaticMarkup(element(TradeTimeline, { items, timeDisplay: STRATEGY_TIME })).replaceAll("<!-- -->", "");
+    const row = new RegExp(`<li id="event:${ID.note1}"[\\s\\S]*?</li>`).exec(markup)?.[0] ?? "";
+    expect(row).toContain(">Taken despite a block</p>");
+    expect(row).toContain("Took it anyway: news was priced in.");
+    expect(row).toContain("lucide-shield-off");
+    const text = visibleText(markup);
+    expect(text).not.toMatch(/MANUAL_OVERRIDE|HUMAN_DECISION|NOT_EVALUATED/);
+    expect(text).not.toMatch(UUID);
+    expect(markup).toMatch(/<details class="disclosure technical-details">[\s\S]*LEGACY_DECISION[\s\S]*&quot;eventType&quot;:&quot;MANUAL_OVERRIDE&quot;/);
   });
 
   it("uses h4 band titles when nested deeper", () => {

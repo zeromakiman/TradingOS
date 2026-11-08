@@ -38,22 +38,35 @@ export type EdgeAccountFilter = {
   removeHref: string;
 };
 
+/** A filter a link carried that the row has no control for (src/components/edge/query.ts `linkFilterChips`). */
+export type EdgeLinkFilter = {
+  key: string;
+  /** "Entry weekday: Friday", "Strategy: ICT V1.0", "Result: Loss". */
+  label: string;
+  /** The page without this filter. */
+  removeHref: string;
+};
+
 export type EdgeFilterBarProps = {
-  /** Current URL state (filters and calendar mode). */
+  /** Current URL state (filters, including the ones a link carried, and calendar mode). */
   state: EdgeUrlState;
   rangeOptions: { value: RangePreset; label: string }[];
   selects: FilterSelect[];
   /** Shown as a removable chip in words; kept by every other filter change. */
   accountFilter?: EdgeAccountFilter | null;
+  /** Shown as removable chips in words; `state` carries their values, so every other filter change keeps them. */
+  linkFilters?: EdgeLinkFilter[];
 };
 
 /**
  * The EDGE filter row (§14.6): date range presets or a custom range of exit days, model, session, origin and
- * instrument, plus the read-only account filter when a link narrowed All Accounts to one account. Every change
- * navigates (URL state) inside the page transition, so the previous results stay visible, dimmed, until the new ones
- * arrive. Below 768px the dimension filters fold behind a "Filters" button.
+ * instrument, plus, as removable chips, the filters only a link can set: the read-only account filter when a link
+ * narrowed All Accounts to one account, and the entry weekday, strategy version, risk-plan version or result a link
+ * carried (a V1 bookmark, for example). Every change navigates (URL state) inside the page transition, so the previous
+ * results stay visible, dimmed, until the new ones arrive. Below 768px the dimension filters fold behind a "Filters"
+ * button.
  */
-export function EdgeFilterBar({ state, rangeOptions, selects, accountFilter = null }: EdgeFilterBarProps) {
+export function EdgeFilterBar({ state, rangeOptions, selects, accountFilter = null, linkFilters = [] }: EdgeFilterBarProps) {
   const router = useRouter();
   const { start } = useEdgeTransition();
   const [range, setRange] = useState<RangePreset>(state.range);
@@ -63,11 +76,12 @@ export function EdgeFilterBar({ state, rangeOptions, selects, accountFilter = nu
   const groupId = useId();
   const rangeRef = useRef<HTMLSelectElement>(null);
   const dimensionCount = selects.filter(select => select.value !== "").length;
-  const active = dimensionCount + (state.range === "all" ? 0 : 1) + (accountFilter ? 1 : 0);
+  const active = dimensionCount + (state.range === "all" ? 0 : 1) + (accountFilter ? 1 : 0) + linkFilters.length;
+  const chips = [...(accountFilter ? [{ key: "account", label: accountFilter.label, removeHref: accountFilter.removeHref }] : []), ...linkFilters];
 
   // A filter change shows the month of the new results (the calendar month is not carried over) and keeps the
-  // calendar mode and currency, which the calendar may have changed in the URL since the page rendered, and the
-  // account filter.
+  // calendar mode and currency, which the calendar may have changed in the URL since the page rendered, the account
+  // filter and the filters a link carried (they are part of `state`).
   const navigate = (next: EdgeUrlState) => {
     const base = edgeParams({ ...next, month: undefined, calendar: "NET_R", currency: undefined }).toString();
     const href = withParams(base, { ...currentCalendarParams(next), accountFilter: accountFilter?.id });
@@ -87,16 +101,18 @@ export function EdgeFilterBar({ state, rangeOptions, selects, accountFilter = nu
 
   return (
     <form aria-label="Filter closed trades" className="flex flex-wrap items-start gap-2" onSubmit={applyCustom}>
-      {accountFilter && (
+      {chips.length > 0 && (
         <div className="filter-chips w-full">
-          <ul className="filter-chip-list" aria-label="Account filter">
-            <li className="chip">
-              <span>{accountFilter.label}</span>
-              {/* Focus stays in the filter row: the date range takes it while the chip goes away. */}
-              <PendingLink href={accountFilter.removeHref} className="chip-remove" aria-label={`Remove filter: ${accountFilter.label}`} onClick={() => rangeRef.current?.focus()}>
-                <X aria-hidden="true" />
-              </PendingLink>
-            </li>
+          <ul className="filter-chip-list" aria-label="Filters from the link">
+            {chips.map(chip => (
+              <li key={chip.key} className="chip">
+                <span>{chip.label}</span>
+                {/* Focus stays in the filter row: the date range takes it while the chip goes away. */}
+                <PendingLink href={chip.removeHref} className="chip-remove" aria-label={`Remove filter: ${chip.label}`} onClick={() => rangeRef.current?.focus()}>
+                  <X aria-hidden="true" />
+                </PendingLink>
+              </li>
+            ))}
           </ul>
         </div>
       )}

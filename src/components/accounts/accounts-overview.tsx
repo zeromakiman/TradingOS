@@ -1,17 +1,21 @@
 import { Layers, Plus, TriangleAlert, Wallet } from "lucide-react";
 import Link from "next/link";
-import type { AccountMetrics, CurrencyTotals } from "@/domain/account-metrics";
+import { type AccountMetrics, type CurrencyTotals, type Known, UNKNOWN_REASONS } from "@/domain/account-metrics";
 import { plural } from "@/domain/format";
 import { formatDateTime, formatDay, strategyDay, type TimeDisplay } from "@/domain/time-display";
 import { StatusPill } from "@/components/ui/badge";
 import { buttonClasses } from "@/components/ui/button";
+import { Callout } from "@/components/ui/callout";
 import { Disclosure } from "@/components/ui/disclosure";
 import { EmptyState } from "@/components/ui/empty-state";
+import { prefetchFor } from "@/components/ui/links";
 import { PageHeader, SectionHeader } from "@/components/ui/page-header";
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from "@/components/ui/table";
 import type { AccountsOverview, AccountSummary } from "@/lib/accounts-data";
+import { MAX_LEDGER_ROWS } from "@/lib/performance-data";
 import type { AccountConnectionState } from "@/lib/sync-service";
 import { AccountRowMenu } from "./account-status-actions";
+import { ContextSwitchScope } from "./context-switch-scope";
 import { ACTIVE_ACCOUNTS_HEADING, R_UNITS_NOTE, typeAndBroker } from "./copy";
 import { KnownValue, Money, RValue, SignedMoney, sumDecimals, UnknownValue } from "./values";
 
@@ -19,6 +23,8 @@ import { KnownValue, Money, RValue, SignedMoney, sumDecimals, UnknownValue } fro
  * Accounts workspace (docs/V2_ARCHITECTURE.md §9.3–9.4, §14.7): one row per trading account with what the trader
  * recorded (balance, equity, with their date) and what Trading OS computed from closed trades (today, this month,
  * cumulative R). Money is totalled only within one currency; balances and equity are never summed across accounts.
+ * An account whose trades could not all be read shows "—" with the reason instead of its trade figures, and so does
+ * every total that would include it (never a partial sum). Opening an active account makes it the context (§9.2).
  */
 
 export interface AccountsOverviewViewProps {
@@ -54,7 +60,7 @@ function AccountName({ summary }: { summary: AccountSummary }) {
   const { account } = summary;
   return (
     <div className="flex min-w-0 flex-col">
-      <Link href={summary.href} className="ui-table-link -my-2.5 block truncate py-2.5">
+      <Link href={summary.href} prefetch={prefetchFor(summary.href, undefined)} className="ui-table-link -my-2.5 block truncate py-2.5">
         {account.name}
       </Link>
       <span className="t-caption truncate">{typeAndBroker(account.type, account.broker)}</span>
@@ -92,7 +98,21 @@ function RecordedValues({ metrics, today, active }: { metrics: AccountMetrics; t
   );
 }
 
+/** Today's or this month's net P&L of the account's trades; "—" with the reason while they could not all be read. */
+function TradesMoney({ metrics, period, className }: { metrics: AccountMetrics; period: "todayPnl" | "monthPnl"; className?: string }) {
+  if (metrics.tradesUnknown !== null) return <UnknownValue reason={metrics.tradesUnknown} />;
+  return <SignedMoney value={metrics[period]} currency={metrics.currency} className={className} />;
+}
+
+/** A currency total; "—" while it would include an account whose trades could not all be read. */
+function TotalMoney({ total, period }: { total: CurrencyTotals; period: "todayPnl" | "monthPnl" }) {
+  const value = total[period];
+  if (value === null) return <UnknownValue reason={UNKNOWN_REASONS.tooManyTradesTotal} />;
+  return <SignedMoney value={value} currency={total.currency} className="font-semibold" />;
+}
+
 function TradesCell({ metrics }: { metrics: AccountMetrics }) {
+  if (metrics.tradesUnknown !== null) return <UnknownValue reason={metrics.tradesUnknown} />;
   return (
     <div className="flex flex-col items-end gap-1">
       <span className="num">{metrics.closedCount} closed</span>
@@ -109,7 +129,7 @@ function CumulativeR({ metrics }: { metrics: AccountMetrics }) {
   return (
     <div className="flex flex-col items-end">
       <KnownValue known={metrics.cumulativeR} render={value => <RValue value={value} />} />
-      {metrics.excludedNoRiskBasis > 0 && <span className="t-caption">{metrics.excludedNoRiskBasis} without risk</span>}
+      {metrics.tradesUnknown === null && metrics.excludedNoRiskBasis > 0 && <span className="t-caption">{metrics.excludedNoRiskBasis} without risk</span>}
     </div>
   );
 }
@@ -157,10 +177,10 @@ function AccountsTable({ rows, caption, today, display, totals }: { rows: Accoun
               <RecordedValues metrics={summary.metrics} today={today} active={summary.account.status === "ACTIVE"} />
             </TableCell>
             <TableCell align="end">
-              <SignedMoney value={summary.metrics.todayPnl} currency={summary.metrics.currency} />
+              <TradesMoney metrics={summary.metrics} period="todayPnl" />
             </TableCell>
             <TableCell align="end">
-              <SignedMoney value={summary.metrics.monthPnl} currency={summary.metrics.currency} />
+              <TradesMoney metrics={summary.metrics} period="monthPnl" />
             </TableCell>
             <TableCell align="end">
               <CumulativeR metrics={summary.metrics} />
@@ -195,10 +215,10 @@ function TotalsFooter({ totals, combined }: TotalsProps) {
             <span className="t-caption">Not added up</span>
           </TableCell>
           <TableCell align="end">
-            <SignedMoney value={total.todayPnl} currency={total.currency} className="font-semibold" />
+            <TotalMoney total={total} period="todayPnl" />
           </TableCell>
           <TableCell align="end">
-            <SignedMoney value={total.monthPnl} currency={total.currency} className="font-semibold" />
+            <TotalMoney total={total} period="monthPnl" />
           </TableCell>
           <TableCell colSpan={4} />
         </TableRow>
@@ -218,25 +238,30 @@ function TotalsFooter({ totals, combined }: TotalsProps) {
 }
 
 interface CombinedR {
-  netR: string | null;
-  rTrades: number;
+  netR: Known<string>;
+  /** Closed trades without a recorded risk, left out of `netR`. */
   excluded: number;
 }
 
-/** Cumulative R across accounts: valid because R is per-trade risk units (§9.3); trades without risk are left out. */
-function combinedR(accounts: readonly AccountMetrics[]): CombinedR {
-  const known = accounts.flatMap(metrics => (metrics.cumulativeR.value === null ? [] : [metrics.cumulativeR.value]));
-  return {
-    netR: known.length ? sumDecimals(known) : null,
-    rTrades: accounts.reduce((total, metrics) => total + metrics.rTrades, 0),
-    excluded: accounts.reduce((total, metrics) => total + metrics.excludedNoRiskBasis, 0),
-  };
+/**
+ * Cumulative R across accounts: valid because R is per-trade risk units (§9.3); trades without risk are left out with
+ * their count. Unknown while one account's trades could not all be read (never a partial sum).
+ */
+export function combinedR(accounts: readonly AccountMetrics[]): CombinedR {
+  const values: string[] = [];
+  let excluded = 0;
+  for (const metrics of accounts) {
+    if (metrics.tradesUnknown !== null) return { netR: { value: null, unknownReason: UNKNOWN_REASONS.tooManyTradesTotal }, excluded: 0 };
+    if (metrics.cumulativeR.value !== null) values.push(metrics.cumulativeR.value);
+    excluded += metrics.excludedNoRiskBasis;
+  }
+  return { netR: values.length ? { value: sumDecimals(values), unknownReason: null } : { value: null, unknownReason: UNKNOWN_REASONS.rStatistics }, excluded };
 }
 
 function CombinedRValue({ combined }: { combined: CombinedR }) {
   return (
     <div className="flex flex-col items-end">
-      {combined.netR === null ? <UnknownValue reason="No closed trades with a recorded risk yet." /> : <RValue value={combined.netR} className="font-semibold" />}
+      <KnownValue known={combined.netR} render={value => <RValue value={value} className="font-semibold" />} />
       {combined.excluded > 0 && <span className="t-caption">{combined.excluded} without risk</span>}
     </div>
   );
@@ -252,7 +277,7 @@ function AccountCards({ rows, label, today, display }: { rows: AccountSummary[];
           <li key={account.id} className="card flex flex-col gap-3 p-4">
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 flex-col">
-                <Link href={summary.href} className="ui-table-link -my-2.5 block truncate py-2.5 text-base">
+                <Link href={summary.href} prefetch={prefetchFor(summary.href, undefined)} className="ui-table-link -my-2.5 block truncate py-2.5 text-base">
                   {account.name}
                 </Link>
                 <span className="t-caption">
@@ -274,13 +299,13 @@ function AccountCards({ rows, label, today, display }: { rows: AccountSummary[];
               <div>
                 <dt className="t-meta">Today</dt>
                 <dd>
-                  <SignedMoney value={metrics.todayPnl} currency={metrics.currency} className="font-medium" />
+                  <TradesMoney metrics={metrics} period="todayPnl" className="font-medium" />
                 </dd>
               </div>
               <div>
                 <dt className="t-meta">This month</dt>
                 <dd>
-                  <SignedMoney value={metrics.monthPnl} currency={metrics.currency} className="font-medium" />
+                  <TradesMoney metrics={metrics} period="monthPnl" className="font-medium" />
                 </dd>
               </div>
               <div>
@@ -292,8 +317,14 @@ function AccountCards({ rows, label, today, display }: { rows: AccountSummary[];
               <div>
                 <dt className="t-meta">Trades</dt>
                 <dd className="num">
-                  {metrics.closedCount} closed
-                  {metrics.openCount > 0 && <span className="text-live"> · {metrics.openCount} live</span>}
+                  {metrics.tradesUnknown !== null ? (
+                    <UnknownValue reason={metrics.tradesUnknown} />
+                  ) : (
+                    <>
+                      {metrics.closedCount} closed
+                      {metrics.openCount > 0 && <span className="text-live"> · {metrics.openCount} live</span>}
+                    </>
+                  )}
                 </dd>
               </div>
             </dl>
@@ -317,13 +348,13 @@ function TotalsCard({ totals, combined }: TotalsProps) {
             <div>
               <dt className="t-meta">Today</dt>
               <dd>
-                <SignedMoney value={total.todayPnl} currency={total.currency} className="font-medium" />
+                <TotalMoney total={total} period="todayPnl" />
               </dd>
             </div>
             <div>
               <dt className="t-meta">This month</dt>
               <dd>
-                <SignedMoney value={total.monthPnl} currency={total.currency} className="font-medium" />
+                <TotalMoney total={total} period="monthPnl" />
               </dd>
             </div>
           </dl>
@@ -340,6 +371,31 @@ function TotalsCard({ totals, combined }: TotalsProps) {
   );
 }
 
+/** "FTMO 100K", "FTMO 100K and Demo 100K", "A, B and C". */
+function nameList(names: readonly string[]): string {
+  return new Intl.ListFormat("en-US", { style: "long", type: "conjunction" }).format(names);
+}
+
+/** Why some trade figures show "—": the accounts whose trades could not all be read (never a partial sum). */
+function UnreadTradesNotice({ summaries }: { summaries: readonly AccountSummary[] }) {
+  const names = summaries.filter(summary => summary.metrics.tradesUnknown !== null).map(summary => summary.account.name);
+  if (names.length === 0) return null;
+  const limit = MAX_LEDGER_ROWS.toLocaleString("en-US");
+  const one = names.length === 1;
+  return (
+    <Callout tone="info" title="Some results are not added up">
+      {nameList(names)} {one ? "has" : "have"} more than {limit} trades, more than this page can add up. {one ? "Its" : "Their"} today, month, R and trade
+      figures, and the totals that include {one ? "it" : "them"}, show “—” instead of a partial total. {one ? "Its" : "Their"} EDGE and Journal show these
+      trades for a date range.
+    </Callout>
+  );
+}
+
+/** The context of this request as ContextSwitchScope compares it: `all` or the selected account's id. */
+function contextOf(overview: AccountsOverview): string {
+  return overview.context.selected.mode === "all" ? "all" : overview.context.selected.account.id;
+}
+
 export function AccountsOverviewView({ overview, display }: AccountsOverviewViewProps) {
   const { active, archived, totals } = overview;
   const today = strategyDay(overview.now);
@@ -354,13 +410,14 @@ export function AccountsOverviewView({ overview, display }: AccountsOverviewView
   const summaryLine = [plural(active.length, "active account"), ...(archived.length ? [`${archived.length} archived`] : [])].join(" · ");
 
   return (
-    <div className="flex flex-col gap-6">
+    <ContextSwitchScope current={contextOf(overview)} className="flex flex-col gap-6">
       <PageHeader
         className="mb-0"
         title="Accounts"
         description="Recorded values and closed-trade results of each trading account, in its own currency."
         actions={newAccount}
       />
+      <UnreadTradesNotice summaries={[...active, ...archived]} />
 
       {active.length === 0 && archived.length === 0 ? (
         <EmptyState
@@ -403,6 +460,6 @@ export function AccountsOverviewView({ overview, display }: AccountsOverviewView
           </p>
         </>
       )}
-    </div>
+    </ContextSwitchScope>
   );
 }

@@ -76,6 +76,9 @@ describe("EDGE CSV: authentication and failure boundaries", () => {
     ["an unknown account value", "?account=selected", "account"],
     ["an unknown model", "?account=all&model=SCALP", "model"],
     ["an unknown V1 period", "?period=forever", "period"],
+    ["a V1 risk that is not a risk-plan version", "?risk=0.5", "risk"],
+    ["a result EDGE never counts (open trades)", "?account=all&result=open", "result"],
+    ["a V1 range that excludes every day of the link's own range", "?range=last-month&period=month", "period"],
   ])("refuses %s by name instead of ignoring it, before reading anything", async (_label, query, name) => {
     const response = await csv(query);
     expect(response.status).toBe(400);

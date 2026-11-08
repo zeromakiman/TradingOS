@@ -12,12 +12,14 @@ import type { LockUsage, PositionDetail, PositionRecord } from "./model";
 /**
  * What the trade workspace needs beyond `getTradeDetail` (docs/V2_ARCHITECTURE.md §3.5, §8.1, §8.2, §12.1):
  * - the strategy card: the account's current strategy and active risk plan for a draft, the locked versions for a plan;
- * - today's usage of the account, so the lock confirmation can say what locking reserves;
+ * - today's usage of the account, so the lock confirmation can say what locking reserves, and the day of its latest
+ *   account values, so a stale-values block can say once today's values have been confirmed;
  * - the account's contract for a live-first symbol recorded without one ("Add entry details");
  * - which entry details of a live-first or imported position each of its records set, so the page can say which were
  *   completed later and when (the trade detail carries these records in words only);
  * - the last revision of a draft that never became a plan (discarded, or skipped in V1), whose values and thesis stay
- *   readable on its page.
+ *   readable on its page;
+ * - whether a draft's contract was superseded by a newer version of its symbol, as Edit Draft judges it.
  * Everything is read with the user's session. A failed read degrades to empty extras (the page still works and the
  * server still decides every check); it never blocks the trade page.
  */
@@ -36,9 +38,14 @@ export interface TradeExtras {
   lastProposal: ProposalView | null;
   /** Records of a live-first or imported position's entry details, oldest first; empty for planned trades. */
   positionRecords: PositionRecord[];
+  /**
+   * A draft whose contract the account superseded with a newer version of the same symbol: new plans and Edit Draft use
+   * the newer one, while the draft's own checks and lock still size with the values it was confirmed with. Null otherwise.
+   */
+  contractUpdated: { symbol: string } | null;
 }
 
-export const EMPTY_EXTRAS: TradeExtras = Object.freeze({ strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [] });
+export const EMPTY_EXTRAS: TradeExtras = Object.freeze({ strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null });
 const D = Decimal.clone({ precision: 60 });
 
 const strategyRow = z.object({ id: z.uuid(), version: z.string(), rules: z.unknown() });
@@ -129,7 +136,19 @@ function lockUsageOf(workspace: AccountWorkspace): LockUsage | null {
     riskUsed: new D(usage.plannedRisk).plus(usage.unplannedRisk).toFixed(),
     dailyRiskCap: plan.dailyRiskCap,
     dailyLossCap: plan.dailyLossCap,
+    valuesDay: workspace.observation?.tradingDay ?? null,
   };
+}
+
+/**
+ * The symbol of a draft whose contract version is no longer the account's latest of that symbol (the workspace lists only
+ * the latest version per symbol, as the pickers do), mirroring Edit Draft's `contractUpdated`; null otherwise.
+ */
+function contractUpdateOf(detail: TradeDetail, workspace: AccountWorkspace): TradeExtras["contractUpdated"] {
+  const stored = detail.draft?.proposal.instrumentVersionId?.toLowerCase() ?? null;
+  if (stored === null || workspace.instruments.some(item => item.id.toLowerCase() === stored)) return null;
+  const symbol = detail.instrument?.symbol ?? detail.symbol;
+  return symbol && workspace.instruments.some(item => item.symbol === symbol) ? { symbol } : null;
 }
 
 function instrumentOptions(workspace: AccountWorkspace, symbol: string | null): InstrumentOption[] {
@@ -148,7 +167,7 @@ export async function loadTradeExtras(detail: TradeDetail): Promise<TradeExtras>
       const workspace = await getAccountWorkspace(detail.account.id);
       if (!workspace) return EMPTY_EXTRAS;
       const strategy = workspace.strategy && workspace.riskPlan ? cardOf(workspace.strategy.rules, workspace.riskPlan, detail.account.currency, DRAFT_CONTEXT) : null;
-      return { ...EMPTY_EXTRAS, strategy, lockUsage: lockUsageOf(workspace) };
+      return { ...EMPTY_EXTRAS, strategy, lockUsage: lockUsageOf(workspace), contractUpdated: contractUpdateOf(detail, workspace) };
     }
     if (!planned) {
       const [records, workspace] = await Promise.all([positionRecords(detail), liveFirstWithoutContract ? getAccountWorkspace(detail.account.id) : null]);

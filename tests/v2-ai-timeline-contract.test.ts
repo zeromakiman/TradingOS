@@ -31,6 +31,8 @@ const ids = {
   legacyNote: "d0000000-0000-4000-8000-000000000001",
   legacyOpened: "d0000000-0000-4000-8000-000000000002",
   tagNote: "d0000000-0000-4000-8000-000000000003",
+  override: "d1000000-0000-4000-8000-000000000001",
+  taken: "d1000000-0000-4000-8000-000000000002",
   preEntryShot: "e0000000-0000-4000-8000-000000000001",
   afterCloseShot: "e0000000-0000-4000-8000-000000000002",
   legacyShot: "e0000000-0000-4000-8000-000000000003",
@@ -180,6 +182,53 @@ describe("REVIEW_TRADE_TIMELINE_FACTS_V1 timing", () => {
     const lateExit = tradeTimelineReviewContext(plannedInput({ trade: { ...plannedTrade, exited_at: "2026-09-01T09:50:00Z" } }), CAPTURED);
     expect(timingOf(lateExit, `journal:${ids.lesson}`)?.timing).toBe("AFTER_CLOSE");
     expect(tradeTimelineAllowedSources(backDated).preEntryIds).not.toContain(`journal:${ids.preEntryNote}`);
+  });
+
+  it("keeps the lock and the evaluation that authorised it Before entry when the entry is reported at the lock instant", () => {
+    // The lock transaction stamps locked_at and writes its evaluation ~600 ms later; an "Earlier" entry typed in the
+    // lock's minute is stored at locked_at itself (the database accepts entered_at = locked_at).
+    const lockedAt = "2026-09-01T07:00:00.19218Z";
+    const base = plannedInput();
+    const plan = { ...(base.plan as NonNullable<TimelineReviewInput["plan"]>), lockedAt, riskEvaluationId: ids.check2 };
+    const input = plannedInput({
+      trade: { ...plannedTrade, entered_at: lockedAt }, plan,
+      riskChecks: [base.riskChecks[0], { ...base.riskChecks[1], recordedAt: "2026-09-01T07:00:00.79914Z" }],
+    });
+    const facts = tradeTimelineReviewContext(input, CAPTURED);
+    expect(facts.timeline.map(item => [item.sourceId, item.timing, item.flags]).slice(2, 7)).toEqual([
+      [`revision:${ids.revision2}`, "BEFORE_ENTRY", []], [`check:${ids.check2}`, "BEFORE_ENTRY", []], [`plan:${ids.plan}`, "BEFORE_ENTRY", []],
+      [`execution:${ids.trade}`, "WHILE_LIVE", []],
+      // Only the records of the lock precede every entry by definition: a note stored pre-entry after that time is flagged.
+      [`journal:${ids.preEntryNote}`, "WHILE_LIVE", ["RECORDED_AFTER_EXECUTION_BEGAN"]],
+    ]);
+    expect(timingOf(facts, `check:${ids.check2}`)?.recordedAt).toBe("2026-09-01T07:00:00.79914Z");
+    // The hindsight guard accepts the lock and its evaluation as pre-entry support.
+    const output = plannedOutput();
+    const cites = (refs: string[]) => rejection({ ...output, thesisCheck: { ...output.thesisCheck, sourceRefs: refs } }, facts);
+    expect(cites(["originalPlan", `check:${ids.check2}`, `plan:${ids.plan}`])).toBe("ACCEPTED");
+    expect(cites(["originalPlan", `journal:${ids.preEntryNote}`])).toBe("HINDSIGHT_CITATION");
+    // Control: a check the plan does not name as its evaluation is classified by its own time.
+    const unnamed = tradeTimelineReviewContext({ ...input, plan: { ...plan, riskEvaluationId: null } }, CAPTURED);
+    expect(timingOf(unnamed, `check:${ids.check2}`)).toMatchObject({ timing: "WHILE_LIVE", flags: ["RECORDED_AFTER_EXECUTION_BEGAN"] });
+    expect(timingOf(unnamed, `plan:${ids.plan}`)).toMatchObject({ timing: "BEFORE_ENTRY", flags: [] });
+  });
+
+  it("includes V1 decisions in the trader's words, classified like any record, without the AI verdict of that time", () => {
+    const facts = tradeTimelineReviewContext(plannedInput({
+      legacyDecisions: [
+        { id: ids.override, decision: "TAKEN", eventType: "MANUAL_OVERRIDE", reason: "Took it anyway: news was priced in.", riskDecision: "BLOCKED", recordedAt: "2026-09-01T06:40:00Z" },
+        { id: ids.taken, decision: "TAKEN", eventType: "HUMAN_DECISION", reason: null, riskDecision: "APPROVED", recordedAt: "2026-09-01T08:00:30Z" },
+      ],
+    }), CAPTURED);
+    expect(timingOf(facts, `event:${ids.override}`)).toEqual({
+      sourceId: `event:${ids.override}`, kind: "MANUAL_OVERRIDE", timing: "BEFORE_ENTRY", recordedAt: "2026-09-01T06:40:00Z", occurredAt: null, flags: [],
+      text: "Took it anyway: news was priced in.", details: { decision: "TAKEN", riskDecision: "BLOCKED" },
+    });
+    // Recorded after the reported entry time (08:00) but before the entry was recorded (08:01): flagged.
+    expect(timingOf(facts, `event:${ids.taken}`)).toMatchObject({ kind: "HUMAN_DECISION", text: "Recorded as taken", timing: "WHILE_LIVE", flags: ["RECORDED_AFTER_EXECUTION_BEGAN"] });
+    const { preEntryIds } = tradeTimelineAllowedSources(facts);
+    expect(preEntryIds).toContain(`event:${ids.override}`);
+    expect(preEntryIds).not.toContain(`event:${ids.taken}`);
   });
 
   it("never marks a live-first record as before entry, even one recorded before the reported entry time", () => {

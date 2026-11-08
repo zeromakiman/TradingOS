@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { formatMoney, formatMoneyAgainst, formatMoneyExact } from "./format";
+import { formatMoney, formatMoneyAgainst, formatMoneyExact, formatMoneyUp } from "./format";
 import { type DailyUsage, dailyUsageSchema } from "./risk";
 import { RISK_COPY, unplannedRiskSentence } from "./risk-explain";
 import { type Session, strategyClock } from "./session";
@@ -106,7 +106,7 @@ const HEADLINES: readonly [DailyReasonCode, string][] = [
 ];
 
 function partsUp(value: string, currency: string): string {
-  return formatMoneyExact(new exact(value).toDecimalPlaces(2, exact.ROUND_CEIL).toFixed(), currency);
+  return formatMoneyUp(value, currency);
 }
 
 /** `Sep 3`, with the year when it differs from `today`'s. */

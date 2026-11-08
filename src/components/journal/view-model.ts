@@ -283,6 +283,8 @@ export function extraChips(filters: TradeFilters, today: string, names: JournalI
   // The read-only account filter (All Accounts only): the account's name in words, never its id.
   const account = filters.accountFilter ? accountFilterLabel(accountFilter.kind === "none" ? { kind: "unavailable" } : accountFilter) : null;
   if (account) chips.push({ key: "account", label: account, removeHref: href(omit(filters, "accountFilter")) });
+  // One currency's trades (EDGE's daily net P&L per currency opens them).
+  if (filters.currency) chips.push({ key: "currency", label: `Currency: ${filters.currency}`, removeHref: href(omit(filters, "currency")) });
   const closed = rangeText(filters.closedFrom, filters.closedTo, today);
   if (closed) {
     const text = filters.closedFrom && filters.closedTo ? `Closed ${closed}` : `Closed ${closed.charAt(0).toLowerCase()}${closed.slice(1)}`;
@@ -312,7 +314,7 @@ export function extraChips(filters: TradeFilters, today: string, names: JournalI
 // ---------------------------------------------------------------------------------------------------------
 /** Filters the sheet does not edit; kept as hidden fields so applying the sheet never drops them. */
 const SHEET_KEPT: FilterKey[] = [
-  "q", "closedFrom", "closedTo", "weekday", "direction", "riskPercent", "strategyVersionId", "riskPlanVersionId", "rFrom", "rTo", "accountFilter",
+  "q", "closedFrom", "closedTo", "weekday", "direction", "riskPercent", "strategyVersionId", "riskPlanVersionId", "rFrom", "rTo", "accountFilter", "currency",
 ];
 
 function sheetView(filters: TradeFilters, today: string, activeCount: number): SheetView {

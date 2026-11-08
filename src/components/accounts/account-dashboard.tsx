@@ -1,8 +1,8 @@
 import Decimal from "decimal.js";
-import { BookOpen, ChartNoAxesCombined, ChevronLeft, CircleAlert, CircleCheck, Info, OctagonAlert, Plus, Settings2, TriangleAlert } from "lucide-react";
+import { BookOpen, ChartNoAxesCombined, ChevronLeft, CircleAlert, CircleCheck, OctagonAlert, Plus, Settings2, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BALANCE_FROM_TRADES_LABEL } from "@/domain/account-metrics";
+import { type AccountMetrics, BALANCE_FROM_TRADES_LABEL } from "@/domain/account-metrics";
 import type { DailyAction, DailyStatus } from "@/domain/daily-status";
 import { formatMoney, formatR, formatSignedMoney, plural } from "@/domain/format";
 import { type CalendarMode, sampleCaveat } from "@/domain/performance";
@@ -22,16 +22,17 @@ import { Disclosure } from "@/components/ui/disclosure";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader, SectionHeader } from "@/components/ui/page-header";
 import { Stat } from "@/components/ui/stat";
+import { breakdownSample, groupDetail, rCoverage, withoutRiskLabel } from "@/components/edge/model";
 import { edgeAccountHistoryHref } from "@/components/edge/query";
 import type { AccountDashboard } from "@/lib/accounts-data";
-import { accountHistoryDrill, accountHistoryJournalHref, breakdownHref, closedOnHref, type DrillDown, tradeHref } from "@/lib/performance-data";
+import { accountHistoryDrill, accountHistoryJournalHref, breakdownHref, closedOnHref, type DrillDown, MAX_LEDGER_ROWS, tradeHref } from "@/lib/performance-data";
 import { ConfirmUnchangedButton } from "./account-values-forms";
 import { connectionLabel } from "./accounts-overview";
 import { ContextSwitchScope } from "./context-switch-scope";
-import { ARCHIVED_DASHBOARD_COPY, manageHref, typeAndBroker } from "./copy";
+import { ARCHIVED_DASHBOARD_COPY, manageHref, planTradeHref, recordLiveTradeHref, typeAndBroker } from "./copy";
 import { RiskPlanTable } from "./risk-plan-table";
 import { TradeRows } from "./trade-rows";
-import { HIT_AREA, KnownValue, Money, RValue, SignedMoney, STAT_GRID_4, STAT_GRID_5, TEXT_LINK } from "./values";
+import { HIT_AREA, KnownValue, Money, RValue, SignedMoney, STAT_GRID_4, STAT_GRID_5, TEXT_LINK, UnknownValue } from "./values";
 
 /**
  * Account dashboard (docs/V2_ARCHITECTURE.md §9.4, §13.6, §14.8): what the trader recorded and what the account's
@@ -39,8 +40,13 @@ import { HIT_AREA, KnownValue, Money, RValue, SignedMoney, STAT_GRID_4, STAT_GRI
  * drills into trades (points open the trade; days open the Journal filtered to that day). Live trades move to the top
  * while any exist (the next action, as on Today §14.1). An archived account can't be the working context (§9.2), so its
  * dashboard never links to a switch to it: its Journal, EDGE and drill-down links open All Accounts with the read-only
- * account filter instead (`historyLinks`).
+ * account filter instead (`historyLinks`). An active account's Plan Trade and Record Live Trade name it (`?account=`),
+ * whatever the context. R figures count the closed trades with a recorded risk and say how many have none (§9.3).
+ * When the account's trades could not all be read, no result or chart is drawn from part of them (`TooManyTrades`).
  */
+
+/** The account's trade figures once every trade was read (`metrics.tradesUnknown === null`). */
+type KnownFigures = Extract<AccountMetrics, { tradesUnknown: null }>;
 
 const D = Decimal.clone({ precision: 100 });
 /** The daily P&L bars stay readable: the most recent trading days with exits. */
@@ -84,6 +90,29 @@ function historyLinks(dashboard: AccountDashboard): { journal: string; edge: str
 // ---------------------------------------------------------------------------------------------------------
 // Header and today's status.
 // ---------------------------------------------------------------------------------------------------------
+/**
+ * Plan Trade and Record Live Trade on this account (`?account=`): they open the forms with this account selected,
+ * whatever the header's context was, and make it the context (§9.2). Archived accounts take no new trades. This is the
+ * page's only pair (the explanation shown before the first closed trade does not repeat it), named as in the top bar,
+ * and it stays secondary: the top bar's Plan Trade is the screen's primary action.
+ */
+function NewTradeLinks({ dashboard }: { dashboard: AccountDashboard }) {
+  const { account } = dashboard;
+  if (account.status !== "ACTIVE") return null;
+  return (
+    <>
+      <Link href={planTradeHref(account.id)} prefetch={false} className={buttonClasses({ variant: "secondary" })} aria-label={`Plan Trade on ${account.name}`}>
+        <Plus aria-hidden="true" />
+        Plan Trade
+      </Link>
+      <Link href={recordLiveTradeHref(account.id)} prefetch={false} className={buttonClasses({ variant: "secondary" })} aria-label={`Record Live Trade on ${account.name}`}>
+        <Plus aria-hidden="true" />
+        Record Live Trade
+      </Link>
+    </>
+  );
+}
+
 function DashboardHeader({ dashboard, display }: { dashboard: AccountDashboard; display: TimeDisplay }) {
   const { account, metrics } = dashboard;
   const links = historyLinks(dashboard);
@@ -107,6 +136,7 @@ function DashboardHeader({ dashboard, display }: { dashboard: AccountDashboard; 
       }
       actions={
         <>
+          <NewTradeLinks dashboard={dashboard} />
           <Link href={links.journal} prefetch={false} className={buttonClasses({ variant: "secondary" })}>
             <BookOpen aria-hidden="true" />
             Journal
@@ -263,7 +293,11 @@ function ValueCards({ dashboard }: { dashboard: AccountDashboard }) {
             value={<KnownValue known={metrics.startingBalance} render={value => formatMoney(value, currency)} />}
             hint={metrics.startingBalance.value === null ? metrics.startingBalance.unknownReason : "As set in the profile"}
           />
-          <Stat label="Realized P&L" value={<SignedMoney value={metrics.realizedPnl} currency={currency} />} hint={`${plural(metrics.closedCount, "closed trade")} in Trading OS`} />
+          {metrics.tradesUnknown === null ? (
+            <Stat label="Realized P&L" value={<SignedMoney value={metrics.realizedPnl} currency={currency} />} hint={`${plural(metrics.closedCount, "closed trade")} in Trading OS`} />
+          ) : (
+            <Stat label="Realized P&L" value={<UnknownValue reason={metrics.tradesUnknown} />} hint={metrics.tradesUnknown} />
+          )}
           <Stat
             label="Balance from trades"
             value={<KnownValue known={metrics.balanceFromTrades} render={value => formatMoney(value, currency)} />}
@@ -275,8 +309,7 @@ function ValueCards({ dashboard }: { dashboard: AccountDashboard }) {
   );
 }
 
-function ResultCards({ dashboard }: { dashboard: AccountDashboard }) {
-  const { metrics } = dashboard;
+function ResultCards({ metrics }: { metrics: KnownFigures }) {
   return (
     <Card as="section" aria-labelledby="account-results-heading">
       <CardHeader>
@@ -331,8 +364,8 @@ function journalDrill(dashboard: AccountDashboard, href: string | null, history:
   return dashboard.account.status === "ARCHIVED" ? (history(accountHistoryDrill(dashboard.account.id)) ?? undefined) : href;
 }
 
-function DashboardCharts({ dashboard, display }: { dashboard: AccountDashboard; display: TimeDisplay }) {
-  const { metrics, account } = dashboard;
+function DashboardCharts({ dashboard, metrics, display }: { dashboard: AccountDashboard; metrics: KnownFigures; display: TimeDisplay }) {
+  const { account } = dashboard;
   const currency = account.currency;
   const hasR = dashboard.curve.length > 1;
   const rSample = `${plural(metrics.rTrades, "trade")} with R${metrics.excludedNoRiskBasis ? ` · ${metrics.excludedNoRiskBasis} without recorded risk not shown` : ""}`;
@@ -378,7 +411,8 @@ function DashboardCharts({ dashboard, display }: { dashboard: AccountDashboard; 
       value: money?.netPnl ?? null,
       valueLabel: money ? formatSignedMoney(money.netPnl, currency) : "—",
       href: journalDrill(dashboard, point.href, drill => closedOnHref(point.day, drill)),
-      detail: `${plural(point.closed, "trade")}${point.netR !== null ? ` · ${formatR(point.netR)}` : ""}`,
+      // The bar is every trade's P&L; its R covers only the trades with a recorded risk, and says so.
+      detail: `${plural(point.closed, "trade")} · ${rCoverage(point.netR, point.rTrades, point.closed)}`,
     };
   });
   const dailySample = dashboard.daily.length > DAILY_DAYS ? `Last ${DAILY_DAYS} of ${dashboard.daily.length} trading days with exits` : plural(dashboard.daily.length, "trading day");
@@ -451,7 +485,8 @@ function CalendarSection({ dashboard, month, mode }: { dashboard: AccountDashboa
       day: day.day,
       value: day.value,
       href: journalDrill(dashboard, day.href, drill => closedOnHref(day.day, drill)),
-      detail: day.closed ? plural(day.closed, "closed trade") : undefined,
+      // Net R covers the day's trades with a recorded risk: the ones without are counted where the day is shown.
+      detail: day.closed ? [plural(day.closed, "closed trade"), withoutRiskLabel(day.closed - day.rTrades)].filter(Boolean).join(" · ") : undefined,
     }));
   const modeLinks = (Object.keys(CALENDAR_MODE_LABELS) as CalendarMode[]).map(item => ({
     href: dashboardHref(account.id, month, item),
@@ -538,32 +573,53 @@ function TradesSection({ dashboard, display, withLive }: { dashboard: AccountDas
 /** Words for the group of trades without the dimension (the domain's "Unknown"). */
 const MISSING_GROUP = { model: "Model not recorded", session: "Entry time not recorded" } as const;
 
+/**
+ * One bar per group: its net R, and "N = 9 · 1 without risk · Insufficient evidence" (EDGE's words): N and the evidence
+ * label count the trades with a recorded risk, and the group's closed trades without one are counted next to them.
+ */
 function breakdownData(dashboard: AccountDashboard, groups: AccountDashboard["breakdowns"]["model"], missing: string): ChartDatum[] {
   return groups.map(group => ({
     key: group.value ?? "unknown",
     label: group.value === null ? missing : group.label,
     value: group.metrics.netR,
-    valueLabel: group.metrics.netR === null ? "—" : formatR(group.metrics.netR),
+    valueLabel: group.metrics.netR === null ? "No recorded risk" : formatR(group.metrics.netR),
     href: journalDrill(dashboard, group.href, drill => breakdownHref(group, drill)),
-    detail: `${plural(group.closed, "trade")}${group.evidenceLabel ? ` · ${group.evidenceLabel.toLowerCase()}` : ""}`,
+    detail: groupDetail(group),
   }));
 }
 
-function BreakdownSection({ dashboard }: { dashboard: AccountDashboard }) {
+function BreakdownSection({ dashboard, metrics }: { dashboard: AccountDashboard; metrics: KnownFigures }) {
   const empty = { title: "No closed trades yet.", description: "Groups appear once trades on this account are closed." };
+  const sample = breakdownSample({ closed: metrics.closedCount, excludedNoRiskBasis: metrics.excludedNoRiskBasis });
   return (
     <section aria-labelledby="account-breakdowns" className="flex flex-col">
       <SectionHeader
         id="account-breakdowns"
         title="Model and session"
-        description="Net R per group. Groups below 30 trades show a tendency at most; below 10 the evidence is insufficient."
+        description="Net R per group; N counts its trades with a recorded risk. Below 30 a group shows a tendency at most; below 10 the evidence is insufficient."
       />
       <div className="grid gap-4 lg:grid-cols-2">
         <ChartCard>
-          <HBarChart title="By model" question="Which entry model performs?" data={breakdownData(dashboard, dashboard.breakdowns.model, MISSING_GROUP.model)} categoryLabel="Model" valueName="Net R" empty={empty} />
+          <HBarChart
+            title="By model"
+            question="Which entry model performs?"
+            sample={sample}
+            data={breakdownData(dashboard, dashboard.breakdowns.model, MISSING_GROUP.model)}
+            categoryLabel="Model"
+            valueName="Net R"
+            empty={empty}
+          />
         </ChartCard>
         <ChartCard>
-          <HBarChart title="By session" question="Which session performs?" data={breakdownData(dashboard, dashboard.breakdowns.session, MISSING_GROUP.session)} categoryLabel="Session" valueName="Net R" empty={empty} />
+          <HBarChart
+            title="By session"
+            question="Which session performs?"
+            sample={sample}
+            data={breakdownData(dashboard, dashboard.breakdowns.session, MISSING_GROUP.session)}
+            categoryLabel="Session"
+            valueName="Net R"
+            empty={empty}
+          />
         </ChartCard>
       </div>
     </section>
@@ -586,9 +642,11 @@ function RiskPlanHistory({ plans, currency }: { plans: AccountDashboard["riskPla
   );
 }
 
-/** One explanation instead of six empty charts while the account has no closed trade. */
-function NoResultsYet({ dashboard }: { dashboard: AccountDashboard }) {
-  const { account } = dashboard;
+/**
+ * One explanation instead of six empty charts while the account has no closed trade. It names no action of its own:
+ * the header's Plan Trade and Record Live Trade are on this account already.
+ */
+function NoResultsYet() {
   return (
     <Card as="section" aria-labelledby="no-results">
       <CardBody>
@@ -597,19 +655,37 @@ function NoResultsYet({ dashboard }: { dashboard: AccountDashboard }) {
           headingLevel={2}
           title={<span id="no-results">No closed trades on this account yet.</span>}
           description="Balance from trades, cumulative R, drawdown, daily P&L, the calendar and the model and session groups appear after the first trade is closed."
+        />
+      </CardBody>
+    </Card>
+  );
+}
+
+/**
+ * In place of results and charts while the account's trades could not all be read (`dashboard.truncated`): the read
+ * pages by id, so what it holds is an arbitrary part of the trades, and nothing is ever added up or drawn from a part.
+ */
+function TooManyTrades({ dashboard }: { dashboard: AccountDashboard }) {
+  const links = historyLinks(dashboard);
+  return (
+    <Card as="section" aria-labelledby="too-many-trades">
+      <CardBody>
+        <EmptyState
+          icon={<ChartNoAxesCombined />}
+          headingLevel={2}
+          title={<span id="too-many-trades">More trades than this page can add up.</span>}
+          description={`This account has more than ${MAX_LEDGER_ROWS.toLocaleString("en-US")} live and closed trades. Its results, charts, calendar and model and session groups would cover only part of them, so they are not shown here. EDGE and the Journal show its trades for a date range.`}
           actions={
-            account.status === "ACTIVE" ? (
-              <>
-                <Link href={`/trades/new?account=${account.id}`} prefetch={false} className={buttonClasses({ variant: "primary" })}>
-                  <Plus aria-hidden="true" />
-                  Plan trade
-                </Link>
-                <Link href={`/trades/live/new?account=${account.id}`} prefetch={false} className={buttonClasses({ variant: "secondary" })}>
-                  <Plus aria-hidden="true" />
-                  Record live trade
-                </Link>
-              </>
-            ) : undefined
+            <>
+              <Link href={links.edge} prefetch={false} className={buttonClasses({ variant: "secondary" })}>
+                <ChartNoAxesCombined aria-hidden="true" />
+                Open EDGE
+              </Link>
+              <Link href={links.journal} prefetch={false} className={buttonClasses({ variant: "secondary" })}>
+                <BookOpen aria-hidden="true" />
+                Open Journal
+              </Link>
+            </>
           }
         />
       </CardBody>
@@ -641,6 +717,37 @@ function QuickLinks({ dashboard }: { dashboard: AccountDashboard }) {
         </Link>
       ))}
     </nav>
+  );
+}
+
+/** Results, charts, calendar, trades and groups: all of them, one explanation instead, or why none can be shown. */
+function TradeResults({ dashboard, display, month, mode, withLive }: { dashboard: AccountDashboard; display: TimeDisplay; month: string; mode: CalendarMode; withLive: boolean }) {
+  const { metrics } = dashboard;
+  const trades = <TradesSection dashboard={dashboard} display={display} withLive={withLive} />;
+  if (metrics.tradesUnknown !== null) {
+    return (
+      <>
+        <TooManyTrades dashboard={dashboard} />
+        {trades}
+      </>
+    );
+  }
+  if (metrics.closedCount === 0) {
+    return (
+      <>
+        <NoResultsYet />
+        {dashboard.recentTrades.length > 0 && trades}
+      </>
+    );
+  }
+  return (
+    <>
+      <ResultCards metrics={metrics} />
+      <DashboardCharts dashboard={dashboard} metrics={metrics} display={display} />
+      <CalendarSection dashboard={dashboard} month={month} mode={mode} />
+      {trades}
+      <BreakdownSection dashboard={dashboard} metrics={metrics} />
+    </>
   );
 }
 
@@ -680,20 +787,7 @@ export function AccountDashboardView({ dashboard, display, month, mode, currentC
       {!archived && workspace.status && <TodayCard dashboard={dashboard} status={workspace.status} />}
       {liveFirst && <LiveTradesCard dashboard={dashboard} display={display} />}
       <ValueCards dashboard={dashboard} />
-      {dashboard.metrics.closedCount > 0 && <ResultCards dashboard={dashboard} />}
-      {dashboard.metrics.closedCount > 0 ? (
-        <>
-          <DashboardCharts dashboard={dashboard} display={display} />
-          <CalendarSection dashboard={dashboard} month={month} mode={mode} />
-          <TradesSection dashboard={dashboard} display={display} withLive={!liveFirst} />
-          <BreakdownSection dashboard={dashboard} />
-        </>
-      ) : (
-        <>
-          <NoResultsYet dashboard={dashboard} />
-          {dashboard.recentTrades.length > 0 && <TradesSection dashboard={dashboard} display={display} withLive={!liveFirst} />}
-        </>
-      )}
+      <TradeResults dashboard={dashboard} display={display} month={month} mode={mode} withLive={!liveFirst} />
       <section aria-labelledby="risk-plan-history" className="flex flex-col">
         <SectionHeader
           id="risk-plan-history"
@@ -707,11 +801,6 @@ export function AccountDashboardView({ dashboard, display, month, mode, currentC
         />
         <RiskPlanHistory plans={dashboard.riskPlans} currency={account.currency} />
       </section>
-      {dashboard.truncated && (
-        <Callout tone="info" icon={<Info aria-hidden="true" />}>
-          This account has more trades than one page can analyse. Charts show the first 20,000; open EDGE for filtered views.
-        </Callout>
-      )}
       <QuickLinks dashboard={dashboard} />
     </ContextSwitchScope>
   );

@@ -3,6 +3,7 @@ import { isChunkLike } from "@supabase/ssr";
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect, unstable_rethrow } from "next/navigation";
+import { ACCOUNT_COOKIE, LAST_ACCOUNT_COOKIE } from "@/lib/account-context";
 import { ERASURE_COPY, eraseTradingOsAccount, erasureInputError, erasureLog, supabaseErasureServices } from "@/lib/erasure";
 import { publicConfig } from "@/lib/supabase/config";
 import { requireUser } from "@/lib/supabase/server";
@@ -21,11 +22,16 @@ function text(form: FormData, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-/** Removes this browser's Supabase auth cookies, exactly like the logout action. */
-async function clearAuthCookies(): Promise<void> {
+/**
+ * Removes this browser's Supabase auth cookies, exactly like the logout action, and the trading-account context
+ * cookies: the deleted user's account ids must not stay in the browser for whoever signs in next.
+ */
+async function clearSessionCookies(): Promise<void> {
+  const jar = await cookies();
+  jar.delete(ACCOUNT_COOKIE);
+  jar.delete(LAST_ACCOUNT_COOKIE);
   const config = publicConfig();
   if (!config) return;
-  const jar = await cookies();
   for (const cookie of jar.getAll()) {
     if (isChunkLike(cookie.name, config.cookiePrefix) || isChunkLike(cookie.name, `${config.cookiePrefix}-user`)) jar.delete(cookie.name);
   }
@@ -40,7 +46,7 @@ export async function deleteTradingOsAccount(_state: ErasureActionState, form: F
     if (invalid) return { error: invalid };
     const outcome = await eraseTradingOsAccount(
       { userId: user.id, email: user.email ?? null, confirmation, password },
-      supabaseErasureServices(db, user.id),
+      supabaseErasureServices(db),
     );
     if (!outcome.ok) return { error: outcome.error };
   } catch (error) {
@@ -48,7 +54,7 @@ export async function deleteTradingOsAccount(_state: ErasureActionState, form: F
     erasureLog("erasure_failed");
     return { error: ERASURE_COPY.incomplete };
   }
-  await clearAuthCookies();
+  await clearSessionCookies();
   revalidatePath("/", "layout");
   redirect("/login?reason=account_deleted");
 }

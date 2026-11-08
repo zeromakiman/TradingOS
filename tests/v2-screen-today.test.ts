@@ -86,7 +86,7 @@ import { type DailyUsage, evaluateRisk, type RiskContext } from "@/domain/risk";
 import { RISK_COPY } from "@/domain/risk-explain";
 import { nextBoundary, strategyClock } from "@/domain/session";
 import { strategyDay, strategyDayLabel } from "@/domain/time-display";
-import { deriveTradeState } from "@/domain/trade-state";
+import { deriveTradeState, withBlockingFindings } from "@/domain/trade-state";
 import type { AccountContext, ContextAccount } from "@/lib/account-context";
 import type { LiveTradeCard, TodayAccountStatus, TodayData, TodayLosses } from "@/lib/today-data";
 import { tradeDate, type TradeListRow } from "@/lib/trades-data";
@@ -231,6 +231,8 @@ interface DataOptions {
   closed?: LedgerTrade[];
   dailyContext?: TodayData["dailyContext"];
   truncated?: Partial<TodayData["truncated"]>;
+  /** Losses the loader adds for accounts without a status row (All Accounts: an archived account that closed a trade today). */
+  outsideLosses?: TodayLosses[];
 }
 
 function todayData(options: DataOptions = {}): TodayData {
@@ -246,12 +248,12 @@ function todayData(options: DataOptions = {}): TodayData {
     unchecked: drafts.unchecked.map(trade => row(trade)), locked: (options.locked ?? []).map(trade => row(trade)),
   };
   const byCurrency = new Map<string, TodayLosses>();
-  for (const entry of accounts) {
-    const sum = byCurrency.get(entry.losses.currency);
-    byCurrency.set(entry.losses.currency, sum ? {
-      ...sum, realized: new Decimal(sum.realized).plus(entry.losses.realized).toFixed(), external: new Decimal(sum.external).plus(entry.losses.external).toFixed(),
-      total: new Decimal(sum.total).plus(entry.losses.total).toFixed(),
-    } : entry.losses);
+  for (const losses of [...accounts.map(entry => entry.losses), ...(options.outsideLosses ?? [])]) {
+    const sum = byCurrency.get(losses.currency);
+    byCurrency.set(losses.currency, sum ? {
+      ...sum, realized: new Decimal(sum.realized).plus(losses.realized).toFixed(), external: new Decimal(sum.external).plus(losses.external).toFixed(),
+      total: new Decimal(sum.total).plus(losses.total).toFixed(),
+    } : losses);
   }
   const waiting = Object.values(plans).reduce((count, rows) => count + rows.length, 0);
   return {
@@ -586,6 +588,22 @@ describe("Today · All Accounts", () => {
     expect(text).toContain(NO_R_COPY);
   });
 
+  it("counts a loss an archived account closed today in today's realized losses, as in today's result, and says so", async () => {
+    // Archiving leaves a live position to be closed; the archived account then has no row below the summary.
+    const archived = { ...PERSONAL_ACCOUNT, status: "ARCHIVED" as const };
+    m.context = allContext([FTMO_ACCOUNT, archived]);
+    // The loader adds the archived account's losses from its daily usage: the €40.00 trade and €12.50 entered as external.
+    const archivedLosses = { currency: "EUR", realized: "40", external: "12.5", legacyReported: null, total: "52.5" };
+    m.getToday.mockResolvedValue(todayData({
+      context: allContext([FTMO_ACCOUNT, archived]), accounts: [status(workspace(FTMO_ACCOUNT))], closed: [closedWin, closedLossEur], outsideLosses: [archivedLosses],
+    }));
+    const text = visibleText(await render());
+    expect(text).toContain("All Accounts · 1 active trading account");
+    expect(text).toContain("Today's result +1.20R -€40.00 +$120.00");
+    expect(text).toContain("2 trades closed today · 1 without R · 1 on an archived account");
+    expect(text).toContain("Realized losses today €52.50 · $0.00 Including external losses");
+  });
+
   it("links to each account's notes instead of mixing them", async () => {
     const html = await render();
     expect(visibleText(html)).toContain(NOTES_ALL_ACCOUNTS_COPY);
@@ -596,6 +614,70 @@ describe("Today · All Accounts", () => {
     const text = visibleText(await render());
     expect(text).not.toMatch(UUID);
     expect(text).not.toMatch(ENUM);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Account names of up to 100 characters (the create form, the profile rename and the database all allow them)
+// ---------------------------------------------------------------------------------------------------------------------
+// (The trade header's and the trade forms' account chips: tests/v2-ui-account-name-chips.test.ts.)
+describe("100-character account names on a phone (Today)", () => {
+  const LONG_FTMO = "FTMO Challenge Phase 2 · 200K Swing (Aggressive) · EURUSD and GBPUSD focus · London and NY sessions.";
+  const LONG_PERSONAL = "Personal IC Markets 12K · cTrader · DE40 and NAS100 index scalps · no news trading · Mon to Fri only";
+  const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  /** Every element whose whole text is `name` (with a separator around it): its opening tag's attributes. */
+  const nameBoxes = (html: string, name: string) =>
+    [...html.matchAll(new RegExp(`<(\\w+)((?:\\s[^>]*)?)>[ ]?(?:<!-- -->)?${escapeRegExp(name)}(?:<!-- -->)?[ ·]*</\\1>`, "g"))].map(match => match[2]);
+
+  it("cuts every account name Today prints with an ellipsis instead of widening the screen, and keeps the whole name in its tooltip", async () => {
+    expect([LONG_FTMO.length, LONG_PERSONAL.length]).toEqual([100, 100]);
+    const ftmo = { ...FTMO_ACCOUNT, name: LONG_FTMO };
+    const personal = { ...PERSONAL_ACCOUNT, name: LONG_PERSONAL };
+    const names: Record<string, string> = { [FTMO]: LONG_FTMO, [PERSONAL]: LONG_PERSONAL };
+    const data = todayData({
+      context: allContext([ftmo, personal]),
+      accounts: [status(workspace(ftmo)), status(workspace(personal, { usage: { realizedLoss: "40" } }))],
+      live: [liveCard(livePlanned), liveCard(liveFirstNoRisk)],
+      locked: [lockedPlan],
+      closed: [closedWin, closedLossEur],
+    });
+    const rename = (row: TradeListRow): TradeListRow => ({ ...row, account: { ...row.account, name: names[row.account.id] } });
+    data.live = data.live.map(card => ({ ...card, row: rename(card.row) }));
+    data.plans = { ...data.plans, locked: data.plans.locked.map(rename) };
+    data.closedToday = data.closedToday.map(rename);
+    m.context = allContext([ftmo, personal]);
+    m.getToday.mockResolvedValue(data);
+    const html = await render();
+
+    // Live cards, the waiting plan, the closed rows, the status rows and the notes chips all name their account.
+    const boxes = [...nameBoxes(html, LONG_FTMO), ...nameBoxes(html, LONG_PERSONAL)];
+    expect(boxes.length).toBeGreaterThanOrEqual(9);
+    for (const attributes of boxes) {
+      expect(attributes).toMatch(/class="[^"]*\btruncate\b/);
+      expect(attributes).toMatch(new RegExp(`title="[^"]*(${escapeRegExp(LONG_FTMO)}|${escapeRegExp(LONG_PERSONAL)})"`));
+    }
+    // A name inside a line of facts never gets wider than that line.
+    const inLine = boxes.filter(attributes => /\binline-block\b/.test(attributes));
+    expect(inLine.length).toBeGreaterThanOrEqual(5);
+    for (const attributes of inLine) expect(attributes).toMatch(/\bmax-w-full\b/);
+    // Each notes chip shrinks to the card's width: the list item and its link may not grow past it.
+    const chips = html.slice(html.indexOf('aria-label="Write today&#x27;s plan for"'));
+    expect(chips.match(/<li class="max-w-full min-w-0"><a [^>]*class="[^"]*\bmax-w-full\b[^"]*"/g)).toHaveLength(2);
+    // The text a person (or a screen reader) gets keeps the whole name.
+    const text = visibleText(html);
+    expect(text).toContain(`${LONG_FTMO} · Entered 07:05`);
+    expect(text).toContain(`${LONG_PERSONAL} · Exit 05:00`);
+  });
+
+  it("shows the selected account's whole name in the page header and the status card, wrapping even a name without spaces", async () => {
+    const unbroken = "Demo_100K_MetaTrader5_Raw_Spread_EURUSD_GBPUSD_XAUUSD_London_and_NewYork_sessions_only_no_news_trade";
+    expect(unbroken.length).toBe(100);
+    const demo = { ...FTMO_ACCOUNT, name: unbroken };
+    m.context = accountContext(demo);
+    m.getToday.mockResolvedValue(todayData({ context: accountContext(demo), accounts: [status(workspace(demo))] }));
+    const html = await render();
+    expect(html).toMatch(new RegExp(`<span class="[^"]*\\bbreak-words\\b[^"]*">${unbroken}</span>`));
+    expect(html).toMatch(new RegExp(`<h2 [^>]*class="[^"]*\\bbreak-words\\b[^"]*">(?:(?!</h2>)[\\s\\S])*${unbroken}</h2>`));
   });
 });
 
@@ -766,6 +848,24 @@ describe("Today · plans from an earlier day", () => {
     expect(html.match(/aria-label="Recheck risk: /g)).toHaveLength(1);
   });
 
+  it("leads a draft blocked today only by what no edit clears with the step that does, Edit draft beside it, as its trade page does", async () => {
+    const deadPool = { ...blockedDraft, id: uuid(13), symbol: "USDJPY" };
+    const data = todayData({ drafts: { blocked: [blockedDraft, deadPool] } });
+    // The loader gives each blocked draft the findings of its check (`withBlockedPlanActions`, tests/v2-screen-today-loader.test.ts).
+    const findings: Record<string, { code: string }[]> = { [blockedDraft.id]: [{ code: "STALE_EQUITY" }], [deadPool.id]: [{ code: "DEAD_POOL" }] };
+    data.plans.blocked = data.plans.blocked.map(entry => ({ ...entry, state: withBlockingFindings(entry.state, findings[entry.id]) }));
+    m.getToday.mockResolvedValue(data);
+    const html = await render();
+    // Stale account values: confirmed on the account's Manage screen, the trade page's own link.
+    const confirm = html.match(/<a [^>]*aria-label="Confirm account values: GBPUSD · Long"[^>]*>/)?.[0] ?? "";
+    expect(confirm).toContain(`href="/accounts/${FTMO}/manage?tab=account-values"`);
+    expect(confirm).toContain("btn-secondary");
+    expect(html).not.toContain('aria-label="Open: GBPUSD · Long"');
+    // Dead Pool: the free recheck once it ends.
+    expect(html).toContain('aria-label="Recheck risk: USDJPY · Long"');
+    for (const draft of [blockedDraft, deadPool]) expect(anchorTo(html, `/trades/${draft.id}/edit`)).toContain("btn-ghost");
+  });
+
   it("offers no check and no edit on an archived account's draft blocked on an earlier day, as the trade page does", async () => {
     const archivedAccount = { ...PERSONAL_ACCOUNT, status: "ARCHIVED" as const };
     const frozen = { ...staleBlocked, id: uuid(12), account_id: PERSONAL, currency: "EUR", symbol: "DE40", instrument_version_id: DE40 };
@@ -848,6 +948,50 @@ describe("Today · view model", () => {
     expect(stats?.risk.hint).toBe("$333.33 of $1,000.00 cap reserved");
   });
 
+  it("shows money at risk rounded up to the cent, as the trade page and the engine do: a plan's risk at the stop, a position's 1R", () => {
+    const draft = { ...readyDraft, planned_risk: "530.452" };
+    const live = { ...livePlanned, initial_risk: "530.452" };
+    const model = view(todayData({ live: [liveCard(live)], drafts: { ready: [draft] } }));
+    expect(model.plans.current.find(entry => entry.id === draft.id)?.meta).toContain("Risk 0.50% ($530.46)");
+    expect(model.live[0].facts.find(fact => fact.label === "Initial risk")?.value).toBe("$530.46");
+    // Whole cents stay as they are.
+    expect(view(todayData({ live: [liveCard(livePlanned)] })).live[0].facts.find(fact => fact.label === "Initial risk")?.value).toBe("$500.00");
+  });
+
+  it("keeps today's losses on their side of the daily loss limit shown beside them", () => {
+    const losses = (usage: Partial<DailyUsage>) => view(todayData({ accounts: [status(workspace(FTMO_ACCOUNT, { usage, plan: { dailyLossCap: "500" } }))] })).status[0].stats?.losses;
+    // Just under the limit: rounding half-up would print the limit itself while trading is still allowed.
+    const under = losses({ realizedLoss: "499.996" });
+    expect([under?.realized, under?.combined, under?.limit]).toEqual(["$499.99", "$499.99", "Daily loss limit $500.00"]);
+    // Reaching it reads as reaching it.
+    const reached = losses({ realizedLoss: "480", externalLoss: "20.004" });
+    expect([reached?.realized, reached?.combined]).toEqual(["$480.00", "$500.00"]);
+    // Without a loss limit, plain money.
+    const none = view(todayData({ accounts: [status(workspace(FTMO_ACCOUNT, { usage: { realizedLoss: "12.345" }, plan: { dailyLossCap: null } }))] })).status[0].stats?.losses;
+    expect([none?.realized, none?.limit]).toEqual(["$12.35", "No daily loss limit"]);
+  });
+
+  it("rounds today's losses half up like the day's result, the summary and the account dashboard, away from the limit", () => {
+    // DE40 at 1.85 lots closed for −26.825: every other figure of the same loss reads €26.83.
+    const closedHalfCent = { ...closedLossEur, net_pnl: "-26.825", realized_r: "-0.52" };
+    const data = todayData({
+      context: allContext(),
+      accounts: [
+        status(workspace(FTMO_ACCOUNT)),
+        status(workspace(PERSONAL_ACCOUNT, { usage: { realizedLoss: "26.825" }, plan: { dailyLossCap: "150" } })),
+      ],
+      closed: [closedHalfCent],
+    });
+    const model = view(data);
+    const personal = model.status.find(row => row.accountId === PERSONAL)?.stats;
+    expect([personal?.losses.realized, personal?.losses.combined, personal?.losses.limit]).toEqual(["€26.83", "€26.83", "Daily loss limit €150.00"]);
+    expect(personal?.result.values.map(value => value.text)).toEqual(["-0.52R", "-€26.83"]);
+    expect(model.summary?.losses).toBe("€26.83 · $0.00");
+    // Half up still never crosses the limit: €149.995 is under a €150 limit, €150 reaches it.
+    const near = (realizedLoss: string) => view(todayData({ accounts: [status(workspace(PERSONAL_ACCOUNT, { usage: { realizedLoss }, plan: { dailyLossCap: "150" } }))] })).status[0].stats?.losses.realized;
+    expect([near("149.994"), near("149.995"), near("150"), near("150.005")]).toEqual(["€149.99", "€149.99", "€150.00", "€150.01"]);
+  });
+
   it("adds realized and external losses per account and keeps currencies apart", () => {
     const data = todayData({
       context: allContext(),
@@ -856,6 +1000,36 @@ describe("Today · view model", () => {
     const model = view(data);
     expect(model.status[0].stats?.losses.combined).toBe("$14.75");
     expect(model.summary?.losses).toBe("€7.00 · $14.75");
+  });
+
+  it("covers the same accounts in both figures of the day: an archived account's trades closed today count in the losses too", () => {
+    const archived = { ...PERSONAL_ACCOUNT, status: "ARCHIVED" as const };
+    const demo = account("20000000-0000-4000-8000-000000000003", "Demo 100K", "USD", { status: "ARCHIVED" });
+    const on = (owner: ContextAccount, trade: LedgerTrade): LedgerTrade => ({ ...trade, account_id: owner.id, currency: owner.currency });
+    // Archived accounts finish the positions they hold; they have no status row (no workspace) in All Accounts.
+    const eurLoss = on(archived, closedLossEur);
+    const eurWin = on(archived, { ...closedLossEur, id: uuid(20), net_pnl: "15.5", outcome: "WIN" });
+    const usdLoss = on(demo, { ...closedLossEur, id: uuid(21), net_pnl: "-295", realized_r: "-0.7867" });
+    const yesterday = on(demo, { ...closedLossEur, id: uuid(22), net_pnl: "-1000", exited_at: "2026-10-22T15:00:00Z" });
+    // Their losses come from their daily usage, as a row's do (src/lib/today-data.ts): Demo also has $85 entered as external.
+    const loss = (currency: string, realized: string, external = "0") => ({ currency, realized, external, legacyReported: null, total: new Decimal(realized).plus(external).toFixed() });
+    const data = todayData({
+      context: allContext([FTMO_ACCOUNT, archived, demo]),
+      accounts: [status(workspace(FTMO_ACCOUNT, { usage: { realizedLoss: "10.5", externalLoss: "4.25" } }))],
+      closed: [closedWin, eurLoss, eurWin, usdLoss, yesterday],
+      outsideLosses: [loss("EUR", "40"), loss("USD", "295", "85")],
+    });
+    const model = view(data);
+    // The result counts today's exits only: +€15.50 − €40.00 and +$120.00 − $295.00.
+    expect(model.summary?.money.map(value => value.text)).toEqual(["-€24.50", "-$175.00"]);
+    // The active row's figures and the archived accounts', realized and external, per currency.
+    expect(model.summary?.losses).toBe("€40.00 · $394.75");
+    expect(model.summary?.detail).toBe("4 trades closed today · 2 without R · 3 on archived accounts");
+    expect(model.status.map(row => row.stats?.losses.combined)).toEqual(["$14.75"]);
+
+    const one = todayData({ context: allContext([FTMO_ACCOUNT, archived]), accounts: [status(workspace(FTMO_ACCOUNT))], closed: [closedWin, eurWin], outsideLosses: [loss("EUR", "0")] });
+    expect(view(one).summary?.losses).toBe("€0.00 · $0.00");
+    expect(view(one).summary?.detail).toBe("2 trades closed today · 1 without R · 1 on an archived account");
   });
 
   it("labels account types in words", () => {

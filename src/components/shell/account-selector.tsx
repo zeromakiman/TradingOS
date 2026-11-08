@@ -15,7 +15,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
-import { useAccountContextSelection } from "./account-context-sync";
+import { useAccountContextSelection, useContextStored } from "./account-context-sync";
 import { switchAccountContext } from "./actions";
 import { ALL_ACCOUNTS_LABEL, accountTypeLabel, contextLabel, withAccountParam } from "./navigation";
 import type { AccountContextSelection, SelectAccountAction, ShellAccount } from "./types";
@@ -35,22 +35,27 @@ const isPlainClick = (event: MouseEvent) => event.button === 0 && !event.metaKey
  * Header selector for the trading-account context (§9.2). Every option is a real link to the
  * current page with `?account=all|<id>` (its other parameters kept), so it also works as plain
  * navigation; with JavaScript and a `selectAccountAction`, a click calls the action instead and
- * the page re-renders in place. On a page whose URL names a context (`?account=`), the option's
- * link is followed, because the URL decides what that page shows; the shell then stores the new
- * context (AccountContextSync), so the header, the page and the stored context agree.
+ * the page re-renders in place. On a page whose URL names a context (`?account=`), the URL
+ * decides what that page shows, so the option's link is followed once the action has stored the
+ * choice: the next page, however it is reached, already renders the new context, and the header,
+ * the page and the stored context agree.
  */
 export function AccountSelector({ accounts, context: rendered, selectAccountAction }: AccountSelectorProps) {
   const router = useRouter();
   const context = useAccountContextSelection(rendered);
+  const noteStored = useContextStored();
   const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
 
   const choose = (event: MouseEvent<HTMLAnchorElement>, value: string, href: string) => {
     if (!isPlainClick(event)) return;
     setOpen(false);
-    if (!selectAccountAction || new URL(window.location.href).searchParams.has("account")) return;
+    if (!selectAccountAction) return;
     event.preventDefault();
-    startTransition(() => switchAccountContext(selectAccountAction, value, href, (target) => router.push(target)));
+    const followLink = new URL(window.location.href).searchParams.has("account");
+    startTransition(async () => {
+      await switchAccountContext(selectAccountAction, value, href, (target) => router.push(target), { followLink, stored: noteStored });
+    });
   };
 
   return (

@@ -1,17 +1,21 @@
 import { type CookieOptions, createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
+import { authCookieOptions } from "./lib/cookie-security";
 import { publicConfig } from "./lib/supabase/config";
 
 /**
  * Proxy (docs/V2_ARCHITECTURE.md §1.3, §9.2) for every request except static assets and the app icons:
- * - refreshes the Supabase session cookies (`getClaims`) and marks every response private and uncacheable;
+ * - refreshes the Supabase session cookies (`getClaims`; HttpOnly, Secure on HTTPS: authCookieOptions) and marks every
+ *   response private and uncacheable;
  * - redirects signed-out page requests to /login, except the public pages; route handlers (`/api/*`, `/edge/export`)
  *   keep their own JSON/CSV 401 answers and are never redirected to HTML;
  * - applies the account context of `?account=all|<id>` on signed-in page requests. The value is mirrored into this
  *   request's cookies, so every server component renders the page for the context its URL names. Only a page load the
  *   person made (a document navigation that is not a speculative prefetch or prerender) also STORES it in the
  *   `tos_account` cookie: an id is first checked with the user's session (it must be one of their active accounts), and
- *   an unavailable id stores All Accounts and flags this one request (ACCOUNT_UNAVAILABLE notice, shown once).
+ *   an unavailable id stores All Accounts and flags this one request (ACCOUNT_UNAVAILABLE notice, shown once). A value
+ *   mirrored without being stored travels with the value that stays stored (ACCOUNT_STORED_HEADER), so the page still
+ *   knows whether the stored context itself is unavailable (the shell then stores All Accounts once).
  *
  * The Next.js router's own fetches (client-side navigations, refreshes and `<Link>` prefetches) are never stored here:
  * Next.js removes its `RSC`, `Next-Router-Prefetch` and `Next-Router-State-Tree` headers before the proxy runs, so a
@@ -24,6 +28,7 @@ const PUBLIC_PAGES = new Set(["/login", "/forgot-password", "/update-password"])
 /** Same names and attributes as src/lib/account-context.ts (the proxy runs without server-only modules). */
 const ACCOUNT_COOKIE = "tos_account";
 const ACCOUNT_NOTICE_HEADER = "x-tos-account-notice";
+const ACCOUNT_STORED_HEADER = "x-tos-account-stored";
 const ACCOUNT_UNAVAILABLE = "ACCOUNT_UNAVAILABLE";
 const ALL_ACCOUNTS = "all";
 const CONTEXT_COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
@@ -78,8 +83,9 @@ async function checkAccount(db: ProxyClient, accountId: string): Promise<Account
 }
 
 export async function proxy(request: NextRequest) {
-  // The notice header is only ever set below; a client-supplied one is dropped.
+  // The context headers are only ever set below; client-supplied ones are dropped.
   request.headers.delete(ACCOUNT_NOTICE_HEADER);
+  request.headers.delete(ACCOUNT_STORED_HEADER);
   let response = NextResponse.next({ request });
   const cacheHeaders = new Headers({ "Cache-Control": "private, no-cache, no-store, must-revalidate, max-age=0", Expires: "0", Pragma: "no-cache" });
   const path = request.nextUrl.pathname;
@@ -96,6 +102,8 @@ export async function proxy(request: NextRequest) {
     for (const { name, value, options } of changed.values()) response.cookies.set(name, value, options);
   };
   const supabase = createServerClient(config.url, config.key, {
+    // Refreshed session cookies get the attributes of the server actions' client (src/lib/supabase/server.ts).
+    cookieOptions: authCookieOptions(request.nextUrl.protocol === "https:"),
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll(values, headers) {
@@ -123,7 +131,8 @@ export async function proxy(request: NextRequest) {
   const requested = isPrivate && data?.claims && (request.method === "GET" || request.method === "HEAD")
     ? accountValue(request.nextUrl.searchParams.get("account"))
     : null;
-  if (requested !== null && requested !== request.cookies.get(ACCOUNT_COOKIE)?.value) {
+  const storedValue = request.cookies.get(ACCOUNT_COOKIE)?.value;
+  if (requested !== null && requested !== storedValue) {
     if (isDocumentNavigation(request.headers)) {
       const check = requested === ALL_ACCOUNTS ? "AVAILABLE" : await checkAccount(supabase, requested);
       const stored = check === "UNAVAILABLE" ? ALL_ACCOUNTS : requested;
@@ -136,6 +145,9 @@ export async function proxy(request: NextRequest) {
     } else {
       // This request only: the page resolves the value with the user's session (an unavailable id renders All Accounts
       // with the notice), and nothing is stored, so neither a prefetch nor a refresh of an old URL switches the context.
+      // The page also learns what stays stored ("all", an id, or "none" for nothing usable), which the request's cookie
+      // no longer tells it.
+      request.headers.set(ACCOUNT_STORED_HEADER, accountValue(storedValue ?? null) ?? "none");
       request.cookies.set(ACCOUNT_COOKIE, requested);
       forward();
     }

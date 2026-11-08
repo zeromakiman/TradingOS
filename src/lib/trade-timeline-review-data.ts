@@ -47,7 +47,9 @@ const numeric = z.string().nullable();
 const record = z.record(z.string(), z.unknown());
 const revisionRow = z.object({ proposal_id: z.uuid(), revision: z.number().int().positive(), created_at: z.string() });
 const proposalRow = z.object({ id: z.uuid(), proposal: record });
-const planRow = z.object({ id: z.uuid(), proposal: record, risk_result: z.unknown(), nominal_risk: z.string(), locked_at: z.string(), trading_day: z.string() });
+const planRow = z.object({
+  id: z.uuid(), proposal: record, risk_result: z.unknown(), nominal_risk: z.string(), locked_at: z.string(), trading_day: z.string(), risk_evaluation_id: z.uuid(),
+});
 const strategyRow = z.object({ id: z.uuid(), version: z.string(), rules: record, created_at: z.string() });
 const riskVersionRow = z.object({
   id: z.uuid(), version: z.string(), effective_day: z.string(), max_risk_percent: z.string(), default_risk_percent: numeric, max_daily_trades: z.number(),
@@ -55,6 +57,10 @@ const riskVersionRow = z.object({
 });
 const checkRow = z.object({ id: z.number(), proposal_id: z.uuid(), risk: z.object({ id: z.uuid(), result: z.unknown(), recorded_at: z.string() }) });
 const eventRow = z.object({ id: z.uuid(), event_type: z.enum(V1_EVENT_TYPES), payload: record, occurred_at: z.string(), recorded_at: z.string() });
+const decisionRow = z.object({
+  id: z.uuid(), decision: z.enum(["TAKEN", "SKIPPED"]), event_type: z.enum(["HUMAN_DECISION", "MANUAL_OVERRIDE"]), reason: z.string().nullable(),
+  risk_decision: z.enum(["APPROVED", "BLOCKED"]), recorded_at: z.string(),
+});
 const journalRow = z.object({
   id: z.uuid(), kind: z.enum(["NOTE", "DECISION", "STOP_CHANGE", "TARGET_CHANGE", "PARTIAL_CLOSE", "LESSON"]), body: z.string().nullable(),
   details: record, phase: z.enum(["PRE_ENTRY", "LIVE", "POST_TRADE"]), recorded_at: z.string(),
@@ -112,7 +118,7 @@ export async function loadTimelineReviewSource(owned: OwnedTimelineTrade): Promi
   const [revisions, plan, strategies, risk, events, journal, positions, close, tagSet] = await Promise.all([
     db.from("trade_revisions").select("proposal_id,revision,created_at").eq("trade_id", trade.id).eq("user_id", user.id).order("revision").limit(limit),
     trade.plan_id
-      ? db.from("trade_plans").select("id,proposal,risk_result,nominal_risk::text,locked_at,trading_day").eq("id", trade.plan_id).eq("user_id", user.id).maybeSingle()
+      ? db.from("trade_plans").select("id,proposal,risk_result,nominal_risk::text,locked_at,trading_day,risk_evaluation_id").eq("id", trade.plan_id).eq("user_id", user.id).maybeSingle()
       : none,
     db.from("strategy_versions").select("id,version,rules,created_at").eq("account_id", trade.account_id).eq("user_id", user.id).order("created_at").order("id"),
     trade.plan_id && trade.risk_plan_version_id
@@ -138,10 +144,15 @@ export async function loadTimelineReviewSource(owned: OwnedTimelineTrade): Promi
   if (plan.error || strategies.error || risk.error || close.error || tagSet.error) throw new Error("Trade records unavailable");
   const revisionRows = rows(revisionRow, revisions, "Draft revisions");
   const proposalIds = revisionRows.map(row => row.proposal_id);
-  const [proposals, checks, evidence] = await Promise.all([
+  const [proposals, checks, decisions, evidence] = await Promise.all([
     proposalIds.length ? db.from("setup_proposals").select("id,proposal").in("id", proposalIds).eq("user_id", user.id) : empty,
     proposalIds.length
       ? db.from("setup_risk_checks").select("id,proposal_id,risk:risk_evaluations(id,result,recorded_at)").in("proposal_id", proposalIds).eq("user_id", user.id).order("id").limit(limit)
+      : empty,
+    // V1 decisions on the revisions; the ledger names the latest one, so a trade without any is never read.
+    trade.legacy_decision !== null && proposalIds.length
+      ? db.from("setup_human_decisions").select("id,decision,event_type,reason,risk_decision,recorded_at").in("proposal_id", proposalIds).eq("user_id", user.id)
+        .order("recorded_at").order("id").limit(limit)
       : empty,
     loadTradeEvidence(db, { userId: user.id, tradeId: trade.id, proposalIds }),
   ]);
@@ -159,13 +170,19 @@ export async function loadTimelineReviewSource(owned: OwnedTimelineTrade): Promi
     input: {
       trade,
       plan: lockedPlan
-        ? { id: lockedPlan.id, lockedAt: lockedPlan.locked_at, tradingDay: lockedPlan.trading_day, proposal: lockedPlan.proposal, nominalRisk: lockedPlan.nominal_risk, riskResult: lockedPlan.risk_result }
+        ? {
+          id: lockedPlan.id, lockedAt: lockedPlan.locked_at, tradingDay: lockedPlan.trading_day, proposal: lockedPlan.proposal, nominalRisk: lockedPlan.nominal_risk,
+          riskResult: lockedPlan.risk_result, riskEvaluationId: lockedPlan.risk_evaluation_id,
+        }
         : null,
       strategy: { id: strategy.id, version: strategy.version, rules: strategy.rules },
       riskVersion: risk.data ? riskVersionRow.parse(risk.data) : null,
       revisions: revisionRows.map(row => ({ proposalId: row.proposal_id, revision: row.revision, createdAt: row.created_at, proposal: proposalOf.get(row.proposal_id) ?? null })),
       riskChecks: latestChecks(rows(checkRow, checks, "Risk checks")),
       legacyEvents: rows(eventRow, events, "Trade events").map(row => ({ id: row.id, eventType: row.event_type, payload: row.payload, occurredAt: row.occurred_at, recordedAt: row.recorded_at })),
+      legacyDecisions: rows(decisionRow, decisions, "Decisions").map(row => ({
+        id: row.id, decision: row.decision, eventType: row.event_type, reason: row.reason, riskDecision: row.risk_decision, recordedAt: row.recorded_at,
+      })),
       journal: rows(journalRow, journal, "Journal entries").map(row => ({ id: row.id, kind: row.kind, body: row.body, details: row.details, phase: row.phase, recordedAt: row.recorded_at })),
       positionFacts,
       riskBasisSource: basis,

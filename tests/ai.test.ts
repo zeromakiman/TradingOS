@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { composeFinalEvaluation, validateEvaluation, type EvaluationContext } from "@/ai/validate";
-import { evaluateRisk } from "@/domain/risk";
-import { previewContext, previewProposal } from "@/domain/fixtures";
+import { validateEvaluation, type EvaluationContext } from "@/ai/validate";
+import { previewContext } from "@/domain/fixtures";
 const inputHash="a".repeat(64);
 const context:EvaluationContext={analysisId:"analysis-1",inputHash,direction:"LONG",setupModel:"OB_FIRST_TOUCH",strategyVersionId:previewContext.strategyVersionId,riskPlanVersionId:previewContext.plan.id,instrument:"EURUSD",role:"A",sources:{chart:"CHART_IMAGE",narrative:"USER_REPORT"},ruleIds:["MSS","OB_FIRST_TOUCH","OTE","TARGET"],blockingRuleIds:["MSS","OB_FIRST_TOUCH"],priorAnalysisIds:[],priorFindingIds:[]};
 const assessment=()=>({status:"NOT_ASSESSED",confidence:"UNKNOWN",evidence_ids:[] as string[],rule_ids:[] as string[],rationale:"Evidence has not been provided."});
@@ -50,18 +49,5 @@ describe("strict AI output and provenance",()=>{
     expect(()=>validateEvaluation(v,ctx)).toThrow(/every prior finding/);
     v.reconciliation.unresolved_finding_ids=["A:gap","B:violation"];expect(validateEvaluation(v,ctx)).toBeTruthy();
     v.reconciliation.accepted_finding_ids=["A:gap"];expect(()=>validateEvaluation(v,ctx)).toThrow(/exactly once/);
-  });
-  it("a deterministic hard block dominates a supported AI result",()=>{
-    const ai=validateEvaluation(approved(),context);
-    const risk=evaluateRisk({...previewProposal,narrative:"Test",contractConfirmed:true},{...previewContext,usage:{...previewContext.usage,plannedSlots:2}});
-    expect(composeFinalEvaluation(ai,{inputHash,result:risk}).decision).toBe("BLOCKED");
-  });
-  it("requires the same evidence package for final composition",()=>{
-    const ai=validateEvaluation(fixture(),context);const risk=evaluateRisk({...previewProposal,narrative:"Test"},previewContext);
-    expect(()=>composeFinalEvaluation(ai,{inputHash:"b".repeat(64),result:risk})).toThrow(/input packages differ/);
-  });
-  it("keeps grade and score missing while no grading policy exists",()=>{
-    const ai=validateEvaluation(approved(),context);const risk=evaluateRisk({...previewProposal,narrative:"Test",contractConfirmed:true},previewContext);
-    expect(composeFinalEvaluation(ai,{inputHash,result:risk})).toMatchObject({setup_score:null,setup_grade:null,decision:"CONDITIONAL",grading_status:"UNCONFIGURED"});
   });
 });

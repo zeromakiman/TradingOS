@@ -8,10 +8,14 @@ import type { AccountContextSelection, ShellAccount } from "./types";
  * Why the shell has to know: the layout, and with it the header, is not rendered again on a client-side navigation.
  * - A URL with `?account=` renders its page for that context (the proxy mirrors the value into the request). The proxy
  *   only stores it for a page load, because it cannot tell the router's prefetches from navigations; for a client-side
- *   navigation the shell stores it afterwards with the account selector's action (`persist`).
+ *   navigation the shell stores it afterwards with the account selector's action (`persist`). The header selector and
+ *   the palette store a switch before they follow the link (`stored`), so that navigation stores nothing again.
  * - A URL without it renders from the stored cookie, which another tab may have changed. Tabs tell each other what they
  *   stored (`announce`), so each one knows the cookie; a tab whose page belongs to an older context refreshes when the
  *   person comes back to it or navigates (`refresh`), which also drops router-cached pages of the old context.
+ * - A stored context that is no longer available (archived on another device, or left in this browser by someone
+ *   else's session) renders All Accounts with a notice, and nothing else would ever rewrite that cookie: the shell
+ *   stores All Accounts (`persist`) when the layout says so, so the notice is shown once.
  */
 
 /** A context as the cookie and `?account=` hold it: "all" or a trading account id (lowercase). */
@@ -69,10 +73,21 @@ export type ContextSyncEvent =
   /** Another tab stored the context. */
   | { type: "remote"; value: ContextValue }
   /** The person came back to this tab (it became visible or got focus). */
-  | { type: "resumed" };
+  | { type: "resumed" }
+  /**
+   * The layout showed the "That trading account isn't available" notice because the stored context itself names an
+   * account that is no longer available (the server's `storedUnavailable`). All Accounts, what the page shows, is
+   * stored, so the next pages render without the notice (§9.2: shown once). A notice about `?account=` alone never
+   * sends this: the proxy already stored All Accounts for a page load, and a refused client-side navigation keeps the
+   * stored context.
+   */
+  | { type: "unavailable" };
 
 export interface ContextSyncEffects {
-  /** Store this context with the account action (a client-side navigation to `?account=`). */
+  /**
+   * Store this context with the account action: a client-side navigation to `?account=`, or All Accounts in place of a
+   * stored context that is no longer available.
+   */
   persist?: ContextValue;
   /** Tell other tabs that this context is now stored. */
   announce?: ContextValue;
@@ -109,5 +124,36 @@ export function reduceContextSync(state: ContextSyncState, event: ContextSyncEve
       return { state: { ...state, stored: event.value, stale: true }, effects: {} };
     case "resumed":
       return state.stale ? { state: { ...state, stale: false }, effects: { refresh: true } } : { state, effects: {} };
+    case "unavailable":
+      return { state, effects: { persist: ALL_CONTEXT } };
   }
+}
+
+/** The context notice on screen and the page (path and query) it belongs to. */
+export type ShownNotice = { text: string; href: string } | null;
+
+export interface NoticeRender {
+  /** The notice of the layout's latest render, if any. */
+  notice: string | null | undefined;
+  /** Identifies that render; the same value as long as the layout was not rendered again. */
+  renderKey: string;
+  /** The page on screen. */
+  href: string;
+  /** The page on screen shows All Accounts (the context every notice comes with). */
+  allAccounts: boolean;
+}
+
+/**
+ * Which context notice is on screen (§9.2: "That trading account isn't available. Showing All Accounts." is shown once).
+ * A notice belongs to the layout render that produced it and to the page it arrived on. The layout is not rendered
+ * again on client-side navigations, so its `notice` prop outlives the page it was meant for: the notice leaves when the
+ * person moves to another page or picks another context, and only a new render of the layout (`renderKey`) shows one
+ * again. A new render without a notice leaves the current one in place, so the notice stays readable after the shell
+ * stored All Accounts in place of an unavailable stored context (that store renders the layout again, without it).
+ */
+export function noticeOnScreen(shown: ShownNotice, seenKey: string, next: NoticeRender): ShownNotice {
+  let result = shown;
+  if (next.renderKey !== seenKey && next.notice) result = { text: next.notice, href: next.href };
+  if (result && (result.href !== next.href || !next.allAccounts)) result = null;
+  return result;
 }

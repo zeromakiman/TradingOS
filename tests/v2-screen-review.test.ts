@@ -692,6 +692,85 @@ describe("links that switch the trading-account context load in full, so the hea
   });
 });
 
+describe("an archived account's review never selects it as the context (§9.2)", () => {
+  const withArchived = () => context("all", null, [...ACCOUNTS, account(OLD, "Old Prop 50K", "USD", "FUNDED", "ARCHIVED")]);
+  /** Links on the page that a plain click loads in full. */
+  const fullLoads = (html: string) => hrefs(html).filter(href => clickLoads(html, href) === "full");
+  /** A link as its path and sorted query (the parameter order is the Journal's business). */
+  const parts = (href: string) => {
+    const url = new URL(href, ORIGIN);
+    return { path: url.pathname, query: [...url.searchParams.entries()].sort() };
+  };
+  const filtered = (filters: Record<string, string>) => ({ path: "/journal", query: Object.entries({ ...filters, accountFilter: OLD, account: "all" }).sort() });
+
+  it("drills into its own trades in All Accounts with the read-only account filter, and opens Settings → AI without selecting it", async () => {
+    m.state.context = withArchived();
+    m.state.tables.trade_ledger.push(closed(OLD, "PLANNED", "2026-10-14T15:00:00Z"), closed(OLD, "PLANNED", "2026-09-08T15:00:00Z"));
+    const cases: [Page, Record<string, string>, ReturnType<typeof filtered>, string][] = [
+      [WeeklyReviewPage, { reviewAccount: OLD, week: "2026-10-12" }, filtered({ closedFrom: "2026-10-12", closedTo: "2026-10-18" }), "Open in Journal: trades closed Oct 12–18"],
+      [MonthlyReviewPage, { reviewAccount: OLD, month: "2026-09" }, filtered({ closedFrom: "2026-09-01", closedTo: "2026-09-30" }), "Open in Journal: trades closed in September 2026"],
+      [RecentTradesReviewPage, { reviewAccount: OLD }, filtered({ state: "closed,reviewed" }), "Open in Journal: closed trades"],
+    ];
+    for (const [page, params, expected, description] of cases) {
+      const loaded = await view(page, params);
+      if (loaded.content.kind !== "periodic") throw new Error("periodic content expected");
+      expect(loaded.content.account).toMatchObject({ id: OLD, archived: true });
+      expect(loaded.content.facts?.journal).toMatchObject({ label: "Open in Journal", description, switchesContext: false });
+      const journal = loaded.content.facts?.journal?.href ?? "";
+      expect(parts(journal)).toEqual(expected);
+      const html = renderToStaticMarkup(createElement(ReviewScreen, { view: loaded }));
+      expectCleanText(html);
+      const links = hrefs(html);
+      expect(links).toContain(journal);
+      expect(linkTag(html, journal)).toContain(`aria-label="${description}"`);
+      expect(links).toContain("/settings#ai");
+      // No link names the archived account as the context; the page stays in All Accounts, so nothing loads in full.
+      expect(links.filter(href => new URL(href, ORIGIN).searchParams.get("account") === OLD)).toEqual([]);
+      expect(fullLoads(html)).toEqual([]);
+    }
+  });
+
+  it("keeps active accounts' links selecting them explicitly", async () => {
+    m.state.context = withArchived();
+    const loaded = await view(WeeklyReviewPage, { reviewAccount: PERSONAL, week: "2026-10-12" });
+    if (loaded.content.kind !== "periodic") throw new Error("periodic content expected");
+    expect(loaded.content.facts?.journal).toMatchObject({ switchesContext: true });
+    expect(parts(loaded.content.facts?.journal?.href ?? "")).toEqual({ path: "/journal", query: [["account", PERSONAL], ["closedFrom", "2026-10-12"], ["closedTo", "2026-10-18"]] });
+  });
+
+  it("says that its AI settings change only after a restore, and points to Manage account instead of Settings", async () => {
+    m.state.context = withArchived();
+    m.state.aiEnabled = true;
+    m.state.accountsWithAiOff = new Set([OLD]);
+    const html = await render(WeeklyReviewPage, { reviewAccount: OLD, week: "2026-10-12" }, { realPanel: true });
+    expectCleanText(html);
+    const text = visibleText(html);
+    expect(html).toContain('data-budget-status="Off"');
+    // The budget card and the review panel's disabled run button both name the route that works.
+    expect(text).toContain("AI is off for this account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI.");
+    expect(text).toContain("AI is off for this trading account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI.");
+    expect(text).not.toContain("Turn it on in Settings → AI.");
+    expect(text).not.toContain("Nothing is sent until you turn it on in Settings → AI.");
+    expect(text).toContain("Restore in Manage");
+    expect(text).not.toContain("Open AI settings");
+    expect(hrefs(html)).toContain(`/accounts/${OLD}/manage`);
+    expect(hrefs(html).filter(href => new URL(href, ORIGIN).searchParams.get("account") === OLD)).toEqual([]);
+    expect(fullLoads(html)).toEqual([]);
+    // History's single budget card says the same.
+    const history = visibleText(await render(ReviewHistoryPage, { reviewAccount: OLD }));
+    expect(history).toContain("AI is off for this account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI.");
+  });
+
+  it("opens Settings → AI without selecting it from its History budget", async () => {
+    m.state.context = withArchived();
+    const html = await render(ReviewHistoryPage, { reviewAccount: OLD });
+    expect(selected(html, "reviewAccount")).toBe(OLD);
+    expect(hrefs(html)).toContain("/settings#ai");
+    expect(hrefs(html).filter(href => href.includes(`account=${OLD}`))).toEqual([]);
+    expect(fullLoads(html)).toEqual([]);
+  });
+});
+
 describe("Recent trades and Monthly", () => {
   it("offers 10, 20 or 30 trades and says what the sample takes", async () => {
     const html = await render(RecentTradesReviewPage, { sample: "10" });

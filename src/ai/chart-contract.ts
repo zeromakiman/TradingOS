@@ -68,6 +68,3 @@ export function scoreSetup(a:AiAssessment){
  const score=rawScore!==null&&a.rule_violations.length?Math.min(rawScore,39):rawScore;
  return {setup_score:score,setup_grade:score===null?"UNRATED":score>=90?"A":score>=75?"B":score>=60?"C":"D",grading_version:"PROCESS_1",grading_note:"Equal-weight qualitative process rubric; not a win probability. Unknown criteria leave the total unrated."};
 }
-export function tradingStatus(ai:SetupDecision|"NOT_EVALUATED",risk:"APPROVED"|"BLOCKED"){
- return risk==="BLOCKED"?"BLOCKED BY RISK":ai==="BLOCKED"?"BLOCKED BY AI":ai==="APPROVED"?"ELIGIBLE FOR HUMAN DECISION":"REQUIRES HUMAN DECISION";
-}

@@ -47,13 +47,14 @@ export function useTradeAction<T = undefined>(action: TradeServerAction<T>, onSu
     });
   };
 
-  /** `attempt` changes with every result: key feedback with it so each refusal is announced and focused again. */
-  return { state, pending, run, attempt, reset: () => setState(idleState) };
-}
+  /** Shows a result the action returned elsewhere (a confirmation dialog sent it), like one of `run`. */
+  const show = (result: ActionState<T>) => {
+    setState(result);
+    setAttempt(value => value + 1);
+  };
 
-/** The message of a field in an error state. */
-export function fieldError<T>(state: ActionState<T>, field: string): string | undefined {
-  return state.status === "error" ? state.fieldErrors?.[field] : undefined;
+  /** `attempt` changes with every result: key feedback with it so each refusal is announced and focused again. */
+  return { state, pending, run, show, attempt, reset: () => setState(idleState) };
 }
 
 /** FormData from plain values (empty strings are left out, so optional fields stay unknown). */

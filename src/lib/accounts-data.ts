@@ -2,6 +2,7 @@ import "server-only";
 import Decimal from "decimal.js";
 import { cache } from "react";
 import { z } from "zod";
+import { accountDashboardHref } from "@/components/accounts/copy";
 import { type AccountMetrics, accountCurrencyTotals, accountMetrics, type CurrencyTotals } from "@/domain/account-metrics";
 import { formatDecimal, stripZeros } from "@/domain/format";
 import type { LedgerTrade } from "@/domain/ledger";
@@ -12,7 +13,8 @@ import type { Instrument } from "@/domain/risk";
 import { addDays, compareInstants, formatDay, strategyDay, strategyMonth } from "@/domain/time-display";
 import { type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext, loadAccount } from "./account-context";
 import {
-  breakdownHref, closedOnHref, type DrillDown, type LinkedBreakdownGroup, type LinkedCalendar, linkedCalendar, loadLedgerRows, parseMonth,
+  breakdownHref, closedOnHref, type DrillDown, type LedgerRows, type LinkedBreakdownGroup, type LinkedCalendar, linkedCalendar, loadLedgerRows, MAX_LEDGER_ROWS,
+  parseMonth,
 } from "./performance-data";
 import { type AccountConnectionState, loadAccountConnectionStates, type PlatformOption, platformOptions } from "./sync-service";
 import { decorateTrades, journalHref, ledgerSelect, loadLedgerPage, parseLedger, type TradeListRow } from "./trades-data";
@@ -25,6 +27,8 @@ import {
  * Trading-account data (docs/V2_ARCHITECTURE.md §9.4, §14.7–14.9) with the user's session: the Accounts summary,
  * one account's dashboard and its Manage page. Money stays in each account's own currency; totals are grouped by
  * currency and never converted. Values that are not deterministically known stay null with a reason (never estimated).
+ * Each account's trades are read on their own, up to the ledger read limit (`MAX_LEDGER_ROWS`): an account with more
+ * has every figure computed from trades unknown (never a sum over part of them), and no other account is affected.
  */
 
 const M = Decimal.clone({ precision: 100 });
@@ -59,12 +63,23 @@ async function latestObservations(db: Db, userId: string, accounts: readonly Con
   return new Map(entries);
 }
 
-function metricsOf(account: ContextAccount, startingBalance: string | null, observation: WorkspaceObservation | null, trades: readonly LedgerTrade[], now: string): AccountMetrics {
+/**
+ * The live, closed and reviewed trades of one account, `truncated` when it has more than `MAX_LEDGER_ROWS` (as the pages
+ * say: "more than 20,000 trades"). The read allows one row more than that limit, so an account with exactly
+ * `MAX_LEDGER_ROWS` trades is read in full and added up; one with more never is, even when the read held all of them.
+ */
+async function accountLedger(db: Db, userId: string, accountId: string): Promise<LedgerRows> {
+  const ledger = await loadLedgerRows(db, userId, { mode: "account", accountId }, {}, { lifecycles: METRIC_LIFECYCLES, maxRows: MAX_LEDGER_ROWS + 1 });
+  return { rows: ledger.rows, truncated: ledger.truncated || ledger.rows.length > MAX_LEDGER_ROWS };
+}
+
+function metricsOf(account: ContextAccount, startingBalance: string | null, observation: WorkspaceObservation | null, ledger: LedgerRows, now: string): AccountMetrics {
   return accountMetrics({
     account: { id: account.id, currency: account.currency },
     profile: { displayName: account.name, broker: account.broker, platform: account.platform, accountType: account.type, startingBalance, status: account.status },
     latestObservation: observation ? { balance: observation.balance, equity: observation.equity, tradingDay: observation.tradingDay, recordedAt: observation.recordedAt } : null,
-    trades,
+    trades: ledger.rows,
+    tradesComplete: !ledger.truncated,
     now,
   });
 }
@@ -76,6 +91,7 @@ export interface AccountSummary {
   account: ContextAccount;
   metrics: AccountMetrics;
   connection: AccountConnectionState;
+  /** The dashboard; an active account's link also makes it the context (`accountDashboardHref`). */
   href: string;
   manageHref: string;
 }
@@ -92,17 +108,18 @@ export interface AccountsOverview {
 
 export async function loadAccountsOverview(db: Db, userId: string, context: AccountContext, now: string): Promise<AccountsOverview> {
   const accounts = context.accounts;
-  const [balances, observations, ledger, connections] = await Promise.all([
+  // One read per account: a shared read would stop at the row limit somewhere among every account's trades.
+  const [balances, observations, ledgers, connections] = await Promise.all([
     startingBalances(db, userId, accounts),
     latestObservations(db, userId, accounts),
-    loadLedgerRows(db, userId, { mode: "all" }, {}, { lifecycles: METRIC_LIFECYCLES }),
+    Promise.all(accounts.map(account => accountLedger(db, userId, account.id))),
     loadAccountConnectionStates(db, accounts.map(account => account.id)),
   ]);
-  const summaries = accounts.map(account => ({
+  const summaries = accounts.map((account, index) => ({
     account,
-    metrics: metricsOf(account, balances.get(account.id) ?? null, observations.get(account.id) ?? null, ledger.rows, now),
+    metrics: metricsOf(account, balances.get(account.id) ?? null, observations.get(account.id) ?? null, ledgers[index], now),
     connection: connections.get(account.id) ?? { mode: "MANUAL" as const, connection: null, lastSyncedAt: null, message: null },
-    href: `/accounts/${account.id}`,
+    href: accountDashboardHref(account),
     manageHref: `/accounts/${account.id}/manage`,
   }));
   const active = summaries.filter(summary => summary.account.status === "ACTIVE");
@@ -130,26 +147,46 @@ export interface RiskPlanVersionView extends WorkspaceRiskPlan {
   defaultEqualsMaximum: boolean;
 }
 
+/** First instant of a strategy day (the fixed UTC−5 clock of private.strategy_day). */
+function strategyDayStart(day: string): string {
+  return `${day}T05:00:00Z`;
+}
+
 /**
- * Status of every version on strategy day `today` with private.active_risk_plan's rule (among versions in effect,
- * the newest created wins). A scheduled version never takes effect when a version created after it starts on or
- * before its day (V1 finding C9: an immediate tightening is not undone by an earlier-scheduled loosening).
+ * Status of every version on strategy day `today`, with private.active_risk_plan's rule applied at every instant: among
+ * the versions that exist and whose day has begun, the newest created wins (`created_at desc, id desc`).
+ *
+ * A version can first govern a check at `start`, once it exists and its day has begun. If a newer version that existed
+ * then, with its own day begun, outranks it at `start`, it outranks it at every later instant too (the versions in
+ * effect only grow over time). Such a version never governed a check: "Replaced before it started", on every day
+ * including after its own day has passed (V1 finding C9: an immediate tightening is not undone by an earlier-scheduled
+ * loosening).
+ * Any other version was in effect from `start` until a newer one took over. A past one is "Replaced", also when that
+ * happened on its own first day: two immediate changes on one day, an immediate edit on the day an account was created,
+ * or an immediate change on the day a scheduled version starts. A future one is "Starts tomorrow" or "Starts Oct 21".
  */
 export function riskPlanTimeline(plans: readonly WorkspaceRiskPlan[], today: string): RiskPlanVersionView[] {
   const byCreation = [...plans].sort((a, b) => compareInstants(b.createdAt, a.createdAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   const active = byCreation.find(plan => plan.effectiveDay <= today) ?? null;
-  return byCreation.map(plan => {
+  return byCreation.map((plan, index) => {
+    const dayStart = strategyDayStart(plan.effectiveDay);
+    const start = compareInstants(plan.createdAt, dayStart) > 0 ? plan.createdAt : dayStart;
+    const startDay = strategyDay(start);
+    // The versions before this one in `byCreation` are the newer ones.
+    const neverEffective = byCreation.slice(0, index).some(newer => compareInstants(newer.createdAt, start) <= 0 && newer.effectiveDay <= startDay);
     let status: RiskPlanStatus;
     let statusLabel: string;
     if (active && plan.id === active.id) {
       status = "ACTIVE";
       statusLabel = "Active";
+    } else if (neverEffective) {
+      status = "NEVER_EFFECTIVE";
+      statusLabel = "Replaced before it started";
     } else if (plan.effectiveDay > today) {
-      const overtaken = byCreation.some(other => compareInstants(other.createdAt, plan.createdAt) > 0 && other.effectiveDay <= plan.effectiveDay);
-      status = overtaken ? "NEVER_EFFECTIVE" : "SCHEDULED";
-      statusLabel = overtaken
-        ? "Replaced before it started"
-        : plan.effectiveDay === addDays(today, 1) ? "Starts tomorrow" : `Starts ${formatDay(plan.effectiveDay, undefined, { year: plan.effectiveDay.slice(0, 4) !== today.slice(0, 4) })}`;
+      status = "SCHEDULED";
+      statusLabel = plan.effectiveDay === addDays(today, 1)
+        ? "Starts tomorrow"
+        : `Starts ${formatDay(plan.effectiveDay, undefined, { year: plan.effectiveDay.slice(0, 4) !== today.slice(0, 4) })}`;
     } else {
       status = "SUPERSEDED";
       statusLabel = "Replaced";
@@ -195,6 +232,12 @@ export interface AccountDashboard {
   breakdowns: { model: LinkedBreakdownGroup[]; session: LinkedBreakdownGroup[] };
   riskPlans: RiskPlanVersionView[];
   links: { journal: string; edge: string; manage: string };
+  /**
+   * The account has more live and closed trades than one read holds (`MAX_LEDGER_ROWS`). The metrics computed from
+   * trades are then unknown (`metrics.tradesUnknown`), and the balance line, R curve, drawdown, daily series, calendar
+   * and breakdowns are left empty: none of them is ever drawn from part of the trades. Recent and live trades are
+   * separate reads and stay listed.
+   */
   truncated: boolean;
 }
 
@@ -222,7 +265,7 @@ export async function loadAccountDashboard(db: Db, userId: string, context: Acco
   const [balances, observations, ledger, connections, workspace, riskPlans, recent, live] = await Promise.all([
     startingBalances(db, userId, [account]),
     latestObservations(db, userId, [account]),
-    loadLedgerRows(db, userId, scope, {}, { lifecycles: METRIC_LIFECYCLES }),
+    accountLedger(db, userId, account.id),
     loadAccountConnectionStates(db, [account.id]),
     loadAccountWorkspace(db, userId, account, now),
     loadRiskPlans(db, userId, account.id),
@@ -234,13 +277,14 @@ export async function loadAccountDashboard(db: Db, userId: string, context: Acco
   const listDeps = { db, userId, accounts: context.accounts, now, workspaces };
   const [recentTrades, liveTrades] = await Promise.all([decorateTrades(listDeps, recent.rows), decorateTrades(listDeps, parseLedger(live.data))]);
   const startingBalance = balances.get(account.id) ?? null;
-  const closed = ledger.rows.filter(isClosed);
+  // Part of an account's trades (an arbitrary part: the read pages by id) never feeds a chart.
+  const closed = ledger.truncated ? [] : ledger.rows.filter(isClosed);
   const drill: DrillDown = { base: {}, account: account.id };
   const names = { [account.id]: account.name };
   return {
     account,
     now,
-    metrics: metricsOf(account, startingBalance, observations.get(account.id) ?? null, ledger.rows, now),
+    metrics: metricsOf(account, startingBalance, observations.get(account.id) ?? null, ledger, now),
     connection: connections.get(account.id) ?? { mode: "MANUAL", connection: null, lastSyncedAt: null, message: null },
     workspace,
     balanceCurve: balanceCurve(startingBalance, closed),

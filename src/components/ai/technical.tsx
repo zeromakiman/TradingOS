@@ -31,8 +31,13 @@ function FieldList({ rows }: { rows: readonly (readonly [string, ReactNode])[] }
   );
 }
 
-/** Request fields of one history row; `status` is the stored request status (`COMPLETED`, `FAILED`, `IN_PROGRESS`). */
+/**
+ * Request fields of one history row; `status` is the stored request status (`COMPLETED`, `FAILED`, `IN_PROGRESS`). The
+ * stored usage record never changes, so an accounting review that followed it is listed beside it, with the amount it
+ * reconciled to.
+ */
 export function AiTechnicalFields({ technical, status }: { technical: AiHistoryTechnical; status: string }) {
+  const review = technical.accountingReview ?? null;
   const rows: [string, string | null][] = [
     ["Status", status],
     ["Request id", technical.requestId],
@@ -44,8 +49,15 @@ export function AiTechnicalFields({ technical, status }: { technical: AiHistoryT
     ["Error code", technical.errorCode],
     ["Reservation id", technical.reservationId],
     ["Reserved", micros(technical.reservedMicros)],
+    ["Budget month", technical.holdPeriod ?? null],
+    ["Released by the monthly reset", technical.holdExpired ? "yes" : null],
     ["Charged (estimate)", micros(technical.chargedMicros)],
     ["Usage disposition", technical.disposition],
+    ["Accounting review", review?.decision ?? null],
+    ["Reviewed at", review?.reviewedAt ?? null],
+    ["Charged after review", review ? micros(review.reconciledMicros) : null],
+    ["Released by review", review ? micros(review.releasedMicros) : null],
+    ["Above the reserved amount", review && review.additionalMicros > 0 ? micros(review.additionalMicros) : null],
     ["Input tokens", count(technical.inputTokens)],
     ["Output tokens", count(technical.outputTokens)],
     ["Response id", technical.responseId],

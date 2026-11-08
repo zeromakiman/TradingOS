@@ -207,7 +207,24 @@ export default async function settings(run) {
     const receipts = Number(sqlValue(env.stack, "select count(*) from private.erasure_receipts"));
     await run.open(victim);
     const p = run.page;
-    await goto(p, "/settings?account=all#danger");
+    // One of the user's own trading accounts becomes the browser's context first, through the header selector: its
+    // action stores the account in both context cookies (tos_account and tos_last_account, src/app/actions/context.ts).
+    // Deleting the account must take those ids out of the browser with the login (src/app/actions/erasure.ts).
+    const ftmo = victim.showcase.accounts.ftmo;
+    const CONTEXT_COOKIES = ["tos_account", "tos_last_account"];
+    const contextCookies = async () => Object.fromEntries((await p.context().cookies()).filter(c => CONTEXT_COOKIES.includes(c.name)).map(c => [c.name, c.value]));
+    const listed = cookies => Object.entries(cookies).map(([name, value]) => `${name}=${value}`).join(", ") || "no context cookie";
+    const holdsAccount = cookies => CONTEXT_COOKIES.every(name => cookies[name] === ftmo);
+    // Settings without ?account=: there a choice in the selector calls that action (with ?account= it follows its link),
+    // and the stored context stays that account until the deletion.
+    await goto(p, "/settings#danger");
+    const selector = p.getByRole("button", { name: /^Trading Account:/ }).first();
+    await press(selector, { tap });
+    const menu = p.getByRole("menu");
+    await menu.waitFor({ state: "visible" });
+    await press(menu.getByRole("menuitemradio", { name: /FTMO 100K/ }), { tap });
+    const chosen = await until(async () => holdsAccount(await contextCookies()), { timeout: 20_000 });
+    s.check(chosen, "choosing one of the user's accounts in the header stores it in both context cookies", listed(await contextCookies()));
     const danger = region(p, "Danger zone");
     s.check(/This can't be undone/.test(await textOf(danger)), "the danger zone says it can't be undone and lists what is deleted");
     await press(danger.getByRole("button", { name: "Delete Trading OS account…" }), { tap });
@@ -240,9 +257,19 @@ export default async function settings(run) {
     );
     await s.shot("delete-dialog");
     await fill(dialog.getByLabel("Current password"), victim.password);
+    // Immediately before the deletion (after the refused attempt, which must not touch them): both cookies name the account.
+    const held = await contextCookies();
+    s.check(holdsAccount(held), "right before the deletion both context cookies hold the user's account id", listed(held));
     await press(submit, { tap });
     await arrive(p, url => url.pathname === "/login", { timeout: 180_000 });
     s.check(/reason=account_deleted/.test(p.url()), "the browser lands on the sign-in page with the deletion notice", new URL(p.url()).search);
+    const remaining = await contextCookies();
+    const removed = Object.keys(held).filter(name => !(name in remaining));
+    s.check(
+      Object.keys(remaining).length === 0 && CONTEXT_COOKIES.every(name => removed.includes(name)),
+      "the deletion removed both of the user's trading-account context cookies from the browser",
+      `removed: ${removed.join(", ") || "none"}; left: ${Object.keys(remaining).length ? listed(remaining) : "none"}`,
+    );
     await s.shot("deleted-login");
     const grant = await passwordGrant(env.stack, victim.email, victim.password);
     s.check(!grant.ok, "the deleted login can no longer sign in (password grant)", grant.error);

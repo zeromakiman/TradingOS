@@ -74,7 +74,7 @@ describe("weekly owner-scoped bounded database selection", () => {
     const note = m.state.rows.trade_events.find(row => row.event_type === "NOTE_ADDED");
     m.state.rows.trade_events.push({ ...note, id: ids.image, plan_id: ids.image }, { ...note, id: ids.event, occurred_at: WEEK_END }, { ...note, id: ids.review, recorded_at: "2026-09-10T05:00:00.000Z" });
     const facts = await load();
-    expect(facts.trades[0].events.map(event => event.event_type)).toEqual(["NOTE_ADDED"]);
+    expect(facts.trades[0].events?.map(event => event.event_type)).toEqual(["NOTE_ADDED"]);
     expect(JSON.stringify(facts)).not.toContain("plan_id");
     expect(JSON.stringify(facts)).not.toMatch(/TRADE_OPENED|TRADE_CLOSED|PLAN_LOCKED/);
   });
@@ -85,20 +85,22 @@ describe("weekly owner-scoped bounded database selection", () => {
     const tag = m.state.rows.trade_tag_sets[0];
     m.state.rows.trade_tag_sets.push({ ...tag, id: 9999, setup_grade: "INVALID", recorded_at: "2026-09-08T00:00:00.000Z" });
     const facts = await load();
-    expect(facts.trades[0].journal.map(item => item.timing)).toEqual(["BEFORE_ENTRY", "WHILE_LIVE", "AFTER_CLOSE"]);
+    // Each journal entry is one row: [id, kind, recordedAt, timing, text, extra].
+    expect(facts.trades[0].journal?.map(row => row[3])).toEqual(["BEFORE_ENTRY", "WHILE_LIVE", "AFTER_CLOSE"]);
     expect(JSON.stringify(facts)).not.toContain(ids.image);
     expect(facts.trades[0].tags).toMatchObject({ setupGrade: "A", source: "V2" });
-    // Legacy V1 tags have no recording time, so they can never be shown as within the week.
+    // Legacy V1 tags have no recording time, so they can never be shown as within the week: the trade lists no tags.
     m.state.rows.trade_tag_sets = [];
     m.state.rows.journal_analytics = m.state.rows.journal_analytics.map(row => ({ ...row, setup_grade: "A+", tag_source: "V1" }));
-    expect((await load()).trades[0].tags).toBeNull();
+    expect((await load()).trades[0]).not.toHaveProperty("tags");
   });
 
   it("cites every included trade, journal entry and note canonically", async () => {
     const facts = await load();
     const allowed = operationAllowedSources("WEEKLY_REVIEW", facts);
     expect(allowed.slice(0, 3)).toEqual(["period", "sample", "edge"]);
-    expect(allowed).toEqual(expect.arrayContaining([`trade:${tradeRecordId(0)}`, ...facts.trades.flatMap(t => t.journal.map(e => `journal:${e.id}`))]));
+    expect(allowed).toEqual(expect.arrayContaining([`trade:${tradeRecordId(0)}`, ...facts.trades.flatMap(t => (t.journal ?? []).map(row => `journal:${row[0]}`))]));
+    expect(facts).not.toHaveProperty("sourceManifest");
   });
 
   it("empty week reads no version, event or journal history", async () => {

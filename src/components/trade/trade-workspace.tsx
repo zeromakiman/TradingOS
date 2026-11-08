@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode, Suspense } from "react";
 import { PreTradeAiPanel } from "@/components/ai/pre-trade-ai-panel";
+import { preTradePlacement } from "@/components/ai/pre-trade-placement";
 import { TradeReviewAiPanel } from "@/components/ai/trade-review-ai-panel";
 import { toGalleryItems } from "@/components/evidence/gallery-model";
 import { EvidenceSelectionProvider } from "@/components/evidence/selection";
@@ -24,7 +25,8 @@ import type { TradeExtras } from "./workspace-data";
  * Trade workspace (docs/V2_ARCHITECTURE.md §14.4): header with the one next action, stepper or live-first banner, then
  * Plan · Execution · Result · Review in the main column and Journal + Evidence beside it (desktop), or one column on
  * phones whose order follows the trade: the journal leads while the position is live. Technical details close the
- * page. Paid AI panels stream in behind their own Suspense boundaries and never run anything on load. A link to one of
+ * page. Once a trade is no longer a draft, its pre-trade AI analyses stay readable in a section after the Plan. Paid AI
+ * panels stream in behind their own Suspense boundaries and never run anything on load. A link to one of
  * the page's targets (`/trades/<id>#close-trade`, `#record-entry`, `#review`, …) opens it once the trade is on the page
  * (`TradeHashFocus`). Server component.
  */
@@ -56,8 +58,9 @@ export interface TradeWorkspaceProps {
   keys: WorkspaceKeys;
 }
 
-function AiPanelSkeleton({ label }: { label: string }) {
-  return (
+/** Placeholder of a streaming AI panel; `framed` when the panel is a workspace section of its own. */
+function AiPanelSkeleton({ label, framed = false }: { label: string; framed?: boolean }) {
+  const skeleton = (
     <LoadingState label={label} className="flex flex-col gap-3">
       <Skeleton width="8rem" height="1.25rem" />
       <SkeletonText lines={2} />
@@ -66,6 +69,13 @@ function AiPanelSkeleton({ label }: { label: string }) {
         <Skeleton width="10rem" height="2.5rem" />
       </div>
     </LoadingState>
+  );
+  return framed ? (
+    <div className="card min-w-0">
+      <div className="card-body">{skeleton}</div>
+    </div>
+  ) : (
+    skeleton
   );
 }
 
@@ -86,27 +96,42 @@ export function TradeWorkspace({ detail, extras, now, display, developerMode, ke
   const lifecycle = detail.state.lifecycle;
   const gallery = toGalleryItems(detail.evidence.items);
   const lock = detail.draft ? lockSummary(detail, extras.lockUsage) : null;
-  // Pre-trade AI serves a plan that can still be locked: never on a draft of an archived account (§3.2, §9).
-  const preTradeAi = lifecycle === "DRAFT" && detail.origin === "PLANNED" && detail.draft && detail.account.status !== "ARCHIVED" ? (
-    <Suspense fallback={<AiPanelSkeleton label="Loading AI tools" />}>
+  const archived = detail.account.status === "ARCHIVED";
+  // Pre-trade AI tools serve a plan that can still be locked: only an open draft of an active account runs them
+  // (§3.2, §9). Its analyses stay readable afterwards: in the Plan of an archived account's draft, and in a section of
+  // their own once the trade is no longer a draft (only when there are any, so other trades show nothing).
+  const placement = preTradePlacement({
+    origin: detail.origin, lifecycle, hasDraft: detail.draft !== null, accountArchived: archived,
+    requests: detail.ai.history ? detail.ai.history.preTrade.reduce((total, group) => total + group.rows.length, 0) : null,
+    completed: detail.ai.activity.preTradeAnalyses,
+  });
+  const preTradeAi = placement ? (
+    <Suspense fallback={<AiPanelSkeleton label={placement.tools ? "Loading AI tools" : "Loading pre-trade AI"} framed={placement.frame === "section"} />}>
       <PreTradeAiPanel
         tradeId={detail.tradeId}
         accountId={detail.account.id}
-        currentRevision={detail.draft.revision}
+        accountArchived={archived}
+        currentRevision={detail.draft?.revision ?? detail.revisionCount}
         riskDecision={aiRiskDecision(detail)}
         riskLine={aiRiskLine(detail)}
+        frame={placement.frame}
         developerMode={developerMode}
       />
     </Suspense>
   ) : null;
   const reviewAi = lifecycle === "CLOSED" || lifecycle === "REVIEWED" ? (
     <Suspense fallback={<AiPanelSkeleton label="Loading AI review" />}>
-      <TradeReviewAiPanel tradeId={detail.tradeId} accountId={detail.account.id} closed noPlan={detail.origin !== "PLANNED"} developerMode={developerMode} />
+      <TradeReviewAiPanel tradeId={detail.tradeId} accountId={detail.account.id} accountArchived={archived} closed noPlan={detail.origin !== "PLANNED"} developerMode={developerMode} />
     </Suspense>
   ) : null;
 
   const sections: Readonly<Record<MainSection, ReactNode>> = {
-    plan: <PlanSection detail={detail} extras={extras} now={now} display={display} lock={lock} discardKey={keys.discard} ai={preTradeAi} />,
+    plan: (
+      <>
+        <PlanSection detail={detail} extras={extras} now={now} display={display} lock={lock} discardKey={keys.discard} ai={placement?.frame === "plan" ? preTradeAi : null} />
+        {placement?.frame === "section" && preTradeAi}
+      </>
+    ),
     execution: <ExecutionSection detail={detail} extras={extras} now={now} display={display} entryDetailsKey={keys.entryDetails} />,
     result: <ResultSection detail={detail} now={now} display={display} />,
     review: layout.review ? (

@@ -9,11 +9,13 @@ import { publicConfig } from "./supabase/config";
  * converges: the purge of an already-empty account deletes nothing, removing missing storage objects is a no-op,
  * the prefix sweep catches objects whose rows are already gone, and an already-deleted auth user counts as deleted.
  *
- *   1. typed DELETE + password re-entry: a fresh sign-in of the session user through a client that never stores or
- *      refreshes its session;
- *   2. purge_my_trading_data with that fresh session, which then ends. One transaction; the database itself refuses
- *      a session without a password sign-in from the last 5 minutes (REAUTH_REQUIRED) and refuses while AI is in
- *      flight, so the cookie session or any other access token alone can never erase the account;
+ *   1. typed DELETE + password re-entry: a fresh sign-in through a client that never stores or refreshes its session.
+ *      It must sign in the session user itself, and it is signed out again before anything is deleted: it only
+ *      proves the password;
+ *   2. purge_user_trading_data for the session user through the trusted server (secret key). One transaction; it
+ *      refuses while AI is in flight. Only the service role can execute it: no access token of a user, however fresh
+ *      its password sign-in (a browser's own login looks exactly like a re-authentication), can call any purge RPC,
+ *      so the typed DELETE and the password re-entry cannot be skipped;
  *   3. the trusted server deletes the returned storage paths, then sweeps `{uid}/` in both buckets until empty;
  *   4. global sign-out, then the auth user is deleted. The server action clears cookies and redirects.
  *
@@ -33,7 +35,6 @@ export const ERASURE_COPY = {
   passwordRequired: "Enter your current password to confirm.",
   passwordRejected: "That password is not correct. Nothing was deleted.",
   signInUnavailable: "The sign-in service is temporarily unavailable. Nothing was deleted. Please try again.",
-  reauthRequired: "We could not confirm your password for this deletion. Nothing was deleted. Please try again.",
   aiInProgress: "An AI request for your account is still running. Nothing was deleted. Try again once it has finished (at most 30 minutes).",
   incomplete: "Deletion did not finish. Nothing was shared, and you can safely try again: completed steps are skipped.",
 } as const;
@@ -42,7 +43,6 @@ export const ERASURE_COPY = {
 export type ErasureEvent =
   | "erasure_reauth_rejected"
   | "erasure_reauth_unavailable"
-  | "erasure_reauth_required"
   | "erasure_purge_refused"
   | "erasure_purge_failed"
   | "erasure_storage_failed"
@@ -73,19 +73,17 @@ export interface ErasureStorageBucket {
 
 export type PasswordCheck = "VALID" | "REJECTED" | "UNAVAILABLE";
 
-/** The session user's own session from a password sign-in a moment ago: the only client that runs the purge. */
-export interface ReauthenticatedSession {
-  /** `purge_my_trading_data` with this session: auth.uid() and the JWT's amr claim come from the fresh sign-in. */
-  purge(confirmation: string): Promise<{ data: unknown; error: ClientError | null }>;
-  /** Signs this session out. Best effort: the global sign-out after the purge revokes it as well. */
-  end(): Promise<void>;
-}
-
-export type Reauthentication = { check: "VALID"; session: ReauthenticatedSession } | { check: Exclude<PasswordCheck, "VALID"> };
+/** VALID names the user the typed password signed in; the erasure goes on only when that is the session user. */
+export type Reauthentication = { check: "VALID"; userId: string } | { check: Exclude<PasswordCheck, "VALID"> };
 
 export interface ErasureServices {
-  /** Signs the session user in again with the typed password; the new session is never stored or refreshed. */
+  /**
+   * Signs in again with the typed password through a client that never stores or refreshes its session, and signs
+   * that session out before it resolves: the sign-in only proves the password, it never calls the database.
+   */
   reauthenticate(email: string, password: string): Promise<Reauthentication>;
+  /** Trusted server (secret key): purge_user_trading_data for one user, the only caller that can execute it. */
+  purge(userId: string, confirmation: string): Promise<{ data: unknown; error: ClientError | null }>;
   /** Trusted server (secret key) access to one private bucket. */
   bucket(name: ErasureBucket): ErasureStorageBucket;
   /** Revokes every session of the user. */
@@ -111,7 +109,7 @@ const LIST_PAGE = 100;
 const MAX_FOLDER_DEPTH = 4;
 const MAX_SWEEP_ROUNDS = 5;
 
-/** The purge result. Every storage path must lie under the caller's own `{uid}/` prefix. */
+/** The purge result. Every storage path must lie under the erased user's own `{uid}/` prefix. */
 export function purgeResultSchema(userId: string) {
   const ownPath = z.string().refine((path) => OBJECT_PATH.exec(path)?.[1] === userId, "Storage path outside the user's prefix.");
   return z.object({
@@ -142,8 +140,8 @@ export async function eraseTradingOsAccount(
   const invalid = erasureInputError(request.confirmation, request.password);
   if (invalid) return { ok: false, error: invalid };
   try {
-    const session = await reauthenticate(request, services);
-    const storagePaths = await purgeTradingData(request.userId, session);
+    await reauthenticate(request, services);
+    const storagePaths = await purgeTradingData(request.userId, services);
     await step("erasure_storage_failed", () => deleteStorage(services, request.userId, storagePaths));
     // Deleting the auth user ends every session as well, so a failed revocation alone does not stop the erasure.
     const signOut = await services.signOutEverywhere().catch(() => ({ error: { message: "Sign-out failed." } }));
@@ -166,7 +164,6 @@ function userAlreadyDeleted(error: ClientError): boolean {
 const EVENT_COPY: Partial<Record<ErasureEvent, string>> = {
   erasure_reauth_rejected: ERASURE_COPY.passwordRejected,
   erasure_reauth_unavailable: ERASURE_COPY.signInUnavailable,
-  erasure_reauth_required: ERASURE_COPY.reauthRequired,
   erasure_purge_refused: ERASURE_COPY.aiInProgress,
 };
 
@@ -183,7 +180,8 @@ async function step<T>(event: ErasureEvent, run: () => Promise<T>): Promise<T> {
   }
 }
 
-async function reauthenticate(request: ErasureRequest, services: ErasureServices): Promise<ReauthenticatedSession> {
+/** The typed password must sign in the session user itself; only then may anything be deleted. */
+async function reauthenticate(request: ErasureRequest, services: ErasureServices): Promise<void> {
   const email = request.email;
   // Every Trading OS login is an email/password account; anything else cannot be re-authenticated here.
   if (!email) throw new ErasureStepError("erasure_failed");
@@ -191,27 +189,22 @@ async function reauthenticate(request: ErasureRequest, services: ErasureServices
   if (result.check !== "VALID") {
     throw new ErasureStepError(result.check === "REJECTED" ? "erasure_reauth_rejected" : "erasure_reauth_unavailable");
   }
-  return result.session;
+  // The password of another account never erases this one.
+  if (result.userId !== request.userId) throw new ErasureStepError("erasure_reauth_rejected");
 }
 
 /** Fixed events for the purge's stable error prefixes (0019_account_erasure.sql). */
 function purgeErrorEvent(message: string): ErasureEvent {
-  if (message.startsWith("AI_REQUEST_IN_PROGRESS:")) return "erasure_purge_refused";
-  if (message.startsWith("REAUTH_REQUIRED:")) return "erasure_reauth_required";
-  return "erasure_purge_failed";
+  return message.startsWith("AI_REQUEST_IN_PROGRESS:") ? "erasure_purge_refused" : "erasure_purge_failed";
 }
 
-/** Purges with the re-authenticated session, which ends afterwards whatever the outcome. */
-async function purgeTradingData(userId: string, session: ReauthenticatedSession): Promise<PurgeResult["storagePaths"]> {
-  try {
-    const result = await step("erasure_purge_failed", () => session.purge(ERASE_CONFIRMATION_PHRASE));
-    if (result.error) throw new ErasureStepError(purgeErrorEvent(result.error.message));
-    const parsed = purgeResultSchema(userId).safeParse(result.data);
-    if (!parsed.success) throw new ErasureStepError("erasure_purge_failed");
-    return parsed.data.storagePaths;
-  } finally {
-    await session.end().catch(() => undefined);
-  }
+/** Purges the re-authenticated session user through the trusted server. */
+async function purgeTradingData(userId: string, services: ErasureServices): Promise<PurgeResult["storagePaths"]> {
+  const result = await step("erasure_purge_failed", () => services.purge(userId, ERASE_CONFIRMATION_PHRASE));
+  if (result.error) throw new ErasureStepError(purgeErrorEvent(result.error.message));
+  const parsed = purgeResultSchema(userId).safeParse(result.data);
+  if (!parsed.success) throw new ErasureStepError("erasure_purge_failed");
+  return parsed.data.storagePaths;
 }
 
 async function deleteStorage(services: ErasureServices, userId: string, paths: PurgeResult["storagePaths"]): Promise<void> {
@@ -268,7 +261,7 @@ async function listObjects(bucket: ErasureStorageBucket, prefix: string): Promis
  * client is created first, so a missing secret key fails before anything is deleted (a purge whose storage step
  * could never run would leave the account half-erased).
  */
-export function supabaseErasureServices(session: SupabaseClient, userId: string): ErasureServices {
+export function supabaseErasureServices(session: SupabaseClient): ErasureServices {
   const config = publicConfig();
   if (!config) throw new Error("Supabase has not been configured.");
   const trusted = trustedServer();
@@ -281,24 +274,14 @@ export function supabaseErasureServices(session: SupabaseClient, userId: string)
       if (error) {
         return { check: isAuthRetryableFetchError(error) || error.status === 429 || (error.status ?? 0) >= 500 ? "UNAVAILABLE" : "REJECTED" };
       }
-      const end = async () => {
-        await verifier.auth.signOut({ scope: "local" });
-      };
-      // The password must be the session user's own, never that of another account.
-      if (data.user?.id !== userId) {
-        await end().catch(() => undefined);
-        return { check: "REJECTED" };
-      }
-      return {
-        check: "VALID",
-        session: {
-          async purge(confirmation) {
-            const result = await verifier.rpc("purge_my_trading_data", { p_confirm: confirmation });
-            return { data: result.data, error: result.error };
-          },
-          end,
-        },
-      };
+      // The new session is ended at once, before anything is deleted. Best effort: it never left this process, and the
+      // global sign-out after the purge revokes it as well.
+      await verifier.auth.signOut({ scope: "local" }).catch(() => undefined);
+      return data.user?.id ? { check: "VALID", userId: data.user.id } : { check: "REJECTED" };
+    },
+    async purge(userId, confirmation) {
+      const result = await trusted.rpc("purge_user_trading_data", { p_user_id: userId, p_confirm: confirmation });
+      return { data: result.data, error: result.error };
     },
     bucket: (name) => trusted.storage.from(name),
     signOutEverywhere: () => session.auth.signOut({ scope: "global" }),

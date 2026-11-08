@@ -1,7 +1,9 @@
 import type { LedgerTrade } from "@/domain/ledger";
 import { storedRiskSchema } from "@/domain/risk-report";
 import { compareInstants } from "@/domain/time-display";
-import { classifyTiming, type EvidenceLabel, inferStoredPhase, type JournalKind, type StoredPhase, type Timing, type TimingFlag } from "@/domain/timeline";
+import {
+  classifyTiming, type EvidenceLabel, inferStoredPhase, type JournalKind, type StoredPhase, type Timing, type TimingFlag, type TimingResult,
+} from "@/domain/timeline";
 import { operationFor } from "./operations";
 import { estimateRequest } from "./request-estimate";
 import {
@@ -12,9 +14,10 @@ import {
 const UNSIZED_IMAGE = "data:image/png;base64,AA==";
 
 /**
- * REVIEW_TRADE_TIMELINE_FACTS_V1 (spec §11.4): an explicit allowlist of one closed trade's records. Every timeline
- * item and screenshot carries the timing from `classifyTiming` (spec §5.3), so after-close text can never pose as
- * pre-entry evidence. No written strategy prompt, account history, balances, storage paths or earlier AI output.
+ * REVIEW_TRADE_TIMELINE_FACTS_V1 (spec §11.4): an explicit allowlist of one closed trade's records, V1 decisions
+ * included. Every timeline item and screenshot carries the timing from `classifyTiming` (spec §5.3), so after-close text
+ * can never pose as pre-entry evidence; only the lock and the evaluation that authorised it are Before entry by
+ * definition. No written strategy prompt, account history, balances, storage paths or earlier AI output.
  */
 
 export type TimelineReviewTrade = Pick<LedgerTrade,
@@ -30,6 +33,11 @@ export interface TimelineReviewPlan {
   proposal: Record<string, unknown>;
   nominalRisk: string;
   riskResult: unknown;
+  /**
+   * The risk evaluation that authorised the lock (`trade_plans.risk_evaluation_id`). Written by the lock transaction a few
+   * milliseconds after `lockedAt`, it is part of the lock: Before entry, placed right before it.
+   */
+  riskEvaluationId?: string | null;
 }
 
 export interface TimelineReviewStrategy { id: string; version: string; rules: Record<string, unknown> }
@@ -53,6 +61,16 @@ export const V1_EVENT_TYPES = [
 export type V1EventType = (typeof V1_EVENT_TYPES)[number];
 
 export interface TimelineReviewLegacyEvent { id: string; eventType: V1EventType; payload: Record<string, unknown>; occurredAt: string; recordedAt: string }
+
+/**
+ * A V1 decision on one of the trade's revisions (`setup_human_decisions`): Taken or Skipped with the trader's reason and
+ * the Risk Engine decision it was recorded against. `MANUAL_OVERRIDE`: taken while the Risk Engine or the AI blocked it.
+ * The AI verdict of that time is earlier AI output and never part of the facts.
+ */
+export interface TimelineReviewDecision {
+  id: string; decision: "TAKEN" | "SKIPPED"; eventType: "HUMAN_DECISION" | "MANUAL_OVERRIDE"; reason: string | null;
+  riskDecision: "APPROVED" | "BLOCKED"; recordedAt: string;
+}
 
 export interface TimelineReviewJournalEntry { id: string; kind: JournalKind; body: string | null; details: Record<string, unknown>; phase: StoredPhase; recordedAt: string }
 
@@ -83,6 +101,8 @@ export interface TimelineReviewInput {
   revisions: readonly TimelineReviewRevision[];
   riskChecks: readonly TimelineReviewCheck[];
   legacyEvents: readonly TimelineReviewLegacyEvent[];
+  /** V1 decisions on the trade's revisions (none for trades recorded in V2). */
+  legacyDecisions?: readonly TimelineReviewDecision[];
   journal: readonly TimelineReviewJournalEntry[];
   positionFacts: readonly TimelineReviewPositionFacts[];
   /** Unplanned close only: how the R denominator was established. */
@@ -91,7 +111,8 @@ export interface TimelineReviewInput {
   evidence: readonly TimelineReviewEvidence[];
 }
 
-export type TimelineFactsKind = "DRAFT_REVISION" | "RISK_CHECK" | "PLAN_LOCKED" | "ENTRY" | "ENTRY_DETAILS" | "CLOSE" | JournalKind | V1EventType;
+export type TimelineFactsKind =
+  | "DRAFT_REVISION" | "RISK_CHECK" | "PLAN_LOCKED" | "ENTRY" | "ENTRY_DETAILS" | "CLOSE" | JournalKind | V1EventType | TimelineReviewDecision["eventType"];
 
 export interface TimelineFactsItem {
   sourceId: string;
@@ -136,6 +157,22 @@ function isTagNote(event: TimelineReviewLegacyEvent): boolean {
   return event.eventType === "NOTE_ADDED" && event.payload.source === "MANUAL" && TAG_KEYS.some(key => key in event.payload);
 }
 
+/** What a V1 decision recorded, for a decision saved without the trader's reason. */
+function decisionDescription(decision: TimelineReviewDecision): string {
+  if (decision.eventType === "MANUAL_OVERRIDE") return "Recorded as taken despite a block";
+  return decision.decision === "TAKEN" ? "Recorded as taken" : "Recorded as skipped";
+}
+
+interface AddOptions {
+  storedPhase?: StoredPhase | null;
+  timing?: TimingResult;
+  orderAt?: string;
+  rank?: number;
+}
+
+/** Timing of the records of the lock, which precede every entry (`add` copies the flags). */
+const BEFORE_ENTRY: TimingResult = { timing: "BEFORE_ENTRY", flags: [] };
+
 export function tradeTimelineReviewContext(input: TimelineReviewInput, capturedAt: string = new Date().toISOString()) {
   const { trade, plan } = input;
   if (!isClosedTrade(trade)) throw new Error("A timeline review needs a closed trade");
@@ -158,10 +195,15 @@ export function tradeTimelineReviewContext(input: TimelineReviewInput, capturedA
     exitAt: trade.exited_at,
     tradeCreatedAt: trade.created_at,
   });
-  const timeline: TimelineFactsItem[] = [];
-  const add = (item: Omit<TimelineFactsItem, "timing" | "flags">, storedPhase?: StoredPhase | null) => {
-    const { timing, flags } = timingOf(item.recordedAt, storedPhase);
-    timeline.push({ ...item, timing, flags });
+  const placed: { item: TimelineFactsItem; orderAt: string; rank: number }[] = [];
+  /**
+   * `storedPhase` is the record's own phase (otherwise inferred); `timing` replaces the classification of records that
+   * precede the entry by definition. `orderAt` and `rank` place a record of the lock at the lock (causal order, spec
+   * §5.4) without changing any time it carries; by default a record sits at its occurred, else recorded, time.
+   */
+  const add = (item: Omit<TimelineFactsItem, "timing" | "flags">, options: AddOptions = {}) => {
+    const { timing, flags } = options.timing ?? timingOf(item.recordedAt, options.storedPhase);
+    placed.push({ item: { ...item, timing, flags: [...flags] }, orderAt: options.orderAt ?? item.occurredAt ?? item.recordedAt, rank: options.rank ?? 0 });
   };
 
   const lockedThesis = plan ? text(plan.proposal.narrative) : null;
@@ -179,6 +221,10 @@ export function tradeTimelineReviewContext(input: TimelineReviewInput, capturedA
     const report = storedRiskSchema.safeParse(check.result);
     const blocked = report.success && report.data.status === "TRADE_BLOCKED";
     const issues = report.success ? report.data.issues : [];
+    // The lock transaction stamps the lock, then writes the evaluation that authorised it a few milliseconds later. That
+    // evaluation is part of the lock, which precedes any entry (an entry is never earlier than the lock): Before entry
+    // like the lock, also for an entry reported at the lock instant, and placed right before it.
+    const lock = plan !== null && plan.riskEvaluationId != null && check.id === plan.riskEvaluationId ? plan : null;
     add({
       sourceId: `check:${check.id}`, kind: "RISK_CHECK", recordedAt: check.recordedAt, occurredAt: null,
       text: report.success ? `Risk check of this revision: ${blocked ? "blocked" : "approved"}` : "Risk check recorded",
@@ -189,10 +235,10 @@ export function tradeTimelineReviewContext(input: TimelineReviewInput, capturedA
         blocking: issues.filter(issue => issue.severity === "BLOCK").map(issue => issue.code),
         warnings: issues.filter(issue => issue.severity === "WARN").map(issue => issue.code),
       },
-    });
+    }, lock ? { timing: BEFORE_ENTRY, ...(compareInstants(check.recordedAt, lock.lockedAt) >= 0 ? { orderAt: lock.lockedAt, rank: -1 } : {}) } : {});
   }
   if (plan) {
-    add({ sourceId: `plan:${plan.id}`, kind: "PLAN_LOCKED", recordedAt: plan.lockedAt, occurredAt: null, text: "Plan locked", details: {} });
+    add({ sourceId: `plan:${plan.id}`, kind: "PLAN_LOCKED", recordedAt: plan.lockedAt, occurredAt: null, text: "Plan locked", details: {} }, { timing: BEFORE_ENTRY });
   }
   if (trade.origin === "PLANNED" && entryRecordedAt !== null) {
     add({
@@ -218,21 +264,31 @@ export function tradeTimelineReviewContext(input: TimelineReviewInput, capturedA
       details: pick(event.payload, LEGACY_PAYLOAD_KEYS),
     });
   }
+  // V1 decisions are V1 records like the trade events above: their citation ids share the `event:` prefix.
+  for (const decision of input.legacyDecisions ?? []) {
+    add({
+      sourceId: `event:${decision.id}`, kind: decision.eventType, recordedAt: decision.recordedAt, occurredAt: null,
+      text: text(decision.reason) ?? decisionDescription(decision),
+      details: { decision: decision.decision, riskDecision: decision.riskDecision },
+    });
+  }
   for (const entry of input.journal) {
-    add({ sourceId: `journal:${entry.id}`, kind: entry.kind, recordedAt: entry.recordedAt, occurredAt: null, text: entry.body ?? "", details: { ...entry.details } }, entry.phase);
+    add({ sourceId: `journal:${entry.id}`, kind: entry.kind, recordedAt: entry.recordedAt, occurredAt: null, text: entry.body ?? "", details: { ...entry.details } }, { storedPhase: entry.phase });
   }
   if (trade.exited_at !== null) {
     add({
       sourceId: `close:${trade.id}`, kind: "CLOSE", recordedAt: trade.close_recorded_at ?? trade.exited_at, occurredAt: trade.exited_at, text: "Trade closed",
       details: pick({ exitPrice: trade.exit_price, outcome: trade.outcome, realizedR: trade.realized_r, netPnl: trade.net_pnl, currency: trade.currency },
         ["exitPrice", "outcome", "realizedR", "netPnl", "currency"]),
-    }, "POST_TRADE");
+    }, { storedPhase: "POST_TRADE" });
   }
-  if (timeline.length > TIMELINE_REVIEW_LIMITS.timelineItems) {
-    throw new TimelineReviewScopeError(`This trade has ${timeline.length} timeline records; a trade review covers at most ${TIMELINE_REVIEW_LIMITS.timelineItems}. Nothing was sent and no record was left out silently.`);
+  if (placed.length > TIMELINE_REVIEW_LIMITS.timelineItems) {
+    throw new TimelineReviewScopeError(`This trade has ${placed.length} timeline records; a trade review covers at most ${TIMELINE_REVIEW_LIMITS.timelineItems}. Nothing was sent and no record was left out silently.`);
   }
-  timeline.sort((a, b) => compareInstants(a.occurredAt ?? a.recordedAt, b.occurredAt ?? b.recordedAt)
-    || compareInstants(a.recordedAt, b.recordedAt) || (a.sourceId < b.sourceId ? -1 : a.sourceId > b.sourceId ? 1 : 0));
+  const timeline = placed
+    .sort((a, b) => compareInstants(a.orderAt, b.orderAt) || a.rank - b.rank || compareInstants(a.item.recordedAt, b.item.recordedAt)
+      || (a.item.sourceId < b.item.sourceId ? -1 : a.item.sourceId > b.item.sourceId ? 1 : 0))
+    .map(entry => entry.item);
 
   const evidence: TimelineFactsEvidence[] = input.evidence.map(item => ({
     id: item.id, label: item.label, timeframe: item.timeframe, timing: timingOf(item.recordedAt, item.storedPhase).timing,

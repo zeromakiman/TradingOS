@@ -4,11 +4,13 @@
 // size), explain the trade after close, and check that the explanation is labelled After close and never Before entry.
 import { createAccountViaApi } from "../fixtures.mjs";
 import { addJournalEntry, arrive, composer, dropImage, fill, goto, main, pickImage, press, region, selectByLabel, textOf, timelineBands, tradeIdOf, until, visible, waitForText } from "../ui.mjs";
-import { aboveTheFold, chartFor, evidenceCount, openRecordLive, pick, waitForState } from "./common.mjs";
+import { aboveTheFold, chartFor, evidenceCount, openRecordLive, openTrade, pick, tradeState, waitForState } from "./common.mjs";
 
 const ACCOUNT = "Acceptance Live 25K";
 const NO_PLAN_BANNER = "No pre-trade plan was recorded before execution.";
 const AFTER_CLOSE_NOTE = "After close: I took profit early because the New York open was minutes away.";
+/** Caption of a tags form without unsaved changes (tags-form.tsx). */
+const SAVED_TAGS_CAPTION = "Saved tags filter the Journal and EDGE.";
 
 export default async function liveFirst(run) {
   const { env } = run;
@@ -118,6 +120,12 @@ export default async function liveFirst(run) {
     await fill(form.getByRole("textbox", { name: /Net profit/ }), "42.50");
     await fill(form.getByRole("textbox", { name: /exit price/i }), "1.10050");
     await press(form.getByRole("button", { name: "Close trade" }), { tap });
+    // The close can't be changed later (spec §57): the button opens a confirmation with the reported result first.
+    const confirm = page.getByRole("alertdialog", { name: "Close this trade?" });
+    s.check(await visible(confirm, 15_000), "Close trade opens the confirmation");
+    const summary = (await textOf(confirm)).replace(/\s+/g, " ");
+    s.check(/Win/.test(summary) && /\+\$42\.50/.test(summary) && /1\.10050/.test(summary), "the confirmation shows the reported +$42.50 (Win) and the exit before anything is recorded", summary.slice(0, 220));
+    await press(confirm.getByRole("button", { name: "Close trade" }), { tap });
     const state = await waitForState(page, ["Closed · review pending"], 60_000);
     s.check(state === "Closed · review pending", "the trade is closed", state);
     const result = await textOf(region(page, "Result"));
@@ -144,14 +152,31 @@ export default async function liveFirst(run) {
     s.evidence(9, "live-first: the after-close note is only under After close; no Before entry band or evidence exists");
   }, { requires: ["after-close-note"], criteria: [9] });
 
-  await run.step("timeline", "Review the timeline and mark the trade reviewed", async s => {
+  await run.step("timeline", "Review the timeline and mark the trade reviewed with a grade picked but not saved", async s => {
     const bands = await timelineBands(page);
     s.check(Object.keys(bands).join(",") === "While live,After close", "the bands read While live → After close", Object.keys(bands).join(", "));
     s.check(/Trade opened/.test((bands["While live"] ?? [])[0] ?? ""), "While live starts with the entry");
     s.check(/Trade closed/.test((bands["After close"] ?? [])[0] ?? ""), "After close starts with the close");
-    await press(region(page, "Review").getByRole("button", { name: "Mark reviewed" }), { tap });
+    // Unsaved tags are never dropped: with a grade picked and not saved, Mark reviewed says it saves the tags first.
+    const review = region(page, "Review");
+    const tags = review.getByRole("form", { name: "Tags" });
+    await pick(run, tags.getByRole("group", { name: "Setup grade" }), "B");
+    await press(review.getByRole("button", { name: "Save tags and mark reviewed", exact: true }), { tap });
     const state = await waitForState(page, ["Reviewed"], 60_000);
     s.check(state === "Reviewed", "the trade is Reviewed", state);
+    // The form reads saved and takes changes again. A disabled Save tags alone would also pass for a form the review left
+    // locked (Save tags is disabled while locked too), so the saved caption, an enabled grade and an editable tag field
+    // are required as well.
+    const settled = await until(async () => !(await tags.getByRole("button", { name: "Save tags", exact: true }).isEnabled())
+      && (await tags.getByText(SAVED_TAGS_CAPTION, { exact: true }).isVisible())
+      && (await tags.getByRole("radio", { name: "A", exact: true }).isEnabled())
+      && (await tags.getByRole("textbox", { name: "Custom tags" }).isEditable()), { timeout: 15_000 });
+    s.check(settled, "after the review the tags form reads saved and takes changes again");
+    // Stored, not only kept on this page: a fresh load from the server still shows B as the setup grade.
+    await openTrade(page, tradeId);
+    const stored = region(page, "Review").getByRole("form", { name: "Tags" });
+    const kept = await until(() => stored.getByRole("radio", { name: "B", exact: true }).isChecked(), { timeout: 15_000 });
+    s.check(kept && (await tradeState(page)) === "Reviewed", "the grade picked before Mark reviewed was saved with the review (still B after a reload)");
     s.evidence(15, "live-first trade recorded, journaled, closed and reviewed through labelled controls only");
     await s.shot("timeline", { full: true });
     if (run.mobile) {

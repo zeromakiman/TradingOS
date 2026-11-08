@@ -95,8 +95,8 @@ try{
  if(!failedHistory)skip('Previous FAILED legacy evaluator history is preserved','users[1] has no FAILED V1 setup_evaluation_events row; V2 never creates one (the no-new-evaluation part still runs)');
  await check(aiEnabled?'Legacy Analyze refuses a request without a valid body and creates no evaluations':`Disabled Analyze creates no evaluations${failedHistory?' and preserves previous failed history':''}`,async()=>{
   const r=await fetch(`${base}/api/setups/${proposal}/analyze`,{method:'POST',headers:headers(1)});
-  // With AI on, the route refuses the missing body before any evaluation starts (it answers 500 for it today, not 400).
-  if(aiEnabled)assert.ok(r.status>=400,`${r.status}`);else {assert.equal(r.status,200);assert.equal((await r.json()).status,'DISABLED');}
+  // With AI on, the route refuses the missing body with 400 before any evaluation starts.
+  if(aiEnabled){assert.equal(r.status,400);assert.equal((await r.json()).error,'Send a JSON body with an evaluationId (UUID) and a mode (NORMAL or DEEP).');}else {assert.equal(r.status,200);assert.equal((await r.json()).status,'DISABLED');}
   assert.deepEqual(await legacyEvents(),history);
  });
  await check('Filtered CSV remains private and excludes authentication identifiers',async()=>{

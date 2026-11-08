@@ -50,12 +50,25 @@ export async function persistChoice(action: CallableAction, fields: ActionFields
   return false;
 }
 
+export type SwitchOptions = {
+  /**
+   * The page's URL names a context (`?account=`), so the URL decides what it shows: the option's link is followed once
+   * the choice is stored. Storing first means every later page, however it is reached (a header link, a reload,
+   * another tab), renders the new context; following first would leave a moment in which it renders the old one.
+   */
+  followLink?: boolean;
+  /** Called with the value once the action stored it, before any navigation (the shell then knows it is stored). */
+  stored?: (value: string) => void;
+};
+
 /**
- * Switches the trading-account context with the action, which re-renders the page in place.
- * When the action fails, the option's `?account=` link is followed instead: the proxy validates
- * and stores that choice, and the page explains an account that is not available.
+ * Switches the trading-account context with the action, which re-renders the page in place
+ * (or, with `followLink`, is followed by the option's link). When the action fails, the
+ * option's `?account=` link is followed in any case: the proxy validates and stores that
+ * choice, and the page explains an account that is not available.
  */
-export async function switchAccountContext(action: ShellAction, value: string, href: string, navigate: (href: string) => void): Promise<void> {
+export async function switchAccountContext(action: ShellAction, value: string, href: string, navigate: (href: string) => void, options: SwitchOptions = {}): Promise<void> {
   const outcome = await callShellAction(action, accountFields(value));
-  if (!outcome.ok) navigate(href);
+  if (outcome.ok) options.stored?.(value);
+  if (!outcome.ok || options.followLink) navigate(href);
 }

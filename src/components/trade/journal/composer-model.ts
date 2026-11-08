@@ -16,6 +16,21 @@ export type { JournalKind } from "@/domain/timeline";
 
 export const JOURNAL_KINDS: readonly JournalKind[] = Object.freeze(["NOTE", "DECISION", "STOP_CHANGE", "TARGET_CHANGE", "PARTIAL_CLOSE", "LESSON"]);
 
+/**
+ * Kinds that record how an open position was managed: the database takes them only while the trade is live
+ * (`add_journal_entry` raises ENTRY_NOT_LIVE otherwise), because a stop move, a target change or a partial close
+ * before the entry or after the close never happened to a position.
+ */
+export const LIVE_ONLY_KINDS: readonly JournalKind[] = Object.freeze(["STOP_CHANGE", "TARGET_CHANGE", "PARTIAL_CLOSE"]);
+
+/**
+ * The kinds the composer offers for entries that land in `timing` (`timingHintForLifecycle`): all six While live;
+ * Note · Decision · Lesson before the entry and after the close (or after a plan ended without one).
+ */
+export function journalKindsFor(timing: Timing): readonly JournalKind[] {
+  return timing === "WHILE_LIVE" ? JOURNAL_KINDS : JOURNAL_KINDS.filter(kind => !LIVE_ONLY_KINDS.includes(kind));
+}
+
 /** Chip words: Note · Decision · Stop · Target · Partial · Lesson. */
 export const JOURNAL_KIND_LABELS: Readonly<Record<JournalKind, string>> = Object.freeze({
   NOTE: "Note",
@@ -108,7 +123,24 @@ export const JOURNAL_COPY = Object.freeze({
   quantity: "Size must be a positive number with up to 8 decimals.",
   percent: "Percent must be more than 0 and less than 100.",
   partialEmpty: "Describe the partial close or give its price, size or percent.",
+  /** `ENTRY_NOT_LIVE`: the trade is no longer (or not yet) live, for example after it was closed in another tab. */
+  notLive: "Stop, target and partial-close entries can only be recorded while the trade is live.",
+  /** Drafts: the plan's stop and target change with a new revision, never through the journal. */
+  draftKinds: "The stop and target are part of the plan: change them with Edit draft.",
+  /** Locked plans: the plan is immutable; management is journaled once there is a position. */
+  lockedKinds: "Stop moves, target changes and partial closes can be journaled once the entry is recorded.",
 });
+
+/**
+ * Why the composer doesn't offer Stop, Target and Partial, when it helps to say so: on a draft (whose plan changes with
+ * Edit draft, when it can still be edited) and on a locked plan (until the entry is recorded). Null otherwise: a live
+ * trade offers them, and after a close or the end of a plan there is no position to manage.
+ */
+export function liveKindsNote(lifecycle: Lifecycle, planEditable: boolean): { text: string; editDraft: boolean } | null {
+  if (lifecycle === "DRAFT") return planEditable ? { text: JOURNAL_COPY.draftKinds, editDraft: true } : null;
+  if (lifecycle === "LOCKED") return { text: JOURNAL_COPY.lockedKinds, editDraft: false };
+  return null;
+}
 
 /** "Price must be a multiple of the 0.00001 tick size." */
 export function tickCopy(tickSize: string): string {

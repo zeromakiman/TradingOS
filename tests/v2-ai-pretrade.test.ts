@@ -365,6 +365,32 @@ describe("V2 pre-trade requests: lifecycle", () => {
     await expect(analyzeTradeSetup(ids.trade, ids.request, [])).rejects.toThrow(/finish saving/);
     expect(m.gate).toHaveBeenCalledTimes(1);
   });
+
+  // Ported from the V1 service tests (tests/analyze-setup.test.ts, tests/bias-challenge.test.ts).
+  it.each([
+    ["Analyze Setup", analyzeTradeSetup, analysisOutput],
+    ["Challenge My Bias", challengeTradeBias, challengeOutput],
+  ] as const)("%s examines a blocked draft without changing it, and sends neither earlier AI output, setup history nor unselected screenshots", async (_label, run, output) => {
+    const loaded = {
+      ...structuredClone(source), user: { id: ids.user }, db: m.db, lock: null, screenshots: [], removals: [],
+      evaluations: [{ secret: "oldAI" }], decisions: [{ secret: "oldHistory" }],
+    };
+    m.load.mockResolvedValue(loaded);
+    m.gate.mockImplementation(respond(output));
+    const before = structuredClone({ proposal: loaded.proposal, risk: loaded.risk });
+    expect(loaded.risk.result.status).toBe("TRADE_BLOCKED");
+    expect(await run(ids.trade, ids.request, [])).toMatchObject({ status: "COMPLETED" });
+    const sent = m.gate.mock.calls[0][0];
+    expect(sent.context.deterministic.status).toBe("TRADE_BLOCKED");
+    expect(sent.context.currentThesis).toBe(source.proposal.proposal.narrative);
+    expect(sent.prior).toEqual([]);
+    expect(sent.images).toEqual([]);
+    expect(JSON.stringify(sent.context)).not.toMatch(/oldAI|oldHistory|storage_path/);
+    expect(fake.downloads).toEqual([]);
+    // Only the request's own records are written: no proposal, risk check or plan RPC.
+    expect([...new Set(rpcNames())]).toEqual(["start_bias_challenge", "authorize_bias_challenge", "finish_bias_challenge"]);
+    expect({ proposal: loaded.proposal, risk: loaded.risk }).toEqual(before);
+  });
 });
 
 describe("V2 pre-trade panels", () => {
@@ -416,5 +442,32 @@ describe("V2 pre-trade panels", () => {
     expect(locked.history[0].card?.headlineTitle).toBe("Why your thesis might be wrong");
     fake.errors.add("bias_challenges");
     expect(await loadTradeBiasChallengePanel(ids.trade)).toMatchObject({ availability: { status: "CONFIGURATION_ERROR" }, history: [], evidence: [], error: expect.stringMatching(/unaffected/) });
+  });
+
+  // Ported from the V1 panel loader tests (tests/analyze-setup-actions-data.test.ts, tests/bias-challenge-actions-data.test.ts).
+  it("with AI off, keeps the saved results and their accounting readable, reads only the owner's records and downloads nothing", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-10-17T12:00:00Z"));
+    history();
+    const latestRequest = "71000000-0000-4000-8000-000000000001";
+    fake.tables.bias_challenge_results[0] = { ...fake.tables.bias_challenge_results[0], reservation_id: ids.reservation };
+    fake.tables.bias_challenges.push({ ...fake.tables.bias_challenges[0], id: "71000000-0000-4000-8000-000000000009", user_id: "10000000-0000-4000-8000-000000000009" });
+    fake.tables.ai_request_reservations = [
+      { id: ids.reservation, operation_id: latestRequest, user_id: ids.user, reserved_micros: 45540, period: "2026-09-01" },
+      { id: "80000000-0000-4000-8000-000000000009", operation_id: latestRequest, user_id: "10000000-0000-4000-8000-000000000009", reserved_micros: 1, period: "2026-09-01" },
+    ];
+    fake.tables.ai_usage_records = [{ reservation_id: ids.reservation, user_id: ids.user, charged_micros: 12000, disposition: "SETTLED", input_tokens: 900, output_tokens: 300, response_id: "resp_1" }];
+    m.availability.mockResolvedValue({ status: "DISABLED", message: "AI analysis is currently disabled", deepEnabled: false });
+    const panel = await loadTradeAnalyzeSetupPanel(ids.trade);
+    expect(panel).toMatchObject({ availability: { status: "DISABLED" }, state: "OPEN", riskDecision: "BLOCKED", error: null });
+    expect(panel.history.map(row => row.technical.requestId)).toEqual([latestRequest, "71000000-0000-4000-8000-000000000003", "71000000-0000-4000-8000-000000000004"]);
+    expect(panel.history[0]).toMatchObject({ status: "COMPLETED", technical: { reservationId: ids.reservation, reservedMicros: 45540, chargedMicros: 12000, disposition: "SETTLED" } });
+    expect(panel.history[0].card?.headline.sources.map(chip => chip.label)).toEqual(["Trade plan", "Your thesis"]);
+    for (const table of ["bias_challenges", "ai_request_reservations", "ai_usage_records"]) {
+      expect(fake.queries.filter(query => query.table === table).every(query => query.filters.some(([key, value]) => key === "user_id" && value === ids.user))).toBe(true);
+    }
+    expect(fake.downloads).toEqual([]);
+    expect(m.gate).not.toHaveBeenCalled();
+    expect(m.rpc).not.toHaveBeenCalled();
   });
 });

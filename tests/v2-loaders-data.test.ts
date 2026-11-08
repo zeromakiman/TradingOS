@@ -589,6 +589,36 @@ describe("journal filters and cursor (§14.5)", () => {
     expect(journalHref({ accountFilter: A2, model: "OTE" }, { account: A1 })).toBe(`/journal?model=OTE&account=${A1}`);
   });
 
+  it("reads V1 Journal bookmarks (bc5441c status and outcome) where the V2 names are absent, and names a V1 value it cannot read", () => {
+    // V1 page and proposals (offset paging, the setup list) have no V2 meaning: not filters, never named.
+    expect(parseTradeFilters({ status: "CLOSED", outcome: "WIN", page: "2", proposals: "1" })).toEqual({ filters: { states: ["CLOSED", "REVIEWED"], result: "WIN" }, invalid: [] });
+    expect(["LOCKED", "TAKEN", "SKIPPED", "CANCELLED", "taken"].map(status => parseTradeFilters({ status }).filters.states)).toEqual([
+      ["LOCKED"], ["LIVE"], ["SKIPPED"], ["CANCELLED"], ["LIVE"],
+    ]);
+    expect(["LOSS", "BREAKEVEN"].map(outcome => parseTradeFilters({ outcome }).filters.result)).toEqual(["LOSS", "BREAKEVEN"]);
+    // The V2 names win when a link carries both; a value outside V1's vocabulary is named as the filter it would set.
+    expect(parseTradeFilters({ state: "live", status: "CLOSED", result: "loss", outcome: "WIN" })).toEqual({ filters: { states: ["LIVE"], result: "LOSS" }, invalid: [] });
+    expect(parseTradeFilters({ status: "OPEN", outcome: "OPEN" })).toEqual({ filters: {}, invalid: ["outcome", "status"] });
+    // Links written back use the V2 names only.
+    expect(tradeFilterParams(parseTradeFilters({ status: "CLOSED", outcome: "BREAKEVEN" }).filters).toString()).toBe("result=breakeven&state=closed%2Creviewed");
+  });
+
+  it("reads one currency's trades (EDGE's daily net P&L of a currency), writes it after the account filter, and reads only that currency", async () => {
+    expect(parseTradeFilters({ currency: "eur", model: "OTE" })).toEqual({ filters: { currency: "EUR", model: "OTE" }, invalid: [] });
+    expect(parseTradeFilters({ currency: "euro" })).toEqual({ filters: {}, invalid: ["currency"] });
+    expect(tradeFilterParams({ model: "OTE", currency: "EUR", accountFilter: A2 }).toString()).toBe(`accountFilter=${A2}&currency=EUR&model=OTE`);
+    const rows = [
+      closed(tradeId(1), "2026-10-13T15:00:00.000Z", "1", "50"),
+      closed(tradeId(2), "2026-10-13T16:00:00.000Z", "-1", "-30", { account_id: A2, currency: "EUR" }),
+    ];
+    const db = new FakeDb({ trade_ledger: rows.map(ledgerRow) });
+    const loaded = await loadLedgerRows(asDb(db), USER, { mode: "all" }, { currency: "EUR" }, { closedOnly: true });
+    expect(loaded.rows.map(row => row.id)).toEqual([tradeId(2)]);
+    expect(db.ledgerCalls()[0].filters).toContain("eq:currency:EUR");
+    const page = await loadLedgerPage(asDb(db), USER, { mode: "all" }, { currency: "USD" }, null);
+    expect(page.rows.map(row => row.id)).toEqual([tradeId(1)]);
+  });
+
   it("only accepts cursors it wrote", () => {
     const cursor = encodeTradeCursor({ t: "2026-10-14T09:00:00.123456+00:00", id: tradeId(1) });
     expect(decodeTradeCursor(cursor)).toEqual({ t: "2026-10-14T09:00:00.123456+00:00", id: tradeId(1) });
@@ -902,6 +932,26 @@ describe("trade detail (§5.4, §7.5, §8.5, §14.4)", () => {
     expect(await loadTradeDetail(detailDeps(db), "not-a-uuid")).toBeNull();
   });
 
+  it("carries the minimum RR each check compared the planned RR with: its report's limits, else its own risk plan version (§6.6)", async () => {
+    const tables = plannedTables();
+    // The risk plan version's minimum is 2.995R; a V1-migrated report (engine 1.0) states no limits of its own.
+    tables.risk_plan_versions = tables.risk_plan_versions.map(row => ({ ...row, min_rr: "2.99500000" }));
+    const toLegacy = (report: Row) => ({
+      engineVersion: "1.0", evaluatedAt: report.evaluatedAt, tradingDay: report.tradingDay, session: report.session, strategyVersionId: report.strategyVersionId,
+      riskPlanVersionId: report.riskPlanVersionId, status: report.status, calculations: report.calculations,
+      issues: (report.issues as Row[]).map(({ code, severity, message }) => ({ code, severity, message })),
+    });
+    const [blockedRow, approvedRow] = tables.setup_risk_checks;
+    const blockedRisk = blockedRow.risk as Row;
+    tables.setup_risk_checks = [{ ...blockedRow, risk: { ...blockedRisk, result: toLegacy(blockedRisk.result as Row) } }, approvedRow];
+    tables.trade_plans = tables.trade_plans.map(row => ({ ...row, risk_result: toLegacy(row.risk_result as Row) }));
+    const detail = await loadTradeDetail(detailDeps(new FakeDb(tables)), TRADE);
+    if (!detail) throw new Error("detail expected");
+    // Report 1.2 states the minimum it applied (3R); the older reports read their risk plan version's (2.995R).
+    expect(detail.checks.map(check => [check.revision, check.minRR])).toEqual([[1, "2.995"], [2, "3"]]);
+    expect(detail.plan?.check?.minRR).toBe("2.995");
+  });
+
   it("assembles every timeline source, the plan view and plan vs reality", async () => {
     const db = new FakeDb(plannedTables());
     const detail = await loadTradeDetail(detailDeps(db), TRADE);
@@ -1060,8 +1110,14 @@ describe("trade detail (§5.4, §7.5, §8.5, §14.4)", () => {
       trade_revisions: [{ proposal_id: PROP_V1, trade_id: V1, user_id: USER, revision: 1, created_at: "2026-10-10T10:00:00.000Z" }],
       setup_proposals: [{ id: PROP_V1, user_id: USER, proposal: PROPOSAL, created_at: "2026-10-10T10:00:00.000Z", instrument_version_id: I1 }],
       setup_human_decisions: [
-        { id: uuid("f", 1), proposal_id: PROP_V1, user_id: USER, decision: "TAKEN", recorded_at: "2026-10-10T10:30:00.000Z" },
-        { id: uuid("f", 2), proposal_id: PROP_V1, user_id: USER, decision: "SKIPPED", recorded_at: "2026-10-10T11:00:00.000Z" },
+        {
+          id: uuid("f", 1), proposal_id: PROP_V1, user_id: USER, decision: "TAKEN", event_type: "MANUAL_OVERRIDE", reason: "Took it anyway: news was priced in.",
+          risk_decision: "BLOCKED", ai_decision: "NOT_EVALUATED", recorded_at: "2026-10-10T10:30:00.000Z",
+        },
+        {
+          id: uuid("f", 2), proposal_id: PROP_V1, user_id: USER, decision: "SKIPPED", event_type: "HUMAN_DECISION", reason: "Spread widened to 3 pips at the London open.",
+          risk_decision: "BLOCKED", ai_decision: "NOT_EVALUATED", recorded_at: "2026-10-10T11:00:00.000Z",
+        },
       ],
       trade_journal_entries: [
         { id: uuid("c", 51), trade_id: V1, user_id: USER, kind: "NOTE", body: "Later.", details: {}, phase: "POST_TRADE", state_at_creation: "SKIPPED", source: "USER", recorded_at: "2026-10-11T09:00:00.000Z" },
@@ -1070,7 +1126,15 @@ describe("trade detail (§5.4, §7.5, §8.5, §14.4)", () => {
     });
     const detail = await loadTradeDetail(detailDeps(db), V1);
     expect(detail?.planEndedAt).toBe("2026-10-10T11:00:00.000Z");
-    expect(db.calls.find(call => call.table === "setup_human_decisions")).toMatchObject({ orders: ["recorded_at:desc", "id:desc"], limit: 1 });
+    // Every V1 decision of the trade's revisions, newest first (the ledger's order), with the trader's reason.
+    expect(db.calls.find(call => call.table === "setup_human_decisions")).toMatchObject({
+      select: "id,decision,event_type,reason,risk_decision,ai_decision,recorded_at", filters: [`eq:user_id:${USER}`, `in:proposal_id:${PROP_V1}`],
+      orders: ["recorded_at:desc", "id:desc"], limit: 1000,
+    });
+    expect(detail?.timeline.filter(item => item.kind === "LEGACY_DECISION").map(item => [item.title, item.body, item.timing])).toEqual([
+      ["Taken despite a block", "Took it anyway: news was priced in.", "BEFORE_ENTRY"],
+      ["Decision: Skipped", "Spread widened to 3 pips at the London open.", "BEFORE_ENTRY"],
+    ]);
     expect(detail?.timeline.find(item => item.kind === "JOURNAL")).toMatchObject({ timing: "AFTER_CLOSE", flags: [] });
   });
 
@@ -1377,6 +1441,22 @@ describe("performance (§9.3, §13.6, §14.6)", () => {
     expect(calls.every(call => call.filters.includes("not:exited_at:is:null") && call.orders[0] === "id:asc")).toBe(true);
   });
 
+  it("reads a scope of exactly the read limit in full, and calls it truncated only when one more row matches", async () => {
+    const rows = (count: number) => Array.from({ length: count }, (_, index) => ledgerRow(closed(tradeId(index + 1), "2026-10-13T10:00:00.000Z", "1", "10")));
+    // 1,000 rows at a limit of 1,000: two full pages, then a one-row probe that finds nothing.
+    const exact = new FakeDb({ trade_ledger: rows(1000) });
+    const complete = await loadLedgerRows(asDb(exact), USER, { mode: "all" }, {}, { closedOnly: true, maxRows: 1000 });
+    expect(complete).toMatchObject({ truncated: false });
+    expect(complete.rows).toHaveLength(1000);
+    const probe = exact.ledgerCalls()[2];
+    expect(probe).toMatchObject({ limit: 1 });
+    expect(probe.filters).toEqual(expect.arrayContaining([`gt:id:${tradeId(1000)}`, "not:exited_at:is:null"]));
+    // One more row: the first 1,000 are read and the result says it is incomplete.
+    const more = await loadLedgerRows(asDb(new FakeDb({ trade_ledger: rows(1001) })), USER, { mode: "all" }, {}, { closedOnly: true, maxRows: 1000 });
+    expect(more).toMatchObject({ truncated: true });
+    expect(more.rows).toHaveLength(1000);
+  });
+
   it("builds drill-down links that list exactly the trades of a mark", async () => {
     const base: TradeFilters = { closedFrom: "2026-10-01", closedTo: "2026-10-31", origin: "PLANNED" };
     expect(breakdownHref({ key: "model", value: "OTE" }, { base })).toBe("/journal?closedFrom=2026-10-01&closedTo=2026-10-31&state=closed,reviewed&origin=planned&model=OTE".replace(",", "%2C"));
@@ -1425,6 +1505,41 @@ describe("performance (§9.3, §13.6, §14.6)", () => {
     expect(links.length).toBeGreaterThan(3);
     expect(links.filter(href => href.includes("accountFilter"))).toEqual([]);
     expect(stale.daily.map(point => point.href)).toEqual(["/journal?closedFrom=2026-10-13&closedTo=2026-10-13&state=closed%2Creviewed&model=OB_FIRST_TOUCH"]);
+  });
+
+  it("drills a day into all its trades and each currency's net P&L of the day into exactly the trades it sums (§9.3)", async () => {
+    // Sep 2: a EUR trade and a USD trade; Oct 8: a EUR trade without a recorded risk and a USD trade; Oct 14: USD only.
+    const eur = { account_id: A2, currency: "EUR" } as const;
+    const trades = [
+      closed(tradeId(1), "2026-09-02T15:00:00.000Z", "-1.03", "-62.4", { ...eur, entered_at: "2026-09-02T13:00:00.000Z" }),
+      closed(tradeId(2), "2026-09-02T16:00:00.000Z", "1.29", "645", { entered_at: "2026-09-02T13:30:00.000Z" }),
+      closed(tradeId(3), "2026-10-08T15:00:00.000Z", null, "-50.26", { ...eur, entered_at: "2026-10-08T13:00:00.000Z", origin: "LIVE_FIRST" }),
+      closed(tradeId(4), "2026-10-08T16:00:00.000Z", "4.17", "2089.25", { entered_at: "2026-10-08T13:30:00.000Z" }),
+      closed(tradeId(5), "2026-10-14T16:00:00.000Z", "-1", "-500", { entered_at: "2026-10-14T13:30:00.000Z" }),
+    ];
+    const db = new FakeDb({ trade_ledger: trades.map(ledgerRow) });
+    /** The trades the Journal lists for a drill-down link (its own parser and its own ledger read). */
+    const listed = async (href: string) => {
+      const { filters, invalid } = parseTradeFilters(new URL(href, "http://x").searchParams);
+      expect(invalid).toEqual([]);
+      return (await loadLedgerPage(asDb(db), USER, { mode: "all" }, filters, null)).rows.map(row => row.id).sort();
+    };
+    const all = resolveAccountContext({ accounts: [account(A1), account(A2, { currency: "EUR" })], stored: "all", lastAccount: undefined, proxyNotice: false });
+    const view = buildPerformance(all, { rows: trades, truncated: false }, {}, NOW);
+    expect(view.daily.map(point => [point.day, point.money.map(money => money.currency)])).toEqual([
+      ["2026-09-02", ["EUR", "USD"]], ["2026-10-08", ["EUR", "USD"]], ["2026-10-14", ["USD"]],
+    ]);
+    for (const point of view.daily) {
+      expect(await listed(point.href)).toEqual([...point.tradeIds].sort());
+      for (const money of point.money) {
+        const own = trades.filter(trade => point.tradeIds.includes(trade.id) && trade.currency === money.currency).map(trade => trade.id).sort();
+        expect(await listed(money.href)).toEqual(own);
+      }
+    }
+    // One currency on the page: a currency's figure is the whole day, so it opens the day's own link.
+    const usd = resolveAccountContext({ accounts: [account(A1), account(A2, { currency: "EUR" })], stored: A1, lastAccount: undefined, proxyNotice: false });
+    const single = buildPerformance(usd, { rows: trades.filter(trade => trade.currency === "USD"), truncated: false }, {}, NOW);
+    expect(single.daily.flatMap(point => point.money.map(money => money.href === point.href))).toEqual([true, true, true]);
   });
 
   it("aggregates R across accounts, money per currency, and adds account contribution only in All Accounts", () => {

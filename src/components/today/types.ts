@@ -116,14 +116,20 @@ export interface AccountStatusView {
   externalSummary: string;
 }
 
-/** All Accounts: today's result over every account in the context (R across accounts, money per currency). */
+/**
+ * All Accounts: today's result over every trade closed today in the context, archived accounts' included (R across
+ * accounts, money per currency), and the realized losses of the same accounts.
+ */
 export interface DaySummaryView {
   /** "+3.06R" or null without R trades. */
   r: ValueText | null;
   money: ValueText[];
-  /** "2 trades closed today · 1 without R". */
+  /** "2 trades closed today · 1 without R", with "· 1 on an archived account" when an archived account closed one. */
   detail: string;
-  /** Realized + external losses per currency: "$295.00 · €0.00". */
+  /**
+   * Per currency, the realized + external losses of the same accounts as the result, from their daily usage: every
+   * account row, plus an archived account that closed a trade today (no row shows it): "€26.83 · $295.00".
+   */
   losses: string;
 }
 

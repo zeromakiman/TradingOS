@@ -72,6 +72,7 @@ async function activity(accountId: string): Promise<Record<string, number>> {
       (select count(*)::int from public.trades where account_id = $1) as trades,
       (select count(*)::int from public.trade_revisions where account_id = $1) as revisions,
       (select count(*)::int from public.setup_proposals where account_id = $1) as proposals,
+      (select count(*)::int from public.setup_risk_checks where account_id = $1) as risk_checks,
       (select count(*)::int from public.risk_evaluations where account_id = $1) as evaluations,
       (select count(*)::int from public.trade_plans where account_id = $1) as plans,
       (select count(*)::int from public.trade_position_facts where account_id = $1) as facts,
@@ -94,6 +95,8 @@ function newActivity(a: BootstrappedAccount, draft: DraftEnvelope): [string, str
     ["lock a draft", "select public.lock_trade($1, 1)", [draft.tradeId]],
     ["check through the V1 entry point", "select public.check_setup_risk($1, false)", [draft.proposalId]],
     ["lock through the V1 entry point", "select public.check_setup_risk($1, true)", [draft.proposalId]],
+    // V1 save_setup_proposal stays granted (§10.4) and persists a risk check: it is new activity too.
+    ["save a proposal through the V1 entry point", "select public.save_setup_proposal($1, $2::jsonb, $3, $4, $5)", [a.accountId, JSON.stringify(proposal(a, THIRD)), randomUUID(), a.riskId, a.observationId]],
     ["add an external loss", "select public.add_external_loss($1, '10', null, $2)", [a.accountId, randomUUID()]],
     ["record account values", "select public.record_account_values($1, '10000', '10000')", [a.accountId]],
     ["connect a platform", "select public.create_platform_connection($1, 'MOCK', 'Mock platform', $2)", [a.accountId, randomUUID()]],
@@ -143,7 +146,7 @@ describe("archived trading accounts take no new activity (§3.2, §14.9)", () =>
 
   it("still answers replays of requests made while the account was active, writing nothing", async () => {
     const a = await db.bootstrapAccount(OWNER);
-    const keys = { draft: randomUUID(), live: randomUUID(), loss: randomUUID(), connection: randomUUID() };
+    const keys = { draft: randomUUID(), live: randomUUID(), loss: randomUUID(), connection: randomUUID(), proposal: randomUUID() };
     const draft = await createDraft(a, keys.draft);
     const locked = await createDraft(a, randomUUID(), SECOND);
     const plan = await lock(locked.tradeId);
@@ -152,6 +155,9 @@ describe("archived trading accounts take no new activity (§3.2, §14.9)", () =>
     const loss = await externalLoss(a, "25", "Other platform", keys.loss);
     await db.actor(OWNER);
     const connection = await value<string>("select public.create_platform_connection($1, 'MOCK', 'Mock platform', $2) as value", [a.accountId, keys.connection]);
+    const saveV1 = () => value<string>("select public.save_setup_proposal($1, $2::jsonb, $3, $4, $5) as value",
+      [a.accountId, JSON.stringify(proposal(a, THIRD)), keys.proposal, a.riskId, a.observationId]);
+    const v1Proposal = await saveV1();
     await setStatus(a.accountId, "ARCHIVED");
     const before = await activity(a.accountId);
 
@@ -163,6 +169,7 @@ describe("archived trading accounts take no new activity (§3.2, §14.9)", () =>
     expect(await lock(locked.tradeId)).toMatchObject({ planId: plan.planId, replayed: true });
     await db.actor(OWNER);
     expect(await value<CheckEnvelope>("select public.check_setup_risk($1, true) as value", [locked.proposalId])).toMatchObject({ planId: plan.planId, replayed: true });
+    expect(await saveV1()).toBe(v1Proposal);
     // A replay with other values is still a conflict, never a way around the archive.
     await expect(createDraft(a, keys.draft, THIRD)).rejects.toThrow(/^IDEMPOTENCY_CONFLICT:/);
     expect(await activity(a.accountId)).toEqual(before);
@@ -231,6 +238,9 @@ describe("archived trading accounts take no new activity (§3.2, §14.9)", () =>
     expect(await externalLoss(a, "10", null)).toEqual(expect.any(String));
     await db.actor(OWNER);
     expect(await value<string>("select public.create_platform_connection($1, 'MOCK', 'Mock platform', $2) as value", [a.accountId, randomUUID()])).toEqual(expect.any(String));
+    // Saved against the account values of the bootstrap, which the next call replaces.
+    expect(await value<string>("select public.save_setup_proposal($1, $2::jsonb, $3, $4, $5) as value",
+      [a.accountId, JSON.stringify(proposal(a, { entry: "1.4", stop: "1.398", target: "1.406" })), randomUUID(), a.riskId, a.observationId])).toEqual(expect.any(String));
     expect(await value<string>("select public.record_account_values($1, '10000', '10000') as value", [a.accountId])).toEqual(expect.any(String));
     // Archiving again refuses again: the latest profile revision decides.
     await setStatus(a.accountId, "ARCHIVED");
@@ -244,7 +254,8 @@ describe("archived trading accounts take no new activity (§3.2, §14.9)", () =>
     const mine = await db.bootstrapAccount(OTHER);
     await db.actor(OTHER);
     for (const [what, sql, params] of newActivity(a, draft)) {
-      const expected = what.includes("V1") ? /^Proposal not found/ : params[0] === a.accountId ? /^ACCOUNT_NOT_FOUND:/ : /^TRADE_NOT_FOUND:/;
+      const expected = what.startsWith("save a proposal") ? /^Account not found or missing request key/
+        : what.includes("V1") ? /^Proposal not found/ : params[0] === a.accountId ? /^ACCOUNT_NOT_FOUND:/ : /^TRADE_NOT_FOUND:/;
       await expect(db.query(sql, params), what).rejects.toThrow(expected);
     }
     // Nobody else can restore (or archive) the account.

@@ -7,9 +7,12 @@ import {
   contextSelection,
   contextValue,
   initialContextSync,
+  type NoticeRender,
+  noticeOnScreen,
   paramContext,
   parseContextParam,
   reduceContextSync,
+  type ShownNotice,
 } from "@/components/shell/context-sync";
 import type { ShellAccount } from "@/components/shell/types";
 
@@ -101,11 +104,18 @@ describe("header context after navigations (item 16)", () => {
 });
 
 describe("header selector on a page whose URL names a context (item 18)", () => {
-  it("follows the option's link and stores the new context, so header, page and cookie agree", () => {
-    // /review/history?account=all, then FTMO is chosen: the option links to /review/history?account=FTMO.
+  it("stores the context of a link to ?account= it was not told about, so header, page and cookie agree", () => {
+    // /review/history?account=all, then a link to /review/history?account=FTMO (a dashboard link, say) is followed.
     const { state, effects } = run(initialContextSync(ALL_CONTEXT), [navigated(ALL_CONTEXT), navigated(FTMO)]);
     expect(state.page).toBe(FTMO);
     expect(effects).toEqual([{}, { persist: FTMO }]);
+  });
+
+  it("does not store the selector's switch again: it was stored before the option's link was followed", () => {
+    // The action stores FTMO and re-renders /review/history?account=all (the URL's context), then the link is followed.
+    const { state, effects } = run(initialContextSync(ALL_CONTEXT), [{ type: "stored", value: FTMO }, rendered(ALL_CONTEXT, ALL_CONTEXT), navigated(FTMO)]);
+    expect(state).toEqual({ stored: FTMO, page: FTMO, stale: false });
+    expect(effects).toEqual([{ announce: FTMO }, {}, {}]);
   });
 
   it("takes the stored context from a server action's re-render, which renders from the cookie", () => {
@@ -152,5 +162,60 @@ describe("prefetches", () => {
     // from the unchanged cookie (the proxy stores only page loads), which is what the shell still knows.
     const state = initialContextSync(FTMO);
     expect(run(state, [rendered(FTMO)]).state).toEqual(state);
+  });
+});
+
+describe("a stored context that is no longer available (§9.2: the notice is shown once)", () => {
+  // The cookie names an account archived on another device, or one left in this browser by someone else's session.
+  // The page shows All Accounts with the notice, and nothing else would ever rewrite the cookie, so the layout says so
+  // (storedUnavailable) and the shell stores All Accounts with the account action.
+  it("stores All Accounts, then announces it to the other tabs once the action succeeded", () => {
+    const { state, effects } = run(initialContextSync(ALL_CONTEXT), [{ type: "unavailable" }]);
+    expect(effects).toEqual([{ persist: ALL_CONTEXT }]);
+    expect(state).toEqual(initialContextSync(ALL_CONTEXT));
+    const after = run(state, [{ type: "stored", value: ALL_CONTEXT }, rendered(ALL_CONTEXT)]);
+    expect(after.state).toEqual({ stored: ALL_CONTEXT, page: ALL_CONTEXT, stale: false });
+    expect(after.effects).toEqual([{ announce: ALL_CONTEXT }, {}]);
+  });
+
+  it("leaves a stored context alone when only the URL's account was refused (a client-side navigation)", () => {
+    // Nothing but the server's storedUnavailable sends "unavailable": the refused navigation keeps FTMO stored.
+    const { state, effects } = run(initialContextSync(FTMO), [navigated(ARCHIVED), rendered(ALL_CONTEXT, ARCHIVED)]);
+    expect(effects).toEqual([{ persist: ARCHIVED }, {}]);
+    expect(state.stored).toBe(FTMO);
+  });
+});
+
+describe("the context notice on screen (shown once)", () => {
+  const NOTICE = "That trading account isn't available. Showing All Accounts.";
+  const at = (href: string, renderKey: string, notice: string | null = null, allAccounts = true): NoticeRender => ({ notice, renderKey, href, allAccounts });
+
+  /** What ContextNotice shows after each render: it starts from the first render's notice, then follows noticeOnScreen. */
+  function screen(renders: NoticeRender[]): (string | null)[] {
+    let shown: ShownNotice = renders[0].notice ? { text: renders[0].notice, href: renders[0].href } : null;
+    let seen = renders[0].renderKey;
+    return renders.map(next => {
+      shown = noticeOnScreen(shown, seen, next);
+      seen = next.renderKey;
+      return shown?.text ?? null;
+    });
+  }
+
+  it("keeps a stored context's notice readable while the shell stores All Accounts, then drops it on the next page", () => {
+    // Page load of /today (render 1, notice) -> the stored All Accounts renders the layout again without it (render 2)
+    // -> the person opens the Journal (a client-side navigation: the layout keeps render 2).
+    expect(screen([at("/today", "r1", NOTICE), at("/today", "r2"), at("/journal", "r2")])).toEqual([NOTICE, NOTICE, null]);
+  });
+
+  it("shows the proxy's notice for ?account= on its page only, although the layout's prop still carries it", () => {
+    // The layout is not rendered again on client-side navigations: its `notice` prop outlives the page it was for.
+    const renders = [at("/today?account=x", "r1", NOTICE), at("/journal", "r1", NOTICE), at("/edge", "r1", NOTICE), at("/today", "r1", NOTICE)];
+    expect(screen(renders)).toEqual([NOTICE, null, null, null]);
+  });
+
+  it("leaves when the person picks another context, and comes back only with a new render that has it", () => {
+    expect(screen([at("/today", "r1", NOTICE), at("/today", "r2", null, false)])).toEqual([NOTICE, null]);
+    expect(screen([at("/today", "r1", NOTICE), at("/journal", "r1", NOTICE), at("/journal", "r2", NOTICE)])).toEqual([NOTICE, null, NOTICE]);
+    expect(screen([at("/today", "r1"), at("/today", "r2"), at("/journal", "r2")])).toEqual([null, null, null]);
   });
 });

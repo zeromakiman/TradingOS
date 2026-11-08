@@ -145,6 +145,15 @@ export function formatMoneyExact(value: DecimalLike, currency: string): string {
   return moneyFormatter(currency, Math.max(2, scaleOf(value)), "trunc", "negative").format(exactText(value));
 }
 
+/**
+ * Money at risk, rounded up to the cent so it is never understated (§6.6): `530.452` → `$530.46`. Every place that
+ * states a plan's risk at the stop or a position's initial risk uses this one rounding, so the same amount never
+ * reads differently on two screens.
+ */
+export function formatMoneyUp(value: DecimalLike, currency: string): string {
+  return formatMoneyExact(toDecimal(value).toDecimalPlaces(2, D.ROUND_CEIL).toFixed(), currency);
+}
+
 /** Money compared with a threshold, with `formatAgainst` decimals and rounding direction. */
 export function formatMoneyAgainst(value: DecimalLike, threshold: DecimalLike, currency: string, rule: "min" | "max", passes: boolean): string {
   const digits = formatAgainst(value, threshold, rule, passes);

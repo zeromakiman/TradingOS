@@ -10,7 +10,10 @@ vi.mock("next/navigation", async (importOriginal) => ({
 
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { chipFocusAfterRemoval, FilterChips } from "@/components/ui/filter-chips";
-import { FOCUS_WAIT_FRAMES, focusElement, focusLost, restoreFocusAfterDialog, restoreFocusWhenGone, restoreFocusWhenLost } from "@/components/ui/focus";
+// The Accounts and Today screens restore focus with the helpers of accounts/focus (the design-system module had unused
+// copies of them, now gone).
+import { restoreFocusAfterDialog, restoreFocusWhenGone } from "@/components/accounts/focus";
+import { FOCUS_WAIT_FRAMES, focusElement, focusLost, restoreFocusWhenLost } from "@/components/ui/focus";
 
 // Focus never drops to the page body (V2 §13.5): when a dialog's trigger or a filter chip goes away after doing its job,
 // focus moves to a stable element of the same section. The helpers run in the browser; here a minimal document and

@@ -493,6 +493,7 @@ begin
 end $$;
 
 -- public.add_journal_entry at p_at: details validated per kind; phase and state computed from the records so far.
+-- Stop moves, target changes and partial closes only while the trade is LIVE, as the RPC requires (ENTRY_NOT_LIVE).
 create function pg_temp.seed_journal(p_trade uuid, p_entry uuid, p_request_key uuid, p_kind text, p_body text, p_details jsonb,
   p_at timestamptz) returns void
 language plpgsql as $$
@@ -502,6 +503,9 @@ declare
 begin
   select * into t from public.trades where id = p_trade;
   if length(v_body) > 5000 then perform pg_temp.fail('journal body too long'); end if;
+  if p_kind in ('STOP_CHANGE', 'TARGET_CHANGE', 'PARTIAL_CLOSE') and private.trade_phase(t.id) is distinct from 'LIVE' then
+    perform pg_temp.fail(p_kind || ' journal entry outside the LIVE phase');
+  end if;
   perform private.check_journal_details(p_kind, v_body, v_details, (private.trade_instrument(t)).tick_size);
   insert into public.trade_journal_entries(id, user_id, account_id, trade_id, kind, body, details, phase, state_at_creation, recorded_at, request_key)
     values (p_entry, t.user_id, t.account_id, t.id, p_kind, v_body, v_details, private.trade_phase(t.id), private.trade_lifecycle(t.id), p_at,

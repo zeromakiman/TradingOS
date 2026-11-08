@@ -273,7 +273,8 @@ export function RiskPreview({ preview, account, now, onFix, onReload, confirmVal
           <h2 id="risk-preview-title" className="font-semibold text-text">
             {PREVIEW_TITLE}
           </h2>
-          {line && <p className="t-caption mt-0.5">{line}</p>}
+          {/* Starts with the account's name (up to 100 characters, maybe without spaces): it breaks, never widens the card. */}
+          {line && <p className="t-caption mt-0.5 wrap-anywhere">{line}</p>}
         </div>
         <VerdictPill preview={preview} />
       </div>

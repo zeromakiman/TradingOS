@@ -140,34 +140,51 @@ const OPERATIONS: [AiHistoryOperation, string][] = [
   ["WEEKLY_REVIEW", "WEEKLY_REVIEW_V1"], ["RECENT_TRADES_ANALYSIS", "RECENT_TRADES_V1"], ["MONTHLY_REVIEW", "MONTHLY_REVIEW_V1"],
 ];
 
+type ReviewDecision = "NO_PROVIDER_USAGE_CONFIRMED" | "USAGE_CONFIRMED";
+/** What followed the attempt: the budget month of its hold, and the accounting review of an unconfirmed cost. */
+interface Aftermath {
+  period?: string;
+  /** decision, reconciled, released and additional micro-euros. */
+  review?: [ReviewDecision, number, number, number];
+}
+
 /** Accounting states of a failed attempt and what any honest wording of each must say. */
-const OUTCOMES: [string, string | null | undefined, RegExp[]][] = [
-  ["settled", "SETTLED", [/recorded/i, /released/i]],
-  ["uncertain", "UNCERTAIN", [/could not be confirmed|uncertain/i, /held/i]],
-  ["cancelled", "CANCELLED", [/nothing was charged/i, /released/i]],
-  ["not reconciled", null, [/not settled/i, /held/i]],
-  ["an unknown disposition", "SOMETHING_NEW", [/not settled/i, /held/i]],
-  ["no reservation", undefined, [/nothing was charged/i]],
+const OUTCOMES: [string, string | null | undefined, RegExp[], Aftermath][] = [
+  ["settled", "SETTLED", [/recorded/i, /released/i], {}],
+  ["uncertain", "UNCERTAIN", [/held/i, /until an accounting review confirms the cost or releases it/i, /nothing beyond it was charged/i], {}],
+  // The stored UNCERTAIN record never changes; the review that followed it is what the budget applies.
+  ["uncertain, then reviewed: no provider usage", "UNCERTAIN", [/^Reviewed/, /nothing was charged/i, /released/i], { review: ["NO_PROVIDER_USAGE_CONFIRMED", 0, 59_400, 0] }],
+  ["uncertain, then reviewed: cost confirmed", "UNCERTAIN", [/^Reviewed/, /€0.03/, /released/i], { review: ["USAGE_CONFIRMED", 21_000, 38_400, 0] }],
+  ["cancelled", "CANCELLED", [/nothing was charged/i, /released/i], {}],
+  // No usage record: nothing can review the hold; it counts toward its own month until the budget resets.
+  ["not reconciled", null, [/held/i, /October 2026/, /until it resets on Nov 1/, /nothing beyond it was charged/i], { period: "2026-10-01" }],
+  ["not reconciled, from an earlier month", null, [/held/i, /September 2026/, /released when it reset on Oct 1/, /nothing beyond it was charged/i], { period: "2026-09-01" }],
+  ["an unknown disposition", "SOMETHING_NEW", [/not settled/i, /held/i], {}],
+  ["no reservation", undefined, [/nothing was charged/i], {}],
 ];
 
-function failedAttempt(operation: AiHistoryOperation, contract: string, disposition: string | null | undefined) {
+function failedAttempt(operation: AiHistoryOperation, contract: string, disposition: string | null | undefined, aftermath: Aftermath = {}) {
   const request: AiRequestRow = {
     id: "71000000-0000-4000-8000-000000000001", operation: { id: operation, version: "HISTORICAL_VERSION", contract, provider: "openai", model: "gpt-5.4-mini" },
     created_at: "2026-09-23T12:00:00Z", deadline_at: "2026-09-23T12:10:00Z",
   };
   const held = disposition !== undefined;
   const result: AiResultRow = { status: "FAILED", interpretation: null, error_code: "INVALID_OUTPUT", reservation_id: held ? RESERVATION : null, created_at: "2026-09-23T12:01:00Z" };
+  const review = aftermath.review;
   const accounting: AiAccounting = {
-    holds: held ? [{ id: RESERVATION, operation_id: request.id, reserved_micros: 59_400 }] : [],
-    usage: held && disposition !== null ? [{ reservation_id: RESERVATION, charged_micros: 1_000, disposition }] : [],
+    holds: held ? [{ id: RESERVATION, operation_id: request.id, reserved_micros: 59_400, period: aftermath.period ?? "2026-09-01" }] : [],
+    usage: held && disposition !== null ? [{ reservation_id: RESERVATION, charged_micros: disposition === "UNCERTAIN" ? 59_400 : 1_000, disposition }] : [],
+    reviews: review
+      ? [{ reservation_id: RESERVATION, decision: review[0], reconciled_micros: review[1], released_micros: review[2], additional_micros: review[3], created_at: "2026-10-02T10:00:00Z" }]
+      : [],
   };
   return { request, result, accounting };
 }
 
 describe("a failed AI attempt states its actual accounting outcome, for every operation", () => {
   for (const [operation, contract] of OPERATIONS) {
-    it.each(OUTCOMES)(`${operation}: %s`, (_label, disposition, wording) => {
-      const attempt = failedAttempt(operation, contract, disposition);
+    it.each(OUTCOMES)(`${operation}: %s`, (_label, disposition, wording, aftermath) => {
+      const attempt = failedAttempt(operation, contract, disposition, aftermath);
       const stored = structuredClone(attempt);
       const row = historyRow(operation, attempt.request, attempt.result, attempt.accounting, NOW);
       const html = renderToStaticMarkup(createElement(AiHistoryList, { rows: [row] }));
@@ -177,24 +194,26 @@ describe("a failed AI attempt states its actual accounting outcome, for every op
       expect(text).toContain(aiFailureReason("INVALID_OUTPUT"));
       const accountingText = failureAccountingText(row.technical);
       expect(text).toContain(accountingText);
+      expect(row.accountingNote).toBe(accountingText);
       for (const pattern of wording) expect(accountingText).toMatch(pattern);
       // Default view: words only. Codes, versions and accounting values stay in Technical details (kept in the HTML).
       expect(text).not.toMatch(UUID);
       expect(text).not.toMatch(ENUM);
-      expect(text).not.toMatch(/reservation/i);
+      expect(text).not.toMatch(/reserv/i);
       const technical = detailsText(html);
       expect(technical).toContain("INVALID_OUTPUT");
       expect(technical).toContain("HISTORICAL_VERSION");
       if (disposition) expect(technical).toContain(disposition);
       if (disposition !== undefined) expect(technical).toContain(RESERVATION);
+      if (aftermath.review) expect(technical).toContain(aftermath.review[0]);
       // Reading history never rewrites it.
       expect(attempt).toEqual(stored);
     });
   }
 
   it("never words two different outcomes the same way", () => {
-    const texts = OUTCOMES.filter(([label]) => label !== "an unknown disposition").map(([, disposition]) => {
-      const attempt = failedAttempt("WEEKLY_REVIEW", "WEEKLY_REVIEW_V1", disposition);
+    const texts = OUTCOMES.filter(([label]) => label !== "an unknown disposition").map(([, disposition, , aftermath]) => {
+      const attempt = failedAttempt("WEEKLY_REVIEW", "WEEKLY_REVIEW_V1", disposition, aftermath);
       return failureAccountingText(historyRow("WEEKLY_REVIEW", attempt.request, attempt.result, attempt.accounting, NOW).technical);
     });
     expect(new Set(texts).size).toBe(texts.length);

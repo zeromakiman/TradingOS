@@ -1,7 +1,7 @@
 import { type EdgeQuery, edgeFilters, parseEdgeQuery } from "@/components/edge/query";
 import type { LedgerTrade } from "@/domain/ledger";
 import { strategyClock } from "@/domain/session";
-import { compareInstants, daysInMonth, instantMicros, isCalendarDay, strategyDay, WEEKDAY_NAMES, weekdayIndex } from "@/domain/time-display";
+import { compareInstants, instantMicros, strategyDay, WEEKDAY_NAMES, weekdayIndex } from "@/domain/time-display";
 import { csvCell } from "@/lib/export";
 import { MAX_LEDGER_ROWS } from "@/lib/performance-data";
 import { type TradeFilters, tradeFilterParams } from "@/lib/trades-data";
@@ -11,16 +11,20 @@ import { type TradeFilters, tradeFilterParams } from "@/lib/trades-data";
  * request contract and the file format. Pure; ./load.ts reads the rows with the user's session.
  *
  * What a file holds: every closed trade (planned, live-first and imported) of its scope that EDGE's filters select,
- * read with the page's own parser and loader, so the file and the page count the same trades.
+ * read with the page's own parser (`parseEdgeQuery`, `edgeFilters`) and loader, so the file and the page of one link
+ * count the same trades.
  * - Scope `account`: `all` (every trading account, archived ones included, like All Accounts), one of the user's
  *   accounts by id (archived ones too: their history stays exportable), or absent (the request's account context).
- * - EDGE filters, parsed by the page's own parser (`parseEdgeQuery`, `edgeFilters`): `range` (presets relative to
- *   today's strategy day), `closedFrom`, `closedTo`, `model`, `session`, `origin`, `instrument`, and any filter EDGE
- *   adds later. EDGE's links carry the page's effective exit-day bounds, so a file downloaded after midnight still
- *   holds what the page showed. Calendar navigation (`month`, `day`, `view`, `currency`) never changes the file.
- * - V1 filters, so links of the V1 EDGE page keep working: `from`/`to` (exit-day bounds: V1 dated closed trades by
- *   their exit), `session` with V1 names (`ASIAN_RANGE` = Asia, `OTHER` = no recorded entry time), `weekday`,
- *   `strategy` (strategy version id), `risk` (risk-plan version id), `outcome`, `period` (`month` | `last30`).
+ * - EDGE filters: `range` (presets relative to today's strategy day), `closedFrom`, `closedTo`, `model`, `session`,
+ *   `origin`, `instrument`, the filters a link carries (`weekday`, `strategy`, `riskPlan`, `result`), the read-only
+ *   `accountFilter`, and any filter EDGE adds later. EDGE's links carry the page's effective exit-day bounds, so a file
+ *   downloaded after midnight still holds what the page showed. Calendar navigation (`month`, `day`, `view`,
+ *   `currency`) never changes the file.
+ * - V1 filters, read by the same parser with their V1 meanings, so links of the V1 EDGE page keep working: `from`/`to`
+ *   (exit-day bounds: V1 dated closed trades by their exit), `session` with V1 names (`ASIAN_RANGE` = Asia, `OTHER` =
+ *   no recorded entry time), `weekday`, `strategy` (strategy version id), `risk` (risk-plan version id), `outcome`,
+ *   `period` (`month` | `last30`). Only the file applies `session=OTHER` and `period=last30` (the page says it does
+ *   not); an inverted `from`/`to` is refused with V1's message (the page reads it the way it was meant).
  * Every filter narrows the result (bounds intersect). A value that cannot be read is refused by name, never ignored:
  * a file that silently dropped a filter would hold trades the trader did not ask for.
  *
@@ -46,7 +50,8 @@ export const TOO_MANY_TRADES = `More than ${MAX_LEDGER_ROWS.toLocaleString("en-U
 
 /**
  * The CSV of an EDGE state: its scope (`all` or an account id) and exactly the ledger filters the page applies
- * (`edgeFilters`: effective exit-day bounds and the dimensions), in the page's own parameter names.
+ * (`edgeFilters`: effective exit-day bounds, the dimensions, the filters a link carried and the account filter), in
+ * the page's own parameter names.
  */
 export function exportHref(query: EdgeQuery, account: string): string {
   const params = new URLSearchParams({ account });
@@ -71,29 +76,12 @@ export interface ExportRequest {
 
 export type ParsedExportRequest = { ok: true; request: ExportRequest } | { ok: false; error: string };
 
-/**
- * V1 parameters, read here with their V1 meanings and never by EDGE's parser: the Journal's filter parser (which EDGE's
- * builds on) reads `from`/`to` as trade dates and `risk` as a risk percent, while V1 meant exit days and a risk-plan
- * version. Every other parameter goes to EDGE's parser, so whatever filter EDGE reads, the file reads the same way.
- */
-const V1_KEYS: readonly string[] = ["from", "to", "risk", "weekday", "strategy", "outcome", "period"];
 /** EDGE parameters that only navigate the page (calendar month and mode, the day sheet): they never change the file. */
 const NAVIGATION_KEYS: readonly string[] = ["month", "day", "view", "currency"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const OUTCOMES = ["WIN", "LOSS", "BREAKEVEN"] as const;
-/** V1 `period=last30`. */
-export const LAST_CLOSED = 30;
-
 function readOne(params: URLSearchParams, key: string): string | undefined {
   const values = params.getAll(key).map(value => value.trim()).filter(Boolean);
   return values.length ? values[values.length - 1] : undefined;
-}
-
-/** Exit-day bounds intersect: the later start and the earlier end win. */
-function narrow(filters: TradeFilters, from: string | undefined, to: string | undefined): TradeFilters {
-  const closedFrom = from !== undefined && (filters.closedFrom === undefined || from > filters.closedFrom) ? from : filters.closedFrom;
-  const closedTo = to !== undefined && (filters.closedTo === undefined || to < filters.closedTo) ? to : filters.closedTo;
-  return { ...filters, ...(closedFrom ? { closedFrom } : {}), ...(closedTo ? { closedTo } : {}) };
 }
 
 /** The export a URL asks for; `now` is the server time EDGE's range presets and V1 `period=month` are relative to. */
@@ -106,62 +94,18 @@ export function parseExportRequest(params: URLSearchParams, now: string): Parsed
   else if (account !== undefined && UUID.test(account)) scope = { mode: "account", accountId: account };
   else if (account !== undefined) invalid.push("account");
 
-  // EDGE's own parser reads EDGE's parameters; V1 session names are translated first.
+  // EDGE's own parser reads every filter, V1 names included, exactly as the page reads the same link.
   const edge = new URLSearchParams(params);
-  for (const key of ["account", ...V1_KEYS]) edge.delete(key);
-  const v1Session = readOne(params, "session")?.toUpperCase();
-  let withoutEntryTime = false;
-  if (v1Session === "ASIAN_RANGE") edge.set("session", "ASIA");
-  if (v1Session === "OTHER") {
-    edge.delete("session");
-    withoutEntryTime = true;
-  }
+  edge.delete("account");
   const query = parseEdgeQuery(edge, now);
   invalid.push(...query.invalid.filter(key => !NAVIGATION_KEYS.includes(key)));
-  let filters: TradeFilters = edgeFilters(query);
-
-  const from = readOne(params, "from");
-  const to = readOne(params, "to");
-  if (from !== undefined && !isCalendarDay(from)) invalid.push("from");
-  if (to !== undefined && !isCalendarDay(to)) invalid.push("to");
-
-  let last: number | null = null;
-  const period = readOne(params, "period")?.toLowerCase();
-  if (period === "month") {
-    const month = strategyDay(now).slice(0, 7);
-    filters = narrow(filters, `${month}-01`, `${month}-${String(daysInMonth(month)).padStart(2, "0")}`);
-  } else if (period === "last30") {
-    last = LAST_CLOSED;
-  } else if (period !== undefined) {
-    invalid.push("period");
-  }
-
-  const weekday = readOne(params, "weekday");
-  if (weekday !== undefined) {
-    const name = WEEKDAY_NAMES.find(candidate => candidate.toLowerCase() === weekday.toLowerCase());
-    if (name) filters.weekday = name;
-    else invalid.push("weekday");
-  }
-  const strategy = readOne(params, "strategy")?.toLowerCase();
-  if (strategy !== undefined) {
-    if (UUID.test(strategy)) filters.strategyVersionId = strategy;
-    else invalid.push("strategy");
-  }
-  const riskPlan = readOne(params, "risk")?.toLowerCase();
-  if (riskPlan !== undefined) {
-    if (UUID.test(riskPlan)) filters.riskPlanVersionId = riskPlan;
-    else invalid.push("risk");
-  }
-  const outcome = readOne(params, "outcome")?.toUpperCase();
-  if (outcome !== undefined) {
-    const result = OUTCOMES.find(candidate => candidate === outcome);
-    if (result) filters.result = result;
-    else invalid.push("outcome");
-  }
 
   if (invalid.length) return { ok: false, error: `Some filters in this export link couldn't be read: ${[...new Set(invalid)].join(", ")}.` };
+  // V1 refused an inverted range of exit days; the file still does (the page reads it the way it was meant).
+  const from = readOne(params, "from");
+  const to = readOne(params, "to");
   if (from !== undefined && to !== undefined && from > to) return { ok: false, error: "Start date must be on or before end date." };
-  return { ok: true, request: { scope, filters: narrow(filters, from, to), withoutEntryTime, last } };
+  return { ok: true, request: { scope, filters: edgeFilters(query), withoutEntryTime: query.withoutEntryTime === true, last: query.lastClosed ?? null } };
 }
 
 // ---------------------------------------------------------------------------------------------------------

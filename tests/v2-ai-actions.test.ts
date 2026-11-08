@@ -196,4 +196,18 @@ describe("periodic review actions", () => {
     expect(failure.error).toMatch(/Unable to request a monthly review/);
     expect(m.log).toHaveBeenCalledWith("request_failed");
   });
+
+  it("a review of the period that is still running is its own outcome: the key is kept, the page refreshes, nothing is logged as a failure", async () => {
+    const running = { status: "IN_PROGRESS", message: "A review of this week is already running, so no new review was requested. Its result will appear in the history." };
+    m.week.mockResolvedValue(running);
+    m.recent.mockResolvedValue(running);
+    m.month.mockResolvedValue(running);
+    for (const result of [
+      await requestWeeklyAiReview({}, form({ accountId: ids.account, requestKey: ids.key, week: "2026-09-02" })),
+      await requestRecentTradesAiReview({}, form({ accountId: ids.account, requestKey: ids.key, sample: "20" })),
+      await requestMonthlyAiReview({}, form({ accountId: ids.account, requestKey: ids.key, month: "2026-08" })),
+    ]) expect(result).toEqual({ error: running.message, status: "IN_PROGRESS" });
+    expect(m.revalidate.mock.calls.flat()).toEqual(expect.arrayContaining(["/review/weekly", "/review/recent", "/review/monthly"]));
+    expect(m.log).not.toHaveBeenCalled();
+  });
 });

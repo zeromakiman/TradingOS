@@ -5,7 +5,7 @@ import { strategyDay, strategyMonth, type TimeDisplay } from "@/domain/time-disp
 import { type AccountContext, currentSession, getAccountContext, getPreferences } from "@/lib/account-context";
 import { buildPerformance, type LedgerRows, loadLedgerRows, type PerformanceView } from "@/lib/performance-data";
 import type { FilterParams, TradeFilters, TradeScope } from "@/lib/trades-data";
-import { type EdgeQuery, edgeFilters, parseEdgeQuery } from "./query";
+import { type EdgeQuery, type EdgeVersionNames, edgeFilters, parseEdgeQuery } from "./query";
 
 /**
  * EDGE data (docs/V2_ARCHITECTURE.md §9.3, §14.6). One keyset read of the context's closed trades that match the
@@ -35,6 +35,8 @@ export interface EdgeData {
   /** Calendar month shown. */
   month: string;
   truncated: boolean;
+  /** Names of the strategy and risk-plan versions the page's filters name by id (for their chips). */
+  versionNames: EdgeVersionNames;
 }
 
 export interface AssembleInput {
@@ -67,6 +69,16 @@ export function defaultCalendarMonth(query: EdgeQuery, rows: readonly LedgerTrad
   return strategyMonth(now);
 }
 
+/**
+ * Names of the versions the filters select by id: every row read matches them, so any row carries the name (null when
+ * no closed trade matches; the chip then says "selected version").
+ */
+export function filterVersionNames(query: Pick<EdgeQuery, "strategyVersionId" | "riskPlanVersionId">, rows: readonly LedgerTrade[]): EdgeVersionNames {
+  const strategy = query.strategyVersionId ? rows.find(row => row.strategy_version_id === query.strategyVersionId && row.strategy_version)?.strategy_version : null;
+  const riskPlan = query.riskPlanVersionId ? rows.find(row => row.risk_plan_version_id === query.riskPlanVersionId && row.risk_plan_version)?.risk_plan_version : null;
+  return { strategy: strategy ?? null, riskPlan: riskPlan ?? null };
+}
+
 /** Pure assembly of the EDGE view from the loaded rows. */
 export function assembleEdge(input: AssembleInput): EdgeData {
   const { context, query, now } = input;
@@ -83,6 +95,7 @@ export function assembleEdge(input: AssembleInput): EdgeData {
   return {
     now, display: input.display, developerMode: input.developerMode, context, query, filters,
     instruments: [...symbols].sort(compareText), rows, view, month, truncated: input.loaded.truncated,
+    versionNames: filterVersionNames(query, input.loaded.rows),
   };
 }
 

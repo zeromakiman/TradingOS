@@ -19,12 +19,17 @@ export function responsesWire(input:Pick<AiProviderRequest,"config"|"context"|"i
  const countWire=JSON.stringify({model:payload.model,instructions:payload.instructions,input:payload.input,reasoning:payload.reasoning,text:payload.text,truncation:payload.truncation});
  return {wire:JSON.stringify(payload),countWire};
 }
-export async function callResponses(input:AiProviderRequest,transport:typeof fetch=fetch,permit?:object,operation?:AiOperation,beforeGenerate?:()=>Promise<void>):Promise<AiProviderResult>{
+/**
+ * `beforeContact` runs immediately before every provider request (the input count and the generation): from that
+ * moment the request may be billed, so the gate can no longer release its reservation at zero cost.
+ */
+export async function callResponses(input:AiProviderRequest,transport:typeof fetch=fetch,permit?:object,operation?:AiOperation,beforeGenerate?:()=>Promise<void>,beforeContact?:()=>void):Promise<AiProviderResult>{
  if(operation)assertOperationExecutionAllowed(operation.provider,input.apiKey);else assertAiExecutionAllowed(input.apiKey);
  // Existing adapter tests inject an in-memory transport; production has no ungated network path.
  if(process.env.NODE_ENV!=="test"||transport===fetch){consumeAiPermit(permit);if(!operation)throw new Error("A bounded operation is required");}
  const {wire,countWire}=responsesWire(input,operation);
- const send=(url:string,body=wire)=>transport(url,{method:"POST",headers:{Authorization:`Bearer ${input.apiKey}`,"Content-Type":"application/json"},body,signal:AbortSignal.timeout(input.config.timeoutMs)});
+ // The only path to the provider: every request is reported to the gate before it is issued.
+ const send=(url:string,body=wire)=>{beforeContact?.();return transport(url,{method:"POST",headers:{Authorization:`Bearer ${input.apiKey}`,"Content-Type":"application/json"},body,signal:AbortSignal.timeout(input.config.timeoutMs)});};
  if(operation){
   if(operation.provider!=="openai"||operation.model!==input.config.model||operation.maxOutputTokens!==input.config.maxOutputTokens||operation.reasoningEffort!==input.config.reasoningEffort||operation.tools.length||input.images.length>operation.maxImages)throw new ProviderError("INVALID_OPERATION_ENVELOPE");
   // No remote image URLs, mutable files, conversations or provider-side tools are accepted.

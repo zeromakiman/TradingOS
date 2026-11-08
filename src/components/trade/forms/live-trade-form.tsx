@@ -225,7 +225,8 @@ export function LiveTradeForm({ now: serverNow, accounts, initial, action = reco
         className="mb-0"
         eyebrow={
           <span className="flex items-center justify-between gap-3">
-            <Link href="/today" className="inline-flex min-h-10 items-center gap-1 text-text-2 hover:text-text pointer-coarse:min-h-11">
+            {/* The way back keeps its width (the header lets words break); the account chip beside it shrinks instead. */}
+            <Link href="/today" className="inline-flex min-h-10 shrink-0 items-center gap-1 text-text-2 hover:text-text pointer-coarse:min-h-11">
               <ChevronLeft aria-hidden="true" className="size-4" />
               Today
             </Link>

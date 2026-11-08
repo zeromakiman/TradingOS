@@ -63,11 +63,6 @@ export const getSchemaStatus = cache(async (): Promise<SchemaStatus> => {
   return checkSchema(db);
 });
 
-/** True when the database is missing the marker or reports a version older than 2.0. */
-export async function schemaOutdated(): Promise<boolean> {
-  return !(await getSchemaStatus()).ready;
-}
-
 /**
  * Server actions start here: the verified session when the database schema is current, null when it is missing or
  * older than 2.0 (the action then returns SCHEMA_OUTDATED_MESSAGE and writes nothing). Throws SchemaUnavailableError

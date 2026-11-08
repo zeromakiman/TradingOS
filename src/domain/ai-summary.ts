@@ -1,4 +1,3 @@
-import Decimal from "decimal.js";
 import type { AnalyzeSetupOutput } from "@/ai/analyze-setup-contract";
 import type { BiasChallengeOutput } from "@/ai/bias-challenge-contract";
 import type { MonthlyReviewOutput } from "@/ai/monthly-review-contract";
@@ -7,7 +6,7 @@ import { operationPricing, reservationMicros } from "@/ai/pricing";
 import type { RecentTradesOutput } from "@/ai/recent-trades-contract";
 import type { TradeReviewOutput } from "@/ai/trade-review-contract";
 import type { WeeklyReviewOutput } from "@/ai/weekly-review-contract";
-import { formatMoney, formatR, plural } from "./format";
+import { formatR, plural } from "./format";
 import { formatDay, formatMonth, formatTime, STRATEGY_TIME, type TimeDisplay } from "./time-display";
 
 /**
@@ -113,7 +112,15 @@ export interface AiCardSection {
   id: string;
   title: string;
   items: AiCardItem[];
+  /** A deterministic caveat Trading OS shows with the section (never AI text); absent for most sections. */
+  note?: string;
 }
+
+/**
+ * The caveat under a monthly review's "What improved" and "What degraded" (kept from V1): a change claim needs
+ * comparable earlier and later evidence, and complete records are not an improvement.
+ */
+export const CHANGE_EVIDENCE_NOTE = "Change requires comparable earlier and later evidence. Record completeness alone does not establish improvement or degradation.";
 
 export interface AiAssessmentChip {
   id: string;
@@ -156,8 +163,8 @@ function section(id: string, title: string, observations: readonly TextObservati
   return { id, title, items: observations.slice(0, CARD_ITEMS).map(concise) };
 }
 
-function fullSection(id: string, title: string, observations: readonly TextObservation[]): AiCardSection {
-  return { id, title, items: observations.map(complete) };
+function fullSection(id: string, title: string, observations: readonly TextObservation[], note?: string): AiCardSection {
+  return note === undefined ? { id, title, items: observations.map(complete) } : { id, title, items: observations.map(complete), note };
 }
 
 function card(
@@ -330,8 +337,8 @@ export function summarizeMonthlyReview(output: MonthlyReviewOutput, facts?: Peri
     fullSection("behavioralPatterns", "Behavioral patterns", output.behavioralPatterns),
     fullSection("recurringStrengths", "Recurring strengths", output.recurringStrengths),
     fullSection("recurringMistakes", "Recurring mistakes", output.recurringMistakes),
-    fullSection("whatImproved", "What improved", output.whatImproved),
-    fullSection("whatDegraded", "What degraded", output.whatDegraded),
+    fullSection("whatImproved", "What improved", output.whatImproved, CHANGE_EVIDENCE_NOTE),
+    fullSection("whatDegraded", "What degraded", output.whatDegraded, CHANGE_EVIDENCE_NOTE),
     fullSection("keyLessons", "Key lessons", output.keyLessons),
     fullSection("focusNext", "Focus next month", output.focusNextMonth),
   ], facts);
@@ -404,7 +411,14 @@ function evidenceChipLabel(label: string | null, timeframe: string | null): stri
 }
 
 const NOTE_TIMING_WORDS: Record<string, string> = { BEFORE_ENTRY: "Pre-entry note", WHILE_LIVE: "Live note", AFTER_CLOSE: "After-close note" };
-const EVENT_WORDS: Record<string, string> = { TRADE_OPENED: "Entry", TRADE_CLOSED: "Exit", PLAN_LOCKED: "Plan lock", PLAN_CANCELLED: "Plan cancelled" };
+/** V1 event and decision types, worded as the trade timeline titles them (src/domain/timeline.ts). */
+const EVENT_WORDS: Record<string, string> = {
+  TRADE_OPENED: "Entry", TRADE_CLOSED: "Exit", PLAN_LOCKED: "Plan lock", PLAN_CANCELLED: "Plan cancelled", STOP_MOVED: "Stop moved",
+  TARGET_CHANGED: "Target changed", PARTIAL_CLOSED: "Partial close", SL_TO_BE: "Stop moved to break-even", POSITION_ADDED: "Position added",
+  HUMAN_DECISION: "Decision", MANUAL_OVERRIDE: "Taken despite a block",
+};
+/** V1 events the trade timeline shows as its plan lock, entry and close items, never as an item of their own. */
+const TIMELINE_REPRESENTED_EVENTS = new Set(["PLAN_LOCKED", "TRADE_OPENED", "TRADE_CLOSED"]);
 const V1_PERIODIC_FACTS = new Set(["WEEKLY_REVIEW_FACTS_V1", "RECENT_TRADES_FACTS_V1", "MONTHLY_REVIEW_FACTS_V1"]);
 
 function recordFor(sourceId: string, facts: unknown, manifest: unknown): Json | null {
@@ -427,8 +441,63 @@ function timelineRecord(sourceId: string, facts: unknown, manifest: unknown): Js
   return recordFor(sourceId, facts, manifest) ?? (isRecord(facts) ? findById(facts.timeline, "sourceId", sourceId) : null);
 }
 
+const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A journal entry or event of a periodic snapshot as a record: V2 periodic facts write a journal entry as the row
+ * `[id, kind, recordedAt, timing, text, extra]` (src/ai/periodic-facts.ts); events and earlier facts use objects.
+ */
+function periodicEntry(entry: unknown): Json | null {
+  if (isRecord(entry)) return entry;
+  if (!Array.isArray(entry) || typeof entry[0] !== "string") return null;
+  const [id, kind, recordedAt, timing] = entry;
+  return { id, kind, recordedAt, timing };
+}
+
+/**
+ * The included trade of a periodic snapshot (`facts.trades[i]`) that holds the cited journal entry (`journal:<id>`) or
+ * event (`event:<id>`), with the record: through the manifest path when the facts were stored with one, otherwise by id.
+ * Null for facts without trades (the trade reviews, whose records are on the page).
+ */
+function periodicRecord(sourceId: string, uuid: string, facts: unknown, manifest: unknown): { trade: Json; record: Json } | null {
+  if (!isRecord(facts) || !Array.isArray(facts.trades)) return null;
+  const list = sourceId.startsWith("journal:") ? "journal" : "events";
+  const path = /^trades\[(\d+)\]\.(events|journal)\[(\d+)\]$/.exec(manifestPath(manifest, sourceId) ?? "");
+  if (path && path[2] === list) {
+    const trade = facts.trades[Number(path[1])];
+    const record = isRecord(trade) && Array.isArray(trade[list]) ? periodicEntry(trade[list][Number(path[3])]) : null;
+    if (isRecord(trade) && record?.id === uuid) return { trade, record };
+  }
+  for (const trade of facts.trades) {
+    if (!isRecord(trade) || !Array.isArray(trade[list])) continue;
+    const record = trade[list].map(periodicEntry).find(entry => entry?.id === uuid);
+    if (record) return { trade, record };
+  }
+  return null;
+}
+
+/**
+ * Where a periodic record opens: its trade's timeline item, `/trades/<trade>#journal:<id>` (V2 facts name the trade by
+ * `tradeRecordId`), or, for V1 facts that only know the plan, `/journal/<plan>#event:<id>`, which redirects to the trade.
+ * A V1 plan lock, entry or close event has no timeline item of its own (`TIMELINE_REPRESENTED_EVENTS`): it opens the
+ * trade. Ids that are not UUIDs never become links.
+ */
+function periodicRecordHref(sourceId: string, trade: Json, record: Json): string | undefined {
+  const anchor = TIMELINE_REPRESENTED_EVENTS.has(str(record.event_type) ?? "") ? "" : `#${sourceId}`;
+  const tradeRecordId = str(trade.tradeRecordId);
+  if (tradeRecordId && UUID_TEXT.test(tradeRecordId)) return `/trades/${tradeRecordId}${anchor}`;
+  const planId = str(trade.tradeId);
+  return planId && UUID_TEXT.test(planId) ? `/journal/${planId}${anchor}` : undefined;
+}
+
+/** Facts of a periodic review (weekly, recent trades, monthly): their records belong to the trades they list. */
+function isPeriodicFacts(facts: unknown): boolean {
+  return isRecord(facts) && Array.isArray(facts.trades);
+}
+
 function noteChip(sourceId: string, uuid: string, facts: unknown, manifest: unknown, display: TimeDisplay): SourceChip {
-  const record = timelineRecord(sourceId, facts, manifest) ?? (isRecord(facts) ? findById(facts.events, "id", uuid) : null);
+  const periodic = periodicRecord(sourceId, uuid, facts, manifest);
+  const record = periodic?.record ?? timelineRecord(sourceId, facts, manifest) ?? (isRecord(facts) ? findById(facts.events, "id", uuid) : null);
   const time = timeText(str(record?.occurredAt) ?? str(record?.recordedAt) ?? str(record?.occurred_at) ?? str(record?.recorded_at), display);
   const timing = str(record?.timing);
   const eventType = str(record?.event_type) ?? str(record?.kind);
@@ -436,7 +505,18 @@ function noteChip(sourceId: string, uuid: string, facts: unknown, manifest: unkn
   const word = isNote
     ? (timing && Object.hasOwn(NOTE_TIMING_WORDS, timing) ? NOTE_TIMING_WORDS[timing] : "Journal note")
     : (eventType && Object.hasOwn(EVENT_WORDS, eventType) ? EVENT_WORDS[eventType] : "Trade event");
-  return { label: time ? `${word} · ${time}` : word, kind: isNote ? "note" : "event", href: `#${sourceId}`, technicalId: sourceId };
+  const kind = isNote ? "note" : "event";
+  const own = time ? `${word} · ${time}` : word;
+  // A periodic review lists many trades and has no timeline of its own: the chip names the trade and opens its timeline.
+  if (periodic) {
+    const trade = tradeLabel(periodic.trade, display);
+    const href = periodicRecordHref(sourceId, periodic.trade, periodic.record);
+    const label = trade ? `${trade} · ${own}` : own;
+    return href ? { label, kind, href, technicalId: sourceId } : { label, kind, technicalId: sourceId };
+  }
+  // A periodic record the facts do not hold has no page to open: an anchor on the review page would lead nowhere.
+  if (isPeriodicFacts(facts)) return { label: own, kind, technicalId: sourceId };
+  return { label: own, kind, href: `#${sourceId}`, technicalId: sourceId };
 }
 
 /** Timeline records cited by the timeline-aware trade review (`REVIEW_TRADE_TIMELINE_FACTS_V1`, spec §11.4). */
@@ -466,8 +546,8 @@ function timelineRecordChip(sourceId: string, prefix: TimelineRecordPrefix, uuid
   return { label: time ? `${word} · ${time}` : word, kind: "event", href: `#${anchor}`, technicalId: sourceId };
 }
 
-function tradeChip(sourceId: string, uuid: string, facts: unknown, manifest: unknown, display: TimeDisplay): SourceChip {
-  const record = recordFor(sourceId, facts, manifest) ?? (isRecord(facts) ? findById(facts.trades, "tradeId", uuid) : null);
+/** `EURUSD long · Oct 14` (instrument, direction and exit day of a periodic trade record), or null when unreadable. */
+function tradeLabel(record: Json | null, display: TimeDisplay): string | null {
   const plan = isRecord(record?.originalPlan) ? record.originalPlan : null;
   const proposal = isRecord(plan?.proposal) ? plan.proposal : null;
   const execution = isRecord(record?.execution) ? record.execution : null;
@@ -481,7 +561,13 @@ function tradeChip(sourceId: string, uuid: string, facts: unknown, manifest: unk
     day = null;
   }
   const name = [instrument, direction].filter(Boolean).join(" ");
-  const label = name ? (day ? `${name} · ${day}` : name) : "Trade";
+  return name ? (day ? `${name} · ${day}` : name) : null;
+}
+
+function tradeChip(sourceId: string, uuid: string, facts: unknown, manifest: unknown, display: TimeDisplay): SourceChip {
+  // V1 facts cite a trade by its plan id (`tradeId`); V2 periodic facts by the trade's own id (`tradeRecordId`).
+  const record = recordFor(sourceId, facts, manifest) ?? (isRecord(facts) ? findById(facts.trades, "tradeId", uuid) ?? findById(facts.trades, "tradeRecordId", uuid) : null);
+  const label = tradeLabel(record, display) ?? "Trade";
   const legacyIds = isRecord(facts) && typeof facts.version === "string" && V1_PERIODIC_FACTS.has(facts.version);
   return { label, kind: "trade", href: legacyIds ? `/journal/${uuid}` : `/trades/${uuid}`, technicalId: sourceId };
 }
@@ -598,23 +684,4 @@ export interface AiCostEstimate {
 export function estimateAiCost(operation: AiCostOperation, now: Date): AiCostEstimate {
   const definition = operationFor(operation);
   return { typicalMicros: AI_TYPICAL_COST_MICROS[operation], maxMicros: reservationMicros(operationPricing(definition, now), definition) };
-}
-
-function euros(micros: number, rounding: Decimal.Rounding): string {
-  return formatMoney(new Decimal(micros).div(1_000_000).toDecimalPlaces(2, rounding).toFixed(), "EUR");
-}
-
-/** `≈ €0.02` (typical cost, rounded half-up to the cent). */
-export function aiCostLabel(estimate: AiCostEstimate): string {
-  return `≈ ${euros(estimate.typicalMicros, Decimal.ROUND_HALF_UP)}`;
-}
-
-/** Tooltip; the maximum is rounded up so "at most" stays true. */
-export function aiCostTooltip(estimate: AiCostEstimate): string {
-  return `Typical cost based on measured runs; at most ${euros(estimate.maxMicros, Decimal.ROUND_UP)} is reserved and unused funds are released.`;
-}
-
-/** Paid button text: `Analyze blocked setup anyway · ≈ €0.02`. */
-export function aiActionLabel(label: string, estimate: AiCostEstimate): string {
-  return `${label} · ${aiCostLabel(estimate)}`;
 }

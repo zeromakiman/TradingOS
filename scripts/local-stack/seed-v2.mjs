@@ -37,6 +37,7 @@ import {
   DATASET_VERSION, buildDataset, dayStart, historyShowcase, iso, session, showcaseDescriptions, strategyDay, uuidFor,
 } from "./fixtures/v2-dataset.mjs";
 import { GATEWAY_URL, LOCAL, PATHS, REPO, fail, httpStatus, log, psql, readStack, runMain, sqlValue } from "./lib.mjs";
+import { seedAiPricing } from "./seed-ai-pricing.mjs";
 
 const TRANSFORM_FLAG = "--experimental-transform-types";
 const DEFAULT_USERS = ["v2.trader.a@example.test", "v2.trader.b@example.test"];
@@ -488,7 +489,7 @@ function showcaseOf(accounts, marks, plan) {
 // AI requests: the app's own facts/contracts, the real start/authorize/finish and reserve/dispatch/settle RPCs,
 // synthetic usage, fixture interpretations validated by the app's validators. No provider is ever called.
 // ---------------------------------------------------------------------------------------------------------------
-function aiRunner({ net, app, user, db, images }) {
+function aiRunner({ net, app, aiPricing, user, db, images }) {
   const service = net.asService;
   let counter = 0;
   const usageFor = (operation, kind) => {
@@ -514,7 +515,8 @@ function aiRunner({ net, app, user, db, images }) {
     if (started !== true) throw new Error(`${start.name} did not start a new request`);
     const authorized = () => service(authorize, { p_id: requestId, p_user_id: user.id });
     await authorized();
-    const pricing = app.pricing.operationPricing(operation);
+    // Priced once before any user was touched, never on this call's clock (seed-ai-pricing.mjs).
+    const pricing = aiPricing.pricingFor(operation.id);
     const amount = app.pricing.reservationMicros(pricing, operation);
     const providerImages = evidence.map(item => ({ sourceId: `evidence:${item.id}`, role: item.role, dataUrl: `data:${item.mime_type};base64,${item.bytes.toString("base64")}` }));
     const hash = sha256(JSON.stringify({ operation, config: config(operation), context: facts, images: providerImages, prior: [] }));
@@ -767,6 +769,10 @@ async function main() {
   const net = gateway(stack);
   const plans = await resolveUsers(stack, admin, emails, flag("reset-users"));
   const app = await loadApp();
+  // The seeded AI history is priced here, before any user is touched: a pricing problem stops the seed with nothing
+  // changed, and a lapsed review window is reported instead of failing partway through a user (seed-ai-pricing.mjs).
+  const aiPricing = seedAiPricing(app);
+  for (const note of aiPricing.notes) log(note);
   const sharp = createRequire(path.join(REPO, "package.json"))("sharp");
   log(`Seeding ${plans.length} synthetic user(s) on ${GATEWAY_URL} (dataset ${DATASET_VERSION}; local stack only, no AI provider)`);
   const results = [];
@@ -775,7 +781,7 @@ async function main() {
     rememberUser({ id: user.id, email: user.email, password: user.password, seededAt: null, datasetVersion: DATASET_VERSION, variant: index });
     log(`${plan.email !== plan.requested ? `${plan.requested} already has data; seeding fresh user ${plan.email}` : `Seeding ${plan.email}`} (${user.created ? "created" : "existing, no data"})`);
     const started = Date.now();
-    const outcome = await seedUser({ stack, net, app, sharp }, user, index);
+    const outcome = await seedUser({ stack, net, app, aiPricing, sharp }, user, index);
     rememberUser({
       id: user.id, email: user.email, password: user.password, seededAt: new Date().toISOString(), datasetVersion: DATASET_VERSION, variant: index,
       notes: outcome.notes, showcase: outcome.showcase,

@@ -12,6 +12,9 @@ import {budgetedAiRequest} from "@/ai/request-gate";
 import {ProviderError} from "@/ai/provider";
 import {validateRecentTrades} from "@/ai/recent-trades-contract";
 import {recentSample} from "@/ai/recent-trades-context";
+import {rpcErrorMessage} from "@/ai/rpc-error";
+/** The database runs one recent-trades analysis per account at a time (`Analysis already running`): nothing was written or sent. */
+export const RECENT_IN_PROGRESS="An analysis of this account's recent trades is already running, so no new analysis was requested. Wait for its result before requesting another.";
 export async function analyzeRecentTrades(accountId:string,sample:unknown,requestId:string){
  z.uuid().parse(requestId);
  const requested=recentSample(sample),owner=await ownedRecentAccount(accountId),operation=operationFor("RECENT_TRADES_ANALYSIS");
@@ -22,7 +25,7 @@ export async function analyzeRecentTrades(accountId:string,sample:unknown,reques
  const {facts}=loaded;
  if(!facts.trades.length)return {status:"EMPTY",message:"No completed trades in this sample. No AI request was made."};
  const admin=trustedServer(),start=await admin.rpc("start_recent_ai_analysis",{p_id:requestId,p_user_id:owner.user.id,p_account_id:owner.account.id,p_requested:requested,p_trade_ids:facts.sample.tradeIds,p_captured_at:facts.capturedAt,p_facts:facts,p_hash:createHash("sha256").update(JSON.stringify(facts)).digest("hex"),p_operation:operation,p_contract:operationContract(operation,facts)});
- if(start.error)throw new Error("Could not start recent-trades analysis. Check history for a running attempt.");
+ if(start.error){if(rpcErrorMessage(start.error)==="Analysis already running")return {status:"IN_PROGRESS",message:RECENT_IN_PROGRESS};throw new Error("Could not start recent-trades analysis. Check history for a running attempt.");}
  if(start.data!==true)return {status:"RECORDED",message:"This request was already recorded. No additional provider request was made."};
  let reservationId:string|null=null,raw:unknown=null,interpretation:ReturnType<typeof validateRecentTrades>|null=null,errorCode:string|null=null;
  const authorize=async()=>{const {error}=await admin.rpc("authorize_recent_ai_analysis",{p_id:requestId,p_user_id:owner.user.id});if(error)throw new ProviderError("RECENT_TRADES_ANALYSIS_UNAVAILABLE");};

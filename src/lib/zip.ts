@@ -64,19 +64,10 @@ export function crc32(data: Uint8Array, previous = 0): number {
   return (crc ^ MAX_UINT32) >>> 0;
 }
 
-const MAX_SEGMENT_CHARACTERS = 120;
-
 /** Characters that are not portable inside one path segment: separators, Windows-reserved, control characters. */
 function unsafeCharacter(character: string): boolean {
   const code = character.codePointAt(0) ?? 0;
   return code < 0x20 || code === 0x7f || '/\\:*?"<>|'.includes(character);
-}
-
-/** Turns arbitrary text (an uploaded file name, an account name) into one safe, portable path segment. */
-export function zipPathSegment(text: string): string {
-  const cleaned = [...text].map((character) => (unsafeCharacter(character) ? "_" : character)).slice(0, MAX_SEGMENT_CHARACTERS)
-    .join("").replace(/^[.\s]+|[.\s]+$/g, "");
-  return cleaned === "" ? "_" : cleaned;
 }
 
 function validName(name: string): string {

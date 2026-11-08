@@ -40,6 +40,8 @@ vi.mock("@/lib/evidence", async importOriginal => ({ ...(await importOriginal<ty
 
 import { addJournalEntry } from "@/app/actions/journal";
 import { errorCode, idleState, rpcErrorCopy, SCHEMA_ERROR_COPY, SQL_ERROR_COPY } from "@/app/actions/state";
+import { JOURNAL_COPY } from "@/components/trade/journal/composer-model";
+import { markReviewedForm } from "@/components/trade/review-controls";
 import { SCHEMA_OUTDATED_MESSAGE } from "@/lib/schema-gate";
 import {
   checkRisk, closeLiveTrade, closePlannedTrade, completeLiveEntry, completeReview, createPlannedTrade, discardDraft, duplicateDraft, lockPlan, recordEntry,
@@ -534,6 +536,44 @@ describe("tags, review and evidence", () => {
     expect(await reopenReview(idleState, form({ tradeId: TRADE }))).toEqual({ status: "error", message: "Only reviewed trades can be reopened." });
   });
 
+  it("Mark reviewed saves the tags form's unsaved changes first, and marks nothing reviewed unless they are saved", async () => {
+    // The exact form the button sends with unsaved tags (a grade, an MSS timeframe and a custom tag picked, not saved).
+    const unsaved = { grade: "A", liquidity: null, mss: "M5", tags: ["london"] };
+    const sent = markReviewedForm(TRADE, KEY, unsaved);
+    expect(Object.fromEntries(markReviewedForm(TRADE, KEY, null).entries())).toEqual({ tradeId: TRADE, requestKey: KEY });
+    db.results.set_trade_tags = () => ({ data: 7, error: null });
+    db.results.complete_trade_review = () => ({ data: {}, error: null });
+    expect(await completeReview(idleState, sent)).toEqual({ status: "success", message: "Tags saved and marked reviewed." });
+    expect(db.writes()).toEqual(["set_trade_tags", "complete_trade_review"]);
+    expect(db.calls("set_trade_tags")[0]).toEqual({ p_trade_id: TRADE, p_grade: "A", p_liquidity: null, p_mss: "M5", p_tags: ["london"] });
+    expect(db.calls("complete_trade_review")[0]).toEqual({ p_trade_id: TRADE, p_request_key: KEY });
+    expect(m.revalidate.mock.calls.map(call => call[0])).toEqual(expect.arrayContaining([`/trades/${TRADE}`, "/edge"]));
+
+    // Tags the database would refuse: refused here, and the trade is not marked reviewed.
+    useDb();
+    db.results.complete_trade_review = () => ({ data: {}, error: null });
+    expect(await completeReview(idleState, markReviewedForm(TRADE, KEY, { ...unsaved, tags: ["#hash"] }))).toMatchObject({
+      status: "error", fieldErrors: { tags: "Use at most 12 different tags of 1 to 32 characters (a-z, 0-9, space, _ or -)." },
+    });
+    expect(db.writes()).toEqual([]);
+
+    // The tag set can't be saved: the review is never completed without it.
+    useDb();
+    db.results.set_trade_tags = () => ({ data: null, error: { message: "INVALID_INPUT: grade must be A+, A, B, C or INVALID" } });
+    db.results.complete_trade_review = () => ({ data: {}, error: null });
+    expect(await completeReview(idleState, markReviewedForm(TRADE, KEY, unsaved))).toEqual({ status: "error", message: "Some values were not accepted. Check the form and try again." });
+    expect(db.writes()).toEqual(["set_trade_tags"]);
+
+    // Saved tags, then a failed review: the copy says what was kept, without claiming nothing changed.
+    useDb();
+    db.results.set_trade_tags = () => ({ data: 7, error: null });
+    db.results.complete_trade_review = () => ({ data: null, error: { message: "connection reset" } });
+    expect(await completeReview(idleState, markReviewedForm(TRADE, KEY, unsaved))).toEqual({
+      status: "error", message: "Tags saved, but the trade wasn't marked reviewed. Please try again.",
+    });
+    expect(m.log).toHaveBeenCalledWith("database_write_failed");
+  });
+
   it("removes V2 evidence and legacy screenshots through their own RPCs and revalidates the owning trade", async () => {
     const LEGACY = "e0000000-0000-4000-8000-000000000002";
     const PROPOSAL_ID = "70000000-0000-4000-8000-000000000009";
@@ -599,5 +639,16 @@ describe("addJournalEntry (§3.6, §12.2 contract)", () => {
     });
     db.results.add_journal_entry = () => ({ data: null, error: { message: "TRADE_NOT_FOUND: Trade not found" } });
     expect(await addJournalEntry(idleState, entry({ kind: "NOTE", body: "x" }))).toEqual({ status: "error", message: "That trade isn't available." });
+  });
+
+  it("says that stop, target and partial-close entries are taken only while the trade is live", async () => {
+    db.results.add_journal_entry = () => ({
+      data: null, error: { message: "ENTRY_NOT_LIVE: Stop, target and partial-close entries can only be recorded while the trade is live" },
+    });
+    const refused = await addJournalEntry(idleState, entry({ kind: "STOP_CHANGE", details: JSON.stringify({ price: "1.1" }) }));
+    // The composer's own sentence for it (a page loaded while the trade was live, then closed elsewhere); never logged.
+    expect(refused).toEqual({ status: "error", message: JOURNAL_COPY.notLive });
+    expect(m.log).not.toHaveBeenCalled();
+    expect(m.revalidate).not.toHaveBeenCalled();
   });
 });

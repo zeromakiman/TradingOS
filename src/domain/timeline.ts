@@ -88,7 +88,7 @@ export function inferStoredPhase(
 export type JournalKind = "NOTE" | "DECISION" | "STOP_CHANGE" | "TARGET_CHANGE" | "PARTIAL_CLOSE" | "LESSON";
 export type EvidenceLabel = "HTF" | "CONTEXT" | "PRE_ENTRY" | "ENTRY" | "MANAGEMENT" | "EXIT" | "OTHER";
 export type TimelineKind =
-  | "DRAFT_REVISION" | "RISK_CHECK" | "PLAN_LOCKED" | "NOTE" | "TRADE_EVENT" | "ENTRY" | "SIZE_DEVIATION" | "JOURNAL"
+  | "DRAFT_REVISION" | "RISK_CHECK" | "PLAN_LOCKED" | "NOTE" | "TRADE_EVENT" | "LEGACY_DECISION" | "ENTRY" | "SIZE_DEVIATION" | "JOURNAL"
   | "EVIDENCE_ADDED" | "EVIDENCE_REMOVED" | "TAGS" | "DISPOSITION" | "CLOSE" | "AI_ANALYSIS"
   | "REVIEW_COMPLETED" | "REVIEW_REOPENED" | "DRAFT_DISCARDED";
 
@@ -105,9 +105,15 @@ export interface TimelineItem {
   details?: Record<string, unknown>;
   journalKind?: JournalKind;
   evidenceId?: string;
-  /** Canonical reference of the underlying record (`journal:<id>`, `event:<id>`, `evidence:<id>`, …). */
+  /**
+   * Canonical reference of the underlying record (`journal:<id>`, `evidence:<id>`, `event:<id>` for V1 trade events and
+   * V1 decisions, …).
+   */
   source: string;
-  /** `09:42`, or `09:42 · recorded 10:15` when the two times differ by more than five minutes. */
+  /**
+   * `09:42`, or `09:42 · recorded 10:15` when the two times differ by more than five minutes; a recording on another day
+   * dates both times (`Sep 15, 03:15 · recorded Oct 30, 20:34`).
+   */
   timeLabel: string;
 }
 
@@ -136,6 +142,19 @@ export interface TimelineRiskCheck {
 export type CheckExplainLookup = (check: TimelineRiskCheck, report: StoredRiskReport) => ExplainLookup | undefined;
 
 export interface TimelineLegacyEvent { id: string; eventType: string; payload: Record<string, unknown>; occurredAt: string; recordedAt: string }
+/**
+ * A decision recorded in V1 on one of the trade's revisions (`setup_human_decisions`): Taken or Skipped, with the trader's
+ * reason and the verdicts it was recorded against. `MANUAL_OVERRIDE`: taken while the Risk Engine or the AI blocked it.
+ */
+export interface TimelineLegacyDecision {
+  id: string;
+  decision: "TAKEN" | "SKIPPED";
+  eventType: "HUMAN_DECISION" | "MANUAL_OVERRIDE";
+  reason: string | null;
+  riskDecision: "APPROVED" | "BLOCKED";
+  aiDecision: string;
+  recordedAt: string;
+}
 export interface TimelineJournalEntry { id: string; kind: JournalKind; body: string | null; details: Record<string, unknown>; phase: StoredPhase; recordedAt: string }
 export type TimelineEvidence =
   | { kind: "V2"; id: string; label: EvidenceLabel; timeframe: string | null; caption?: string | null; phase: StoredPhase; recordedAt: string; removedAt?: string | null }
@@ -152,6 +171,8 @@ export interface TimelineInputs {
   riskChecks?: readonly TimelineRiskCheck[];
   /** V1 `trade_events` of the linked plan. */
   legacyEvents?: readonly TimelineLegacyEvent[];
+  /** V1 decisions (`setup_human_decisions`) on the trade's revisions. */
+  legacyDecisions?: readonly TimelineLegacyDecision[];
   journal?: readonly TimelineJournalEntry[];
   evidence?: readonly TimelineEvidence[];
   tagSets?: readonly TimelineTagSet[];
@@ -163,7 +184,10 @@ export interface TimelineInputs {
    * of the draft, or a V1 skip. Everything recorded from then on is After close; the record that ended it is not.
    */
   planEndedAt?: string | null;
-  /** The risk evaluation that authorised the lock (`trade_plans.risk_evaluation_id`): shown with the lock, before it. */
+  /**
+   * The risk evaluation that authorised the lock (`trade_plans.risk_evaluation_id`): shown with the lock, right before it,
+   * and Before entry like the lock itself.
+   */
   lockEvaluationId?: string | null;
   /** Rows to explain the first blocking reason of 1.1 and legacy risk checks, resolved per check. */
   explainLookup?: CheckExplainLookup;
@@ -198,13 +222,22 @@ const LEGACY_EVENT_TITLES: Record<string, string> = {
   PLAN_LOCKED: "Plan locked", PLAN_CANCELLED: "Plan cancelled",
 };
 
+/** `Decision: Skipped`, `Decision: Taken`, or `Taken despite a block` for a V1 manual override (spec §15). */
+function legacyDecisionTitle(decision: Pick<TimelineLegacyDecision, "decision" | "eventType">): string {
+  if (decision.eventType === "MANUAL_OVERRIDE") return "Taken despite a block";
+  return decision.decision === "TAKEN" ? "Decision: Taken" : "Decision: Skipped";
+}
+
 const FIVE_MINUTES = 5;
 
+/**
+ * `09:42 · recorded 10:15`. A recording on another day dates both times, so the event's own day is never read as the
+ * recording day: `Sep 15, 03:15 · recorded Oct 30, 20:34`.
+ */
 function timeLabel(at: string, recordedAt: string, display: TimeDisplay): string {
-  const main = formatTime(at, display);
-  if (!differsByMoreThan(at, recordedAt, FIVE_MINUTES)) return main;
-  const sameDay = displayDay(at, display) === displayDay(recordedAt, display);
-  return `${main} · recorded ${sameDay ? formatTime(recordedAt, display) : formatDateTime(recordedAt, display)}`;
+  if (!differsByMoreThan(at, recordedAt, FIVE_MINUTES)) return formatTime(at, display);
+  const format = displayDay(at, display) === displayDay(recordedAt, display) ? formatTime : formatDateTime;
+  return `${format(at, display)} · recorded ${format(recordedAt, display)}`;
 }
 
 function textOf(value: unknown): string | null {
@@ -265,7 +298,8 @@ interface Placement {
  * writes the records of one action a few milliseconds out of order: saving a draft stores its free check just before
  * the revision row, so a check is never placed before the revision it evaluated; locking stores the plan just before
  * the evaluation that authorised it (`lockEvaluationId`), so that evaluation is placed right before "Plan locked".
- * Displayed times never change.
+ * Displayed times never change. The lock and the evaluation that authorised it are Before entry by definition (an entry
+ * is never earlier than the lock), also when the entry was reported at the lock instant itself.
  */
 export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STRATEGY_TIME): TimelineItem[] {
   const trade = inputs.trade;
@@ -305,10 +339,14 @@ export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STR
   for (const check of inputs.riskChecks ?? []) {
     const parsed = check.decision === "BLOCKED" ? storedRiskSchema.safeParse(check.result) : null;
     const firstReason = parsed?.success ? explainReport(parsed.data, inputs.explainLookup?.(check, parsed.data)).blocking[0]?.detail : undefined;
+    // The lock transaction stamps locked_at, then writes the evaluation that authorised it a few milliseconds later; an
+    // entry reported at the lock instant must not make the plan's own approval look recorded after execution began.
+    const authorisedLock = trade.locked_at !== null && check.id === inputs.lockEvaluationId;
     push({
       id: `check:${check.id}`, kind: "RISK_CHECK", at: check.recordedAt, recordedAt: check.recordedAt,
       title: `Risk check: ${check.decision === "APPROVED" ? "Approved" : "Blocked"}`, body: firstReason, source: `check:${check.id}`,
-      ...checkPlacement(check, check.proposalId !== undefined ? revisedAt.get(check.proposalId) : undefined, check.id === inputs.lockEvaluationId ? trade.locked_at : null),
+      ...checkPlacement(check, check.proposalId !== undefined ? revisedAt.get(check.proposalId) : undefined, authorisedLock ? trade.locked_at : null),
+      ...(authorisedLock ? { timing: beforeEntry } : {}),
     });
   }
 
@@ -334,6 +372,18 @@ export function buildTimeline(inputs: TimelineInputs, display: TimeDisplay = STR
       id: `event:${event.id}`, kind: note ? "NOTE" : "TRADE_EVENT", at: userTime ? event.occurredAt : event.recordedAt, recordedAt: event.recordedAt,
       title: note ? "Note" : LEGACY_EVENT_TITLES[event.eventType] ?? "Trade event",
       body: textOf(event.payload.note) ?? textOf(event.payload.reason) ?? undefined, source: `event:${event.id}`,
+    });
+  }
+
+  for (const decision of inputs.legacyDecisions ?? []) {
+    // The V1 skip that ended the plan is its last decision before an entry that never happened: like a disposition, it
+    // keeps its place. Every other decision is classified by its recording time (§5.3), like any record without a phase.
+    const endedPlan = decision.decision === "SKIPPED" && endedAt !== null && compareInstants(decision.recordedAt, endedAt) === 0;
+    push({
+      id: `event:${decision.id}`, kind: "LEGACY_DECISION", at: decision.recordedAt, recordedAt: decision.recordedAt, title: legacyDecisionTitle(decision),
+      body: textOf(decision.reason) ?? undefined, source: `event:${decision.id}`,
+      details: { decision: decision.decision, eventType: decision.eventType, riskDecision: decision.riskDecision, aiDecision: decision.aiDecision },
+      ...(endedPlan ? { timing: beforeEntry } : {}),
     });
   }
 

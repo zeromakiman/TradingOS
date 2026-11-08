@@ -12,6 +12,9 @@ import {budgetedAiRequest} from "@/ai/request-gate";
 import {ProviderError} from "@/ai/provider";
 import {validateWeeklyReview} from "@/ai/weekly-review-contract";
 import {weeklyPeriod} from "@/ai/weekly-period";
+import {rpcErrorMessage} from "@/ai/rpc-error";
+/** The database runs one weekly review per account and week at a time (`Review already running`): nothing was written or sent. */
+export const WEEKLY_IN_PROGRESS="A review of this week is already running, so no new review was requested. Its result will appear in the history.";
 export async function reviewWeek(accountId:string,day:string,requestId:string){
  z.uuid().parse(requestId);
  const period=weeklyPeriod(day),owner=await ownedWeeklyAccount(accountId),operation=operationFor("WEEKLY_REVIEW");
@@ -21,7 +24,7 @@ export async function reviewWeek(accountId:string,day:string,requestId:string){
  try {facts=await loadWeeklyFacts(owner,period.startDate);}catch(error){if(error instanceof WeeklyScopeError)return {status:"SCOPE_LIMIT",message:error.message};throw error;}
  if(!facts.trades.length)return {status:"EMPTY",message:"No completed trades in this week. No AI request was made."};
  const admin=trustedServer(),start=await admin.rpc("start_weekly_ai_review",{p_id:requestId,p_user_id:owner.user.id,p_account_id:owner.account.id,p_week_start:period.startDate,p_facts:facts,p_hash:createHash("sha256").update(JSON.stringify(facts)).digest("hex"),p_operation:operation,p_contract:operationContract(operation,facts)});
- if(start.error)throw new Error("Could not start weekly review. Check history for a running attempt.");
+ if(start.error){if(rpcErrorMessage(start.error)==="Review already running")return {status:"IN_PROGRESS",message:WEEKLY_IN_PROGRESS};throw new Error("Could not start weekly review. Check history for a running attempt.");}
  if(start.data!==true)return {status:"RECORDED",message:"This request was already recorded. No additional provider request was made."};
  let reservationId:string|null=null,raw:unknown=null,interpretation:ReturnType<typeof validateWeeklyReview>|null=null,errorCode:string|null=null;
  const authorize=async()=>{const {error}=await admin.rpc("authorize_weekly_ai_review",{p_id:requestId,p_user_id:owner.user.id});if(error)throw new ProviderError("WEEKLY_REVIEW_UNAVAILABLE");};

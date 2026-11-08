@@ -1,9 +1,9 @@
-import {withOperationSources,withPeriodicSourcesV2} from "./citation-sources";
+import {withOperationSources,verifiedPeriodicFactsV2} from "./citation-sources";
 import {metrics,enrichTrades,groups,type JournalTrade} from "@/domain/analytics";
 import {tradeReviewContext,type ReviewEvent} from "./trade-review-context";
 import {monthlyPeriod} from "./monthly-period";
 import {operationFor} from "./operations";
-import {PERIODIC_RECORD_RULES,periodicTrade,snapshotVersions,versionIdentities,type PeriodicTradeSource} from "./periodic-facts";
+import {namedVersions,PERIODIC_RECORD_RULES,periodicTrade,snapshotVersions,versionIdentities,type PeriodicTradeSource} from "./periodic-facts";
 import {compactEdge,periodicRecordCount,PERIODIC_V2_LIMITS} from "./periodic-limits";
 import {estimateRequest} from "./request-estimate";
 /** Bounds of the V1 facts (MONTHLY_REVIEW_FACTS_V1, kept for stored history). New requests use PERIODIC_V2_LIMITS. */
@@ -57,7 +57,7 @@ function monthlyBaseV2(accountId:string,month:string,trades:readonly JournalTrad
 
 /** Explicit deterministic aggregation of the entire sample, never a silent subset or AI-generated summary. */
 function monthlySummaryV2(base:ReturnType<typeof monthlyBaseV2>["base"],versions:VersionIdentities,counts:MonthlyRecordCounts){
- return withPeriodicSourcesV2("MONTHLY_REVIEW",{...base,mode:"DETERMINISTIC SUMMARY" as const,scope:"All selected completed planned trades contribute to unchanged domain EDGE/model/session metrics; exact IDs and original version identities are retained. Individual plans, executions, rules, narrative, journal entries, events and tags are omitted in this bounded mode. Rule/process/behavioral causes and improvement cannot be inferred from outcomes. Live-first and imported trades are not included. No screenshots, prior AI outputs, balances or other months.",
+ return verifiedPeriodicFactsV2("MONTHLY_REVIEW",{...base,mode:"DETERMINISTIC SUMMARY" as const,scope:"All selected completed planned trades contribute to unchanged domain EDGE/model/session metrics; exact IDs and original version identities are retained. Individual plans, executions, rules, narrative, journal entries, events and tags are omitted in this bounded mode. Rule/process/behavioral causes and improvement cannot be inferred from outcomes. Live-first and imported trades are not included. No screenshots, prior AI outputs, balances or other months.",
   trades:base.sample.tradeIds.map(tradeId=>({tradeId})),strategyVersions:versions.strategyVersions,riskVersions:versions.riskVersions,
   omitted:{individualTradeDetails:base.sample.tradeIds.length,journalEntries:counts.journalEntries,eventDetails:counts.events,strategyDefinitions:versions.strategyVersions.length,riskDefinitions:versions.riskVersions.length}});
 }
@@ -72,17 +72,17 @@ function monthlySummaryV2(base:ReturnType<typeof monthlyBaseV2>["base"],versions
  */
 export function monthlyReviewContextV2(accountId:string,month:string,sources:PeriodicTradeSource[],capturedAt:string,currency:string){
  const limits=PERIODIC_V2_LIMITS.MONTHLY_REVIEW,records=new Set<string>();
- const {within,enriched,base}=monthlyBaseV2(accountId,month,sources.map(s=>s.trade),capturedAt,currency);
+ const {within,enriched,base}=monthlyBaseV2(accountId,month,sources.map(s=>s.trade),capturedAt,currency),named=namedVersions(sources);
  const detailed=sources.map((s,i)=>{
   if(s.plan.id!==s.trade.id||s.plan.account_id!==accountId||records.has(s.tradeRecordId))throw new Error("Monthly trade scope mismatch");
   if(s.strategy.id!==s.plan.strategy_version_id||s.risk.id!==s.plan.risk_plan_version_id)throw new Error("Monthly version mismatch");
   if(s.events.some(e=>!within(e.occurred_at)||!within(e.recorded_at))||s.journal.some(e=>!within(e.recordedAt))||(s.tags!==null&&(s.tags.recordedAt===null||!within(s.tags.recordedAt))))throw new Error("Monthly event scope mismatch");
   records.add(s.tradeRecordId);
-  return periodicTrade(s,{session:enriched[i].session,weekday:enriched[i].weekday});
+  return periodicTrade(s,{session:enriched[i].session,weekday:enriched[i].weekday,named});
  });
  const counts={journalEntries:sources.reduce((n,s)=>n+s.journal.length,0),events:sources.reduce((n,s)=>n+s.events.length,0)};
  if(detailed.length<=limits.detailedTrades&&periodicRecordCount(sources)<=limits.detailedRecords){
-  const full=withPeriodicSourcesV2("MONTHLY_REVIEW",{...base,mode:"DETAILED" as const,scope:`All selected-month completed planned trades, original plans/versions and executions. Original plan or entry may precede the month. Journal entries, events and tags must have occurred AND been recorded within the month. Live-first and imported trades are not included. No latest out-of-period tags, screenshots, prior AI outputs, balances or other months. Money amounts are in ${currency}. ${PERIODIC_RECORD_RULES}`,trades:detailed,...snapshotVersions(sources)});
+  const full=verifiedPeriodicFactsV2("MONTHLY_REVIEW",{...base,mode:"DETAILED" as const,scope:`All selected-month completed planned trades, original plans/versions and executions. Original plan or entry may precede the month. Journal entries, events and tags must have occurred AND been recorded within the month. Live-first and imported trades are not included. No latest out-of-period tags, screenshots, prior AI outputs, balances or other months. Money amounts are in ${currency}. ${PERIODIC_RECORD_RULES}`,trades:detailed,...snapshotVersions(sources)});
   if(Buffer.byteLength(JSON.stringify(full))<=limits.bytes&&estimateRequest(operationFor("MONTHLY_REVIEW"),{context:full,images:[],prior:[]}).tokens<=operationFor("MONTHLY_REVIEW").maxInputTokens)return full;
  }
  return monthlySummaryV2(base,versionIdentities(sources),counts);

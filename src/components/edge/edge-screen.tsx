@@ -21,7 +21,7 @@ import {
 import { EDGE_PATH, edgeHref, RANGE_LABELS, RANGE_PRESETS } from "./params";
 import { EdgePendingRegion, EdgeTransition, PendingLink } from "./pending";
 import { PerformanceCalendar } from "./performance-calendar";
-import { accountFilterChip, activeFilterCount, filterQuery } from "./query";
+import { accountFilterChip, activeFilterCount, filterQuery, linkFilterChips, unappliedNotice } from "./query";
 import { ResultsCharts } from "./results-charts";
 
 /**
@@ -79,12 +79,19 @@ function filterSelects(data: EdgeData): FilterSelect[] {
 }
 
 function Notices({ data }: { data: EdgeData }) {
-  if (!data.query.invalid.length && !data.truncated) return null;
+  // A V1 link's options EDGE does not apply (the last 30 trades, trades without an entry time): said, never dropped silently.
+  const unapplied = unappliedNotice(data.query);
+  if (!data.query.invalid.length && !data.truncated && !unapplied) return null;
   return (
     <div className="flex flex-col gap-2">
       {data.query.invalid.length > 0 && (
         <Callout tone="warning" role="status">
           Some filters in this link couldn't be read and were ignored.
+        </Callout>
+      )}
+      {unapplied && (
+        <Callout tone="warning" role="status">
+          {unapplied}
         </Callout>
       )}
       {data.truncated && (
@@ -131,11 +138,13 @@ export function EdgeScreen({ data }: { data: EdgeData }) {
       key={filterQuery(query)}
       state={{
         range: query.range, closedFrom: query.closedFrom, closedTo: query.closedTo, model: query.model, session: query.session, origin: query.origin,
-        instrument: query.instrument, calendar: query.calendar, currency: query.currency,
+        instrument: query.instrument, weekday: query.weekday, strategyVersionId: query.strategyVersionId, riskPlanVersionId: query.riskPlanVersionId,
+        result: query.result, calendar: query.calendar, currency: query.currency,
       }}
       rangeOptions={RANGE_PRESETS.map(preset => ({ value: preset, label: RANGE_LABELS[preset] }))}
       selects={filterSelects(data)}
       accountFilter={accountFilterChip(query, context)}
+      linkFilters={linkFilterChips(query, data.versionNames)}
     />
   );
 

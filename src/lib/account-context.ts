@@ -6,6 +6,8 @@ import { z } from "zod";
 import type { AccountPlatform, AccountStatus, AccountType } from "@/domain/account-metrics";
 import { stripZeros } from "@/domain/format";
 import { resolveTimeDisplay, type TimeDisplay } from "@/domain/time-display";
+import { isSecureRequest } from "./cookie-security";
+import { operationalFailure } from "./operational-log";
 import { requireUser } from "./supabase/server";
 
 /**
@@ -19,8 +21,21 @@ import { requireUser } from "./supabase/server";
 export const ACCOUNT_COOKIE = "tos_account";
 /** Most recently used active account; the default of Plan Trade / Record Live Trade in All Accounts. */
 export const LAST_ACCOUNT_COOKIE = "tos_last_account";
+/**
+ * The cookies that name one person's trading accounts. Whatever ends that person's presence in this browser (sign-out,
+ * a password reset, deleting the Trading OS account) removes them with the auth cookies, so the next person to sign in
+ * neither starts in a context they cannot see nor sends the previous person's account ids with every request. A
+ * session that ends any other way leaves them, and the next sign-in keeps only the signed-in person's own values
+ * (keepOwnAccountContext).
+ */
+export const ACCOUNT_CONTEXT_COOKIES: readonly string[] = [ACCOUNT_COOKIE, LAST_ACCOUNT_COOKIE];
 /** Set by the proxy on the forwarded request (never stored) when `?account=` named an unavailable account. */
 export const ACCOUNT_NOTICE_HEADER = "x-tos-account-notice";
+/**
+ * Set by the proxy on the forwarded request (never stored) when it rendered `?account=` for this request only (the
+ * router's fetches): the value that stays in the `tos_account` cookie ("all", an account id, or "none").
+ */
+export const ACCOUNT_STORED_HEADER = "x-tos-account-stored";
 export const ALL_ACCOUNTS_VALUE = "all";
 /** 400 days, the longest lifetime browsers accept. */
 export const CONTEXT_COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
@@ -80,6 +95,14 @@ export interface AccountContext {
   notice: typeof ACCOUNT_UNAVAILABLE | null;
   /** Human copy of `notice` for the shell. */
   noticeText: string | null;
+  /**
+   * The notice is shown because the stored context itself (cookie `tos_account`) names an account that is no longer
+   * available: archived on another device, or left in this browser by someone else's session. Nothing would ever
+   * rewrite that cookie, so the shell stores All Accounts (what the page shows) once, and the notice is shown once
+   * (§9.2). False for a notice about `?account=` alone, whose stored context is fine (or already All Accounts). Absent
+   * (hand-built contexts) means false.
+   */
+  storedUnavailable?: boolean;
   /** Accounts the current context covers: the selected account, or every account (archived ones keep their history). */
   scopeAccountIds: string[];
   /**
@@ -163,6 +186,11 @@ export interface ContextInput {
   lastAccount: string | null | undefined;
   /** The proxy rejected this request's `?account=` value. */
   proxyNotice: boolean;
+  /**
+   * What the cookie holds when the proxy rendered this request for `?account=` without storing it
+   * (ACCOUNT_STORED_HEADER). Omitted when `stored` is the cookie's own value.
+   */
+  persisted?: string | null;
 }
 
 /** Pure resolution of §9.2; never returns a placeholder account. */
@@ -174,6 +202,9 @@ export function resolveAccountContext(input: ContextInput): AccountContext {
   const match = value !== null && value !== ALL_ACCOUNTS_VALUE ? accounts.find(account => account.id === value) : undefined;
   const usable = match !== undefined && match.status === "ACTIVE" ? match : null;
   const unavailable = input.proxyNotice || (value !== null && value !== ALL_ACCOUNTS_VALUE && usable === null);
+  // The stored context: the request's value, unless the proxy rendered the request for `?account=` alone.
+  const kept = input.persisted === undefined ? value : parseAccountValue(input.persisted);
+  const keptUnavailable = kept !== null && kept !== ALL_ACCOUNTS_VALUE && !active.some(account => account.id === kept);
   const selected: AccountSelection = usable ? { mode: "account", account: usable } : { mode: "all" };
   const last = parseAccountValue(input.lastAccount);
   const lastActive = active.find(account => account.id === last);
@@ -184,6 +215,7 @@ export function resolveAccountContext(input: ContextInput): AccountContext {
     selected,
     notice: unavailable ? ACCOUNT_UNAVAILABLE : null,
     noticeText: unavailable ? ACCOUNT_UNAVAILABLE_NOTICE : null,
+    storedUnavailable: unavailable && keptUnavailable,
     scopeAccountIds: usable ? [usable.id] : accounts.map(account => account.id),
     formDefaultAccountId: usable?.id ?? lastActive?.id ?? (active.length === 1 ? active[0].id : null),
   };
@@ -193,11 +225,13 @@ export function resolveAccountContext(input: ContextInput): AccountContext {
 export const getAccountContext = cache(async (): Promise<AccountContext> => {
   const { db, user } = await currentSession();
   const [jar, requestHeaders, accounts] = await Promise.all([cookies(), headers(), loadAccounts(db, user.id)]);
+  const persisted = requestHeaders.get(ACCOUNT_STORED_HEADER);
   return resolveAccountContext({
     accounts,
     stored: jar.get(ACCOUNT_COOKIE)?.value,
     lastAccount: jar.get(LAST_ACCOUNT_COOKIE)?.value,
     proxyNotice: requestHeaders.get(ACCOUNT_NOTICE_HEADER) === ACCOUNT_UNAVAILABLE,
+    ...(typeof persisted === "string" ? { persisted } : {}),
   });
 });
 
@@ -206,22 +240,9 @@ export function contextCookieOptions(secure: boolean) {
   return { httpOnly: true, sameSite: "lax" as const, path: "/", maxAge: CONTEXT_COOKIE_MAX_AGE, secure };
 }
 
-/** HTTPS requests (the browser's Origin, else the proxy's forwarded protocol) get Secure cookies. */
-export function isSecureRequest(requestHeaders: Pick<Headers, "get">): boolean {
-  const origin = requestHeaders.get("origin");
-  if (origin) {
-    try {
-      return new URL(origin).protocol === "https:";
-    } catch {
-      return false;
-    }
-  }
-  return requestHeaders.get("x-forwarded-proto")?.split(",")[0]?.trim() === "https";
-}
-
 /**
- * Stores one context or preference cookie with the §9.2 attributes. Server actions and route handlers only (cookies
- * cannot be written while a page renders).
+ * Stores one context or preference cookie with the §9.2 attributes (Secure when the request came over HTTPS: see
+ * src/lib/cookie-security.ts). Server actions and route handlers only (cookies cannot be written while a page renders).
  */
 export async function setContextCookie(name: string, value: string): Promise<void> {
   const [jar, requestHeaders] = await Promise.all([cookies(), headers()]);
@@ -231,6 +252,39 @@ export async function setContextCookie(name: string, value: string): Promise<voi
 /** Removes one context or preference cookie (server actions only). */
 export async function deleteContextCookie(name: string): Promise<void> {
   (await cookies()).delete(name);
+}
+
+/** Which of these ids name accounts of the user (RLS session plus an explicit owner filter); none when unreadable. */
+async function ownAccountIds(db: Db, userId: string, ids: readonly string[]): Promise<ReadonlySet<string>> {
+  try {
+    const { data, error } = await db.from("accounts").select("id").eq("user_id", userId).in("id", [...ids]);
+    if (error) throw new Error("Trading accounts are unavailable.");
+    return new Set(z.array(z.object({ id: z.string() })).parse(data ?? []).map(row => row.id.toLowerCase()));
+  } catch {
+    operationalFailure("data_read_failed");
+    return new Set();
+  }
+}
+
+/**
+ * A person has just signed in on this browser (the password sign-in, or a recovery link's code): the context cookies
+ * keep only what is theirs (§9.2). A session can end without the sign-out action (signed out or reset on another
+ * device, revoked, expired), and then the previous person's account ids stay in this browser; the next person neither
+ * starts in a context they cannot see nor sends those ids with every request. The same person signing in again keeps
+ * their remembered context (an account of theirs archived meanwhile still gets the one-time notice). All Accounts names
+ * no account and stays; anything else that is not one of the person's accounts is removed, every id when the accounts
+ * cannot be read. `userId`: the user the sign-in returned. Server actions only.
+ */
+export async function keepOwnAccountContext(db: Db, userId: string | undefined): Promise<void> {
+  const jar = await cookies();
+  const stored = jar.getAll().filter(cookie => ACCOUNT_CONTEXT_COOKIES.includes(cookie.name))
+    .map(cookie => ({ name: cookie.name, value: parseAccountValue(cookie.value) }));
+  const ids = [...new Set(stored.flatMap(cookie => (cookie.value === null || cookie.value === ALL_ACCOUNTS_VALUE ? [] : [cookie.value])))];
+  const own = ids.length > 0 && userId ? await ownAccountIds(db, userId, ids) : new Set<string>();
+  for (const cookie of stored) {
+    const keep = cookie.value === ALL_ACCOUNTS_VALUE ? cookie.name === ACCOUNT_COOKIE : cookie.value !== null && own.has(cookie.value);
+    if (!keep) jar.delete(cookie.name);
+  }
 }
 
 /** The shell's selection value (the account id, or All Accounts). */

@@ -124,7 +124,3 @@ export const ledgerRow = z.object({
 }).strict();
 
 export type LedgerTrade = z.output<typeof ledgerRow>;
-
-export function parseLedgerRows(rows: readonly unknown[]): LedgerTrade[] {
-  return rows.map(row => ledgerRow.parse(row));
-}

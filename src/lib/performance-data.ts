@@ -1,15 +1,14 @@
 import "server-only";
-import { z } from "zod";
 import type { Lifecycle, LedgerTrade } from "@/domain/ledger";
 import {
   type AccountContribution, accountContribution, type BreakdownGroup, type BreakdownKey, breakdown, type CalendarDay, type CalendarMode, type CalendarMonth,
   type CurvePoint, calendarMonth, type DailyPoint, type DistributionBin, type DistributionR, type DrawdownPoint, dailySeries, distributionR, drawdownSeries,
-  equityCurveR, isEarlySample, type MoneyTotal, moneyByCurrency, type RMetrics, rMetrics, sampleCaveat,
+  equityCurveR, isEarlySample, type MoneyAmount, type MoneyTotal, moneyByCurrency, type RMetrics, rMetrics, sampleCaveat,
 } from "@/domain/performance";
 import { daysInMonth, strategyMonth } from "@/domain/time-display";
-import { ALL_ACCOUNTS_VALUE, type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext } from "./account-context";
+import { ALL_ACCOUNTS_VALUE, type AccountContext, type ContextAccount, type Db } from "./account-context";
 import {
-  applyLedgerFilters, contextScope, filteredScope, inTradeDateRange, journalHref, ledgerSelect, normalizeFilters, parseLedger, postFilter, resolveAccountFilter,
+  applyLedgerFilters, filteredScope, inTradeDateRange, journalHref, ledgerSelect, normalizeFilters, parseLedger, postFilter, resolveAccountFilter,
   searchSymbol, searchTradeIds, type TradeFilters, type TradeScope,
 } from "./trades-data";
 
@@ -42,29 +41,34 @@ export interface LoadLedgerOptions {
 /**
  * Every ledger row of the scope matching the filters, in id order (keyset pagination by id avoids PostgREST's row cap
  * and shifting offsets). Trade-date range, session, weekday and R bounds are applied to the parsed rows. A read-only
- * account filter narrows an All Accounts scope to that account (`filteredScope`).
+ * account filter narrows an All Accounts scope to that account (`filteredScope`). The read stops once `maxRows` rows
+ * are read; it is `truncated` only when another row matches (a scope of exactly `maxRows` trades is read in full).
  */
 export async function loadLedgerRows(db: Db, userId: string, scope: TradeScope, raw: TradeFilters, options: LoadLedgerOptions = {}): Promise<LedgerRows> {
   const filters = normalizeFilters(raw);
   const maxRows = options.maxRows ?? MAX_LEDGER_ROWS;
   const searchIds = filters.q !== undefined ? await searchTradeIds(db, userId, filteredScope(scope, filters), filters.q) : null;
   if (filters.q !== undefined && !searchSymbol(filters.q) && !searchIds?.length) return { rows: [], truncated: false };
-  const rows: LedgerTrade[] = [];
-  let read = 0;
-  let after: string | null = null;
-  for (;;) {
+  const page = async (after: string | null, limit: number) => {
     let query = applyLedgerFilters(ledgerSelect(db), scope, filters, searchIds);
     if (options.closedOnly) query = query.not("exited_at", "is", null);
     if (options.lifecycles?.length) query = query.in("lifecycle", [...options.lifecycles]);
     if (after !== null) query = query.gt("id", after);
-    const { data, error } = await query.order("id", { ascending: true }).limit(PAGE);
+    const { data, error } = await query.order("id", { ascending: true }).limit(limit);
     if (error) throw new Error("Trades are unavailable.");
-    const batch = parseLedger(data);
+    return parseLedger(data);
+  };
+  const rows: LedgerTrade[] = [];
+  let read = 0;
+  let after: string | null = null;
+  for (;;) {
+    const batch = await page(after, PAGE);
     read += batch.length;
     for (const trade of batch) if (inTradeDateRange(trade, filters) && postFilter(trade, filters)) rows.push(trade);
     if (batch.length < PAGE) return { rows, truncated: false };
-    if (read >= maxRows) return { rows, truncated: true };
     after = batch[batch.length - 1].id;
+    // At the limit: truncated only if one more row matches.
+    if (read >= maxRows) return { rows, truncated: (await page(after, 1)).length > 0 };
   }
 }
 
@@ -123,9 +127,12 @@ export function breakdownHref(group: Pick<BreakdownGroup, "key" | "value">, dril
   return group.key === "account" && group.value ? journalHref(filters, { account: group.value }) : drillHref(filters, drill);
 }
 
-/** Trades closed on one strategy day (calendar cells, daily bars). */
-export function closedOnHref(day: string, drill: DrillDown): string {
-  return drillHref({ ...drill.base, states: CLOSED_STATES, closedFrom: day, closedTo: day }, drill);
+/**
+ * Trades closed on one strategy day (calendar cells, daily bars); with `currency`, only the trades of accounts in that
+ * currency (a daily net P&L bar of one currency, which sums exactly those).
+ */
+export function closedOnHref(day: string, drill: DrillDown, currency?: string): string {
+  return drillHref({ ...drill.base, states: CLOSED_STATES, closedFrom: day, closedTo: day, ...(currency ? { currency } : {}) }, drill);
 }
 
 /** Trades of one R-distribution bin ([from, to)). */
@@ -152,6 +159,29 @@ export function accountJournalHref(account: Pick<ContextAccount, "id" | "status"
 
 export interface LinkedBreakdownGroup extends BreakdownGroup {
   href: string | null;
+}
+
+/** One currency's net P&L of a day, with the Journal of exactly the trades it sums (that day's trades in that currency). */
+export interface LinkedMoneyAmount extends MoneyAmount {
+  href: string;
+}
+
+/** A day of the daily series: the Journal of all its trades (`href`), and of each currency's trades (`money[].href`). */
+export interface LinkedDailyPoint extends DailyPoint {
+  href: string;
+  money: LinkedMoneyAmount[];
+}
+
+/**
+ * The daily series with its drill-down links (`closedOnHref`). A currency's figure of a day links to that day's trades
+ * in that currency (§9.3: money never mixes currencies); when every trade shares one currency, that is the day's link.
+ */
+export function linkedDailySeries(trades: readonly LedgerTrade[], drill: DrillDown): LinkedDailyPoint[] {
+  const severalCurrencies = new Set(trades.map(trade => trade.currency)).size > 1;
+  return dailySeries(trades).map(point => {
+    const href = closedOnHref(point.day, drill);
+    return { ...point, href, money: point.money.map(money => ({ ...money, href: severalCurrencies ? closedOnHref(point.day, drill, money.currency) : href })) };
+  });
 }
 
 export interface LinkedCalendarDay extends CalendarDay {
@@ -210,7 +240,7 @@ export interface PerformanceView {
   earlySample: boolean;
   curve: CurvePoint[];
   drawdown: DrawdownPoint[];
-  daily: (DailyPoint & { href: string })[];
+  daily: LinkedDailyPoint[];
   distribution: DistributionR & { bins: (DistributionBin & { href: string })[] };
   breakdowns: Partial<Record<BreakdownKey, LinkedBreakdownGroup[]>>;
   /**
@@ -269,7 +299,7 @@ export function buildPerformance(context: AccountContext, rows: LedgerRows, requ
     earlySample: isEarlySample(metrics.completed),
     curve: equityCurveR(trades),
     drawdown: drawdownSeries(trades),
-    daily: dailySeries(trades).map(point => ({ ...point, href: closedOnHref(point.day, drill) })),
+    daily: linkedDailySeries(trades, drill),
     distribution: { ...distribution, bins: distribution.bins.map(bin => ({ ...bin, href: distributionBinHref(bin, drill) })) },
     breakdowns,
     contribution,
@@ -278,31 +308,3 @@ export function buildPerformance(context: AccountContext, rows: LedgerRows, requ
     truncated: rows.truncated,
   };
 }
-
-/** EDGE of the request's account context (closed trades only). */
-export async function getPerformance(filters: TradeFilters, options: PerformanceOptions = {}): Promise<PerformanceView> {
-  const [{ db, user }, context] = await Promise.all([currentSession(), getAccountContext()]);
-  const rows = await loadLedgerRows(db, user.id, contextScope(context), filters, { closedOnly: true });
-  return buildPerformance(context, rows, filters, new Date().toISOString(), options);
-}
-
-/** Calendar month only (month navigation and mode switches re-read just the month's exits). */
-export async function getCalendar(month: string, mode: CalendarMode, filters: TradeFilters, currency?: string): Promise<LinkedCalendar> {
-  const [{ db, user }, context] = await Promise.all([currentSession(), getAccountContext()]);
-  const scope = contextScope(context);
-  const valid = parseMonth(month, strategyMonth(new Date().toISOString()));
-  const last = `${valid}-${String(daysInMonth(valid)).padStart(2, "0")}`;
-  const monthFilters: TradeFilters = { ...filters, closedFrom: maxDay(filters.closedFrom, `${valid}-01`), closedTo: minDay(filters.closedTo, last) };
-  const rows = await loadLedgerRows(db, user.id, scope, monthFilters, { closedOnly: true });
-  return linkedCalendar(rows.rows, valid, mode, { base: filters }, currency);
-}
-
-function maxDay(a: string | undefined, b: string): string {
-  return a !== undefined && a > b ? a : b;
-}
-
-function minDay(a: string | undefined, b: string): string {
-  return a !== undefined && a < b ? a : b;
-}
-
-export const calendarModeSchema = z.enum(CALENDAR_MODES);

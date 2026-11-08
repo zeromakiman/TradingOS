@@ -8,7 +8,7 @@ import { CheckRiskButton } from "./check-risk-button";
 import {
   checkedOnLead, EARLIER_LOCKED_LABEL, EARLIER_LOCKED_NOTE, OLDER_DRAFTS_LABEL, PLANS_DESCRIPTION, PLANS_EMPTY_DESCRIPTION, PLANS_EMPTY_TITLE, PLANS_TITLE,
 } from "./copy";
-import { InlineEmpty, TodaySection } from "./section";
+import { AccountName, InlineEmpty, TodaySection } from "./section";
 import { SkipPlanButton } from "./skip-plan-button";
 import type { PlanActionView, PlanReasonView, PlanRowView, PlansView } from "./types";
 
@@ -71,7 +71,12 @@ function PlanRow({ row, showAccount }: { row: PlanRowView; showAccount: boolean 
             {row.title}
           </Link>{" "}
           <StatusPill tone={row.state.tone}>{row.state.label}</StatusPill>
-          {showAccount && <span className="t-meta"> {row.accountName}</span>}
+          {showAccount && (
+            <>
+              {" "}
+              <AccountName name={row.accountName} className="t-meta" />
+            </>
+          )}
         </p>
         <p className="t-meta num">{row.meta}</p>
         {row.reason && <Reason reason={row.reason} />}

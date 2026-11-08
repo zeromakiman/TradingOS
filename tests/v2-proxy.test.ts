@@ -1,52 +1,64 @@
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join, relative, sep } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dirname, join, relative, sep } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Proxy (docs/V2_ARCHITECTURE.md §1.3, §9.2): a catch-all matcher covers every page and route handler (fixing the V1
 // gap where /edge/weekly|recent|monthly had no session refresh); signed-out page requests go to /login except the
 // public pages; route handlers keep their JSON/CSV 401; `?account=` is mirrored into the request, and only a page load
-// the person made (never a prefetch, a prerender or one of the router's own fetches) validates and stores it.
+// the person made (never a prefetch, a prerender or one of the router's own fetches) validates and stores it. Refreshed
+// session cookies are HttpOnly (no browser code reads them) and Secure on HTTPS.
 
 type Row = Record<string, unknown>;
 const m = vi.hoisted(() => ({
   claims: vi.fn(),
   cookies: null as null | { setAll: (values: { name: string; value: string; options: object }[], headers: Record<string, string>) => void },
+  cookieOptions: undefined as unknown,
+  /** Hand the client to the real @supabase/ssr (one test drives a real session refresh over a stubbed fetch). */
+  real: false,
   tables: {} as Record<string, Row[]>,
   failing: false,
   queries: [] as string[],
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/config", () => ({ publicConfig: () => ({ url: "https://example.supabase.co", key: "public", cookiePrefix: "sb-test" }) }));
-vi.mock("@supabase/ssr", () => ({
-  createServerClient: (_url: unknown, _key: unknown, options: { cookies: typeof m.cookies }) => {
-    m.cookies = options.cookies;
-    return {
-      auth: { getClaims: m.claims },
-      from: (table: string) => {
-        m.queries.push(table);
-        const filters: [string, unknown][] = [];
-        const chain = {
-          select: () => chain,
-          eq: (column: string, value: unknown) => { filters.push([column, value]); return chain; },
-          order: () => chain,
-          limit: () => chain,
-          maybeSingle: () => chain,
-          // biome-ignore lint/suspicious/noThenProperty: models the thenable PostgREST query builder of supabase-js.
-          then: (resolve: (value: { data: unknown; error: unknown }) => unknown) => {
-            if (m.failing) return Promise.resolve({ data: null, error: { message: "network" } }).then(resolve);
-            const rows = (m.tables[table] ?? []).filter(row => filters.every(([column, value]) => row[column] === value));
-            return Promise.resolve({ data: table === "accounts" ? rows[0] ?? null : rows, error: null }).then(resolve);
-          },
-        };
-        return chain;
-      },
-    };
-  },
-}));
+vi.mock("@supabase/ssr", async importOriginal => {
+  const real = await importOriginal<typeof import("@supabase/ssr")>();
+  return {
+    ...real,
+    createServerClient: (url: string, key: string, options: { cookies: typeof m.cookies; cookieOptions?: unknown }) => {
+      m.cookies = options.cookies;
+      m.cookieOptions = options.cookieOptions;
+      if (m.real) return real.createServerClient(url, key, options as Parameters<typeof real.createServerClient>[2]);
+      return {
+        auth: { getClaims: m.claims },
+        from: (table: string) => {
+          m.queries.push(table);
+          const filters: [string, unknown][] = [];
+          const chain = {
+            select: () => chain,
+            eq: (column: string, value: unknown) => { filters.push([column, value]); return chain; },
+            order: () => chain,
+            limit: () => chain,
+            maybeSingle: () => chain,
+            // biome-ignore lint/suspicious/noThenProperty: models the thenable PostgREST query builder of supabase-js.
+            then: (resolve: (value: { data: unknown; error: unknown }) => unknown) => {
+              if (m.failing) return Promise.resolve({ data: null, error: { message: "network" } }).then(resolve);
+              const rows = (m.tables[table] ?? []).filter(row => filters.every(([column, value]) => row[column] === value));
+              return Promise.resolve({ data: table === "accounts" ? rows[0] ?? null : rows, error: null }).then(resolve);
+            },
+          };
+          return chain;
+        },
+      };
+    },
+  };
+});
 
 import { NextRequest } from "next/server";
-import { ACCOUNT_COOKIE, ACCOUNT_NOTICE_HEADER, CONTEXT_COOKIE_MAX_AGE } from "@/lib/account-context";
+import {
+  ACCOUNT_COOKIE, ACCOUNT_NOTICE_HEADER, ACCOUNT_STORED_HEADER, ACCOUNT_UNAVAILABLE, CONTEXT_COOKIE_MAX_AGE, type ContextAccount, resolveAccountContext,
+} from "@/lib/account-context";
 import { config, isDocumentNavigation, isSpeculativeRequest, proxy } from "@/proxy";
 
 const { getMiddlewareMatchers } = createRequire(import.meta.url)("next/dist/build/analysis/get-page-static-info.js") as {
@@ -84,6 +96,7 @@ const signedOut = () => m.claims.mockResolvedValue({ data: null, error: null });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  m.real = false;
   m.failing = false;
   m.queries.length = 0;
   m.tables = {
@@ -91,6 +104,11 @@ beforeEach(() => {
     account_profiles: [{ account_id: ACTIVE, status: "ACTIVE" }, { account_id: ARCHIVED, status: "ARCHIVED" }],
   };
   signedIn();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("matcher coverage (§1.3)", () => {
@@ -276,5 +294,183 @@ describe("request classification", () => {
       expect(isDocumentNavigation(headers({ "sec-fetch-mode": "navigate", accept: "text/html", ...entry })), JSON.stringify(entry)).toBe(false);
     }
     expect(isSpeculativeRequest(headers({ "sec-fetch-mode": "navigate" }))).toBe(false);
+  });
+});
+
+describe("session cookies: HttpOnly, Secure on HTTPS", () => {
+  const NOW = new Date("2026-10-31T12:00:00Z");
+
+  it("hands @supabase/ssr the auth cookie attributes for the request's protocol", async () => {
+    await proxy(new NextRequest("http://localhost/journal"));
+    expect(m.cookieOptions).toEqual({ httpOnly: true, sameSite: "lax", path: "/", secure: false });
+    await proxy(new NextRequest("https://trading.example/journal"));
+    expect(m.cookieOptions).toEqual({ httpOnly: true, sameSite: "lax", path: "/", secure: true });
+  });
+
+  it.each([
+    ["http://localhost", false],
+    ["https://trading.example", true],
+  ] as const)("writes a session it refreshed as HttpOnly cookies (%s, Secure: %s) with the real @supabase/ssr", async (origin, secure) => {
+    // An expired access token in the request's session cookie: the real library refreshes it over a stubbed auth API
+    // and writes the new session through the proxy's cookie adapter. Its own defaults are not HttpOnly.
+    vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    m.real = true;
+    const now = Math.floor(NOW.getTime() / 1000);
+    const user = { id: USER, aud: "authenticated", role: "authenticated", email: "qa.proxy@example.test", app_metadata: {}, user_metadata: {}, created_at: "2026-09-01T00:00:00Z" };
+    const segment = (part: object) => Buffer.from(JSON.stringify(part)).toString("base64url");
+    const jwt = (exp: number) =>
+      [segment({ alg: "HS256", typ: "JWT" }), segment({ sub: USER, exp, iat: exp - 3600, aud: "authenticated", role: "authenticated", session_id: "s1", aal: "aal1" }), "c2lnbmF0dXJl"].join(".");
+    const expired = { access_token: jwt(now - 60), token_type: "bearer", expires_in: 3600, expires_at: now - 60, refresh_token: "refresh-1", user };
+    const refreshed = { access_token: jwt(now + 3600), token_type: "bearer", expires_in: 3600, expires_at: now + 3600, refresh_token: "refresh-2", user };
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        calls.push(`${url.pathname}${url.search}`);
+        if (url.pathname === "/auth/v1/token") return Response.json(refreshed);
+        if (url.pathname === "/auth/v1/user") return Response.json(user);
+        return Response.json({}, { status: 404 });
+      }),
+    );
+    const cookie = `sb-example-auth-token=base64-${Buffer.from(JSON.stringify(expired)).toString("base64url")}`;
+    const response = await proxy(new NextRequest(`${origin}/journal`, { headers: { cookie } }));
+    expect(response.status).toBe(200);
+    expect(calls).toContain("/auth/v1/token?grant_type=refresh_token");
+    const written = response.headers.getSetCookie().filter(header => header.startsWith("sb-example-auth-token"));
+    expect(written.length).toBeGreaterThan(0);
+    for (const header of written) {
+      expect(header).toMatch(/;\s*HttpOnly(;|$)/i);
+      expect(header).toMatch(/;\s*SameSite=Lax(;|$)/i);
+      expect(header).toMatch(/;\s*Path=\/(;|$)/i);
+      expect(/;\s*Secure(;|$)/i.test(header)).toBe(secure);
+    }
+  });
+});
+
+describe("a stored context that is no longer available (§9.2: notice shown once)", () => {
+  // What the page renders for a request after the proxy: the cookie and headers it forwards, resolved the way
+  // getAccountContext resolves them. `storedUnavailable` tells the shell to store All Accounts in place of a stored
+  // context that names an archived (or someone else's) account; a notice about `?account=` alone never does.
+  const DOCUMENT = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", accept: "text/html" };
+  const ROUTER_FETCH = { "sec-fetch-mode": "cors", "sec-fetch-dest": "empty", accept: "*/*" };
+  const FOREIGN = "20000000-0000-4000-8000-0000000000ff";
+  const account = (id: string, status: "ACTIVE" | "ARCHIVED"): ContextAccount => ({
+    id,
+    name: status === "ACTIVE" ? "FTMO 100K" : "Old demo",
+    currency: "USD",
+    type: "EVALUATION",
+    platform: "MANUAL",
+    broker: null,
+    status,
+    startingBalance: null,
+    createdAt: "2026-09-01T00:00:00.000Z",
+    profile: "PROFILE",
+  });
+  const accounts = [account(ACTIVE, "ACTIVE"), account(ARCHIVED, "ARCHIVED")];
+  const send = (path: string, init: { cookie?: string; headers?: Record<string, string>; method?: string } = {}) => {
+    const headers = new Headers(init.headers ?? DOCUMENT);
+    if (init.cookie) headers.set("cookie", `tos_account=${init.cookie}`);
+    return proxy(new NextRequest(`http://localhost${path}`, { headers, method: init.method }));
+  };
+  const forwarded = (response: Response, name: string) => response.headers.get(`x-middleware-request-${name}`);
+  function page(response: Response) {
+    const pairs = (forwarded(response, "cookie") ?? "").split(/;\s*/).filter(Boolean);
+    const cookies = new Map(pairs.map(pair => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)] as const));
+    const persisted = forwarded(response, ACCOUNT_STORED_HEADER);
+    const context = resolveAccountContext({
+      accounts,
+      stored: cookies.get(ACCOUNT_COOKIE),
+      lastAccount: undefined,
+      proxyNotice: forwarded(response, ACCOUNT_NOTICE_HEADER) === ACCOUNT_UNAVAILABLE,
+      ...(persisted !== null ? { persisted } : {}),
+    });
+    return { mode: context.selected.mode, notice: context.notice !== null, storedUnavailable: context.storedUnavailable };
+  }
+
+  it.each([
+    ["a page without ?account= whose stored account was archived on another device", true, "/today", { cookie: ARCHIVED }],
+    ["a page without ?account= after someone else's session left their account id", true, "/today", { cookie: FOREIGN }],
+    ["a page load naming the stored, now archived account", true, `/today?account=${ARCHIVED}`, { cookie: ARCHIVED }],
+    ["a client-side navigation to an unavailable account while the stored one is unavailable too", true, `/journal?account=${ARCHIVED}`, { cookie: FOREIGN, headers: ROUTER_FETCH }],
+    ["a server action re-render (POST) on a page whose URL names an active account", true, `/today?account=${ACTIVE}`, { cookie: ARCHIVED, method: "POST" }],
+    ["a page load of ?account=<archived> (the proxy stored All Accounts)", false, `/today?account=${ARCHIVED}`, { cookie: ACTIVE }],
+    ["a client-side navigation to ?account=<archived> while an active account stays stored", false, `/journal?account=${ARCHIVED}`, { cookie: ACTIVE, headers: ROUTER_FETCH }],
+    ["a client-side navigation to ?account=<archived> with nothing stored", false, `/journal?account=${ARCHIVED}`, { headers: ROUTER_FETCH }],
+  ] as const)("notice for %s: store All Accounts = %s", async (_label, reset, path, init) => {
+    expect(page(await send(path, init))).toEqual({ mode: "all", notice: true, storedUnavailable: reset });
+  });
+
+  it("asks for nothing while the page shows an available context", async () => {
+    // The router renders /journal?account=FTMO although Old demo (archived) is stored: no notice on this page.
+    expect(page(await send(`/journal?account=${ACTIVE}`, { cookie: ARCHIVED, headers: ROUTER_FETCH }))).toEqual({ mode: "account", notice: false, storedUnavailable: false });
+    expect(page(await send("/today", { cookie: ACTIVE }))).toEqual({ mode: "account", notice: false, storedUnavailable: false });
+  });
+
+  it("tells the page what stays stored only when it renders ?account= for this request alone, and drops a client's claim", async () => {
+    expect(forwarded(await send(`/journal?account=${ARCHIVED}`, { cookie: ACTIVE.toUpperCase(), headers: ROUTER_FETCH }), ACCOUNT_STORED_HEADER)).toBe(ACTIVE);
+    expect(forwarded(await send(`/journal?account=${ARCHIVED}`, { headers: ROUTER_FETCH }), ACCOUNT_STORED_HEADER)).toBe("none");
+    expect(forwarded(await send(`/journal?account=${ARCHIVED}`, { cookie: ACTIVE }), ACCOUNT_STORED_HEADER)).toBeNull();
+    // A forged header can neither hide an unavailable stored context nor invent one.
+    const forgedAll = await send("/today", { cookie: ARCHIVED, headers: { ...DOCUMENT, [ACCOUNT_STORED_HEADER]: "all" } });
+    expect(forwarded(forgedAll, ACCOUNT_STORED_HEADER)).toBeNull();
+    expect(page(forgedAll).storedUnavailable).toBe(true);
+    const forgedArchived = await send("/today", { cookie: ACTIVE, headers: { ...DOCUMENT, [ACCOUNT_STORED_HEADER]: ARCHIVED } });
+    expect(page(forgedArchived).storedUnavailable).toBe(false);
+  });
+});
+
+describe("no browser code needs script access to the session (why the auth cookies can be HttpOnly)", () => {
+  const SRC = join(process.cwd(), "src");
+  const files = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap(entry => (entry.isDirectory() ? files(join(dir, entry.name)) : /\.(ts|tsx)$/.test(entry.name) ? [join(dir, entry.name)] : []));
+  const directive = (source: string) => /^\s*["'](use client|use server)["']/.exec(source)?.[1] ?? null;
+  /** Value imports of a module (type-only imports are erased from the bundle). */
+  function specifiers(source: string): string[] {
+    const found: string[] = [];
+    for (const match of source.matchAll(/(?:^|\n)\s*(import|export)(\s+type)?\b[^;"'`]*?\bfrom\s*["']([^"']+)["']/g)) if (!match[2]) found.push(match[3]);
+    for (const match of source.matchAll(/(?:^|\n)\s*import\s*["']([^"']+)["']/g)) found.push(match[1]);
+    for (const match of source.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/g)) found.push(match[1]);
+    return found;
+  }
+  function resolveLocal(from: string, specifier: string): string | null {
+    const base = specifier.startsWith("@/") ? join(SRC, specifier.slice(2)) : specifier.startsWith(".") ? join(dirname(from), specifier) : null;
+    if (base === null) return null;
+    for (const candidate of [base, `${base}.ts`, `${base}.tsx`, join(base, "index.ts"), join(base, "index.tsx")]) {
+      if (existsSync(candidate) && /\.(ts|tsx)$/.test(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  it("bundles no Supabase client and no reference to the auth cookie into any client module", () => {
+    const clientRoots = files(SRC).filter(file => directive(readFileSync(file, "utf8")) === "use client");
+    expect(clientRoots.length).toBeGreaterThan(50);
+    const seen = new Set<string>();
+    const packages = new Map<string, string>();
+    const queue = [...clientRoots];
+    while (queue.length) {
+      const file = queue.pop() as string;
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const source = readFileSync(file, "utf8");
+      // A server action is called by reference from the browser: its own imports never reach the bundle.
+      if (directive(source) === "use server") continue;
+      expect(source, relative(SRC, file)).not.toMatch(/auth-token|cookiePrefix/);
+      for (const specifier of specifiers(source)) {
+        const local = resolveLocal(file, specifier);
+        if (local) queue.push(local);
+        else if (!specifier.startsWith("@/") && !specifier.startsWith(".")) packages.set(specifier, relative(SRC, file));
+      }
+    }
+    const bundled = [...seen].filter(file => directive(readFileSync(file, "utf8")) !== "use server").map(file => relative(SRC, file).split(sep).join("/"));
+    expect(bundled.filter(file => file.startsWith("lib/supabase/"))).toEqual([]);
+    expect([...packages.keys()].filter(name => name.startsWith("@supabase/"))).toEqual([]);
+    // The only cookies page scripts read are the shell's own preferences.
+    for (const file of bundled) {
+      const source = readFileSync(join(SRC, file), "utf8");
+      for (const match of source.matchAll(/readCookie\(document\.cookie,\s*([A-Z_]+)\)/g)) expect(["SIDEBAR_COOKIE", "SHORTCUTS_COOKIE"], file).toContain(match[1]);
+      expect(source.replace(/readCookie\(document\.cookie,\s*[A-Z_]+\)/g, ""), file).not.toMatch(/document\.cookie\b(?!`)/);
+    }
   });
 });

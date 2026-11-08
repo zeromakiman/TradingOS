@@ -1,8 +1,12 @@
 -- Trading OS V2: canonical trades (docs/V2_ARCHITECTURE.md §0.5, §2.2, §3, §5.2).
 -- Additive only. New tables are append-only; the V1 backfill inserts rows and never updates or deletes.
 -- Planned-trade RPCs delegate every risk, lock, fill, outcome and disposition decision to the V1 functions
--- (save_setup_proposal, check_setup_risk, open/close_journal_trade, set_journal_disposition). Their V1 logic is
--- unchanged; check_setup_risk only gains the trade-model guard and plan link of §10.4.
+-- (save_setup_proposal, check_setup_risk, open/close_journal_trade, set_journal_disposition), whose decision logic
+-- this migration keeps (0016 moves every engine path to risk report 1.2). Two of them are redefined here:
+-- save_setup_proposal and check_setup_risk refuse archived accounts (§3.2 item 4; the replay of an earlier request
+-- still answers), and check_setup_risk also refuses a NULL p_lock and gains the trade-model guard and plan link of
+-- §10.4. The deferred plan_requires_trade check (§2.1) rolls back any API request that locks a plan without linking
+-- it to a trade.
 -- Errors raised here start with a stable code prefix ('DRAFT_CHANGED: ...'); known V1 messages are re-raised
 -- with a prefix as well (private.v1_error_message), keeping the original text after it.
 
@@ -420,6 +424,27 @@ with proposal_source as (
 )
 insert into public.trade_revisions(proposal_id, trade_id, revision, user_id, account_id, created_at)
 select proposal_id, trade_id, 1, user_id, account_id, created_at from proposal_source;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- §2.1 in the database: every plan belongs to exactly one trade. trade_plan_links makes the link unique on both
+-- sides; this deferred check makes it exist. A plan locked by an API request (a session acting as an API role, as
+-- PostgREST sets authenticated or service_role for every request) must be linked to its trade when that transaction
+-- commits, so any path that locks outside the trade model (V1 lock_trade_plan, check_setup_risk with a NULL p_lock)
+-- fails closed and rolls back, whatever reopens it. Sessions without a role (migrations, operators, the synthetic
+-- history seed) are not checked: the V1 plans above were linked by the backfill.
+-- ---------------------------------------------------------------------------------------------------------
+create function private.require_plan_trade() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not exists (select 1 from public.trade_plan_links l where l.plan_id = new.id) then
+    raise exception 'PLAN_WITHOUT_TRADE: Every plan belongs to exactly one trade';
+  end if;
+  return null;
+end $$;
+create constraint trigger plan_requires_trade after insert on public.trade_plans
+  deferrable initially deferred for each row
+  when (pg_catalog.current_setting('role') <> 'none')
+  execute function private.require_plan_trade();
 
 -- ---------------------------------------------------------------------------------------------------------
 -- §3.7 Private bucket for V2 evidence. Policies mirror 0005 but are keyed to public.trade_evidence; the legacy
@@ -1350,11 +1375,16 @@ begin
 end $$;
 
 -- Copies the latest revision (or the plan's proposal) with news reset to UNKNOWN: news must be re-verified.
+-- A duplicate is a new plan, so it uses the account's current contract of the symbol, exactly like Edit Draft
+-- (loadEditDraft) and the pickers: the newest version by created_at desc, id desc. When that is not the version the
+-- source was written with, the values the trader confirmed changed, so contractConfirmed is cleared and the copy is
+-- sized with the current values (the free check blocks it until the trader confirms them again).
 -- Evidence is copied afterwards by the trusted server (§7.4).
 create function public.duplicate_trade_draft(p_trade_id uuid, p_request_key uuid, p_expected_risk_id uuid,
   p_expected_observation_id uuid) returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare original public.trades; t public.trades; latest public.trade_revisions; v_source jsonb; v_proposal public.setup_proposals; v_trade uuid;
+  v_written uuid; v_current uuid;
 begin
   original := private.lock_owned_trade(p_trade_id, true);
   if p_request_key is null then raise exception 'INVALID_INPUT: A request key is required'; end if;
@@ -1376,6 +1406,18 @@ begin
   end if;
   if v_source is null then
     raise exception 'NO_PLAN_TO_DUPLICATE: Only trades with a draft or a locked plan can be duplicated';
+  end if;
+  if jsonb_typeof(v_source -> 'instrumentId') = 'string'
+     and v_source ->> 'instrumentId' ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then
+    v_written := (v_source ->> 'instrumentId')::uuid;
+    select i.id into v_current
+      from public.instrument_versions w
+      join public.instrument_versions i on i.account_id = w.account_id and i.symbol = w.symbol
+     where w.id = v_written and w.account_id = original.account_id
+     order by i.created_at desc, i.id desc limit 1;
+    if v_current is distinct from v_written and v_current is not null then
+      v_source := v_source || jsonb_build_object('instrumentId', v_current::text, 'contractConfirmed', false);
+    end if;
   end if;
   v_source := v_source || jsonb_build_object('news', 'UNKNOWN');
   v_proposal := private.save_draft_proposal(original.account_id, v_source, p_request_key, p_expected_risk_id, p_expected_observation_id);
@@ -1417,6 +1459,8 @@ end $$;
 -- can reserve a slot or record fills outside the trade model. Rechecks (p_lock false), exact replays of a lock and
 -- proposals outside the trade model return exactly what V1 returned; a plan locked from a proposal outside the trade
 -- model is additionally wrapped into a new PLANNED trade (§2.1: every plan belongs to exactly one trade).
+-- p_lock must be true or false: PostgREST passes a JSON null as SQL NULL, which would skip every trade-aware branch
+-- below and still lock in the engine (private.assess_plan refuses it as well).
 -- create or replace keeps the function's OID and grants.
 --
 -- The 0004 body of public.check_setup_risk, verbatim: risk check (and optional lock) of one proposal, unaware of
@@ -1470,6 +1514,7 @@ language plpgsql security definer set search_path = '' as $$
 declare v_trade_id uuid; t public.trades; latest public.trade_revisions; v_result jsonb;
   v_proposal public.setup_proposals; v_wrapped uuid;
 begin
+  if p_lock is null then raise exception 'INVALID_INPUT: p_lock must be true or false'; end if;
   -- A check or a lock writes to the proposal's account, which an archived account refuses (private.require_active_account);
   -- only the replay of an existing lock, which writes nothing, still answers. Account row first, as everywhere.
   select * into v_proposal from public.setup_proposals where id = p_proposal_id and user_id = auth.uid();
@@ -1511,6 +1556,32 @@ begin
       values (v_wrapped, (v_result ->> 'planId')::uuid, v_proposal.user_id, v_proposal.account_id);
   end if;
   return v_result;
+end $$;
+
+-- §3.2 item 4 for the V1 entry point that stays granted (§10.4): saving a proposal persists a risk check
+-- (risk_evaluations, setup_risk_checks), which an archived account refuses like every other new activity. A replay
+-- of an earlier request still answers and writes nothing. Otherwise the 0004 body, verbatim; the V2 RPCs reach it
+-- through private.save_draft_proposal after their own archive check. create or replace keeps the OID and grants.
+create or replace function public.save_setup_proposal(p_account_id uuid,p_proposal jsonb,p_key uuid,p_expected_risk_id uuid,p_expected_observation_id uuid)
+returns uuid language plpgsql security definer set search_path='' as $$
+declare v public.setup_proposals; result jsonb; rid uuid; sid uuid; iid uuid;
+begin
+ perform 1 from public.accounts where id=p_account_id and user_id=auth.uid() for update;
+ if not found or p_key is null then raise exception 'Account not found or missing request key'; end if;
+ select * into v from public.setup_proposals where user_id=auth.uid() and request_key=p_key;
+ if found then
+   if v.account_id<>p_account_id or v.proposal is distinct from p_proposal then raise exception 'Idempotency conflict'; end if;
+   return v.id;
+ end if;
+ perform private.require_active_account(p_account_id);
+ result:=public.evaluate_trade_plan(p_account_id,p_proposal,p_expected_risk_id,p_expected_observation_id);
+ rid:=(result->>'evaluationId')::uuid;
+ select strategy_version_id,instrument_version_id into sid,iid from public.risk_evaluations where id=rid;
+ if result->'result'->'issues' @> '[{"code":"INVALID_INPUT"}]'::jsonb then raise exception 'Invalid proposal'; end if;
+ insert into public.setup_proposals(user_id,account_id,strategy_version_id,instrument_version_id,risk_evaluation_id,proposal,request_key)
+ values(auth.uid(),p_account_id,sid,iid,rid,p_proposal,p_key) returning * into v;
+ insert into public.setup_risk_checks(user_id,account_id,proposal_id,risk_evaluation_id) values(v.user_id,v.account_id,v.id,rid);
+ return v.id;
 end $$;
 
 -- Free deterministic check of the latest revision. Returns the V1 check envelope plus tradeId.
@@ -1849,11 +1920,16 @@ end $$;
 
 -- ---------------------------------------------------------------------------------------------------------
 -- §3.6 Journal entry. Phase and state are computed at insert time from server-side facts (§5.2).
+-- Stop moves, target changes and partial closes manage an open position: they are recorded only while the trade's
+-- phase is LIVE (an entry exists and no close), never on a draft or a locked plan (a draft's stop changes through
+-- Edit draft, a locked plan cannot change) nor after the close (ENTRY_NOT_LIVE). Notes, decisions and lessons fit
+-- every phase. A replay of an accepted request still returns its entry. The trade row lock taken first orders the
+-- check against the entry and close RPCs of the same trade, which take the same lock.
 -- ---------------------------------------------------------------------------------------------------------
 create function public.add_journal_entry(p_trade_id uuid, p_kind text, p_body text, p_details jsonb, p_request_key uuid) returns uuid
 language plpgsql security definer set search_path = '' as $$
 declare
-  t public.trades; e public.trade_journal_entries; v_id uuid;
+  t public.trades; e public.trade_journal_entries; v_id uuid; v_phase text;
   v_body text := nullif(btrim(p_body, E' \t\r\n'), '');
   v_details jsonb := case when jsonb_typeof(p_details) = 'object' then jsonb_strip_nulls(p_details) else p_details end;
 begin
@@ -1869,9 +1945,13 @@ begin
   end if;
   if length(v_body) > 5000 then raise exception 'INVALID_INPUT: body must contain at most 5000 characters'; end if;
   if jsonb_typeof(v_details) <> 'object' then raise exception 'INVALID_INPUT: details must be a JSON object'; end if;
+  v_phase := private.trade_phase(t.id);
+  if p_kind in ('STOP_CHANGE', 'TARGET_CHANGE', 'PARTIAL_CLOSE') and v_phase is distinct from 'LIVE' then
+    raise exception 'ENTRY_NOT_LIVE: Stop, target and partial-close entries can only be recorded while the trade is live';
+  end if;
   perform private.check_journal_details(p_kind, v_body, v_details, (private.trade_instrument(t)).tick_size);
   insert into public.trade_journal_entries(user_id, account_id, trade_id, kind, body, details, phase, state_at_creation, request_key)
-    values (t.user_id, t.account_id, t.id, p_kind, v_body, v_details, private.trade_phase(t.id), private.trade_lifecycle(t.id), p_request_key)
+    values (t.user_id, t.account_id, t.id, p_kind, v_body, v_details, v_phase, private.trade_lifecycle(t.id), p_request_key)
     returning id into v_id;
   return v_id;
 end $$;
@@ -2166,7 +2246,8 @@ revoke all on function
   private.save_draft_proposal(uuid, jsonb, uuid, uuid, uuid), private.draft_envelope(uuid, public.setup_proposals, integer),
   private.lifecycle_envelope(public.trade_lifecycle_events), private.position_input(public.accounts, jsonb),
   private.check_position(public.trade_position_facts, timestamptz), private.check_journal_details(text, text, jsonb, numeric),
-  private.active_risk_plan(uuid, date), private.check_proposal_risk(uuid, boolean), private.copyable_evidence(uuid, uuid, text)
+  private.active_risk_plan(uuid, date), private.check_proposal_risk(uuid, boolean), private.copyable_evidence(uuid, uuid, text),
+  private.require_plan_trade()
   from public, anon, authenticated, service_role;
 
 revoke all on function

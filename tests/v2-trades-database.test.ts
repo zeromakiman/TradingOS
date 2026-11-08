@@ -412,6 +412,80 @@ describe("planned trades", () => {
     expect(await count("select 1 from public.trade_revisions where proposal_id = $1", [proposalId])).toBe(0);
   });
 
+  it("refuses a NULL p_lock on the V1 entry point before anything is written (PostgREST sends JSON null as SQL NULL)", async () => {
+    // With NULL every trade-aware branch of check_setup_risk was skipped while the engine still locked: a stale
+    // revision, a discarded draft or a proposal outside the trade model became a plan without a trade.
+    const a = await db.bootstrapAccount(OWNER);
+    const stale = await createDraft(a);
+    await revise(a, stale.tradeId, 1, { narrative: "Revised thesis" });
+    const discarded = await createDraft(a, SECOND_PRICES);
+    await db.query("select public.discard_trade_draft($1, null, null)", [discarded.tradeId]);
+    await db.actor(OWNER);
+    const standalone = await value<string>("select public.save_setup_proposal($1, $2::jsonb, $3, $4, $5) as value",
+      [a.accountId, JSON.stringify(proposal(a, THIRD_PRICES)), randomUUID(), a.riskId, a.observationId]);
+    const written = async () => ({
+      plans: await count("select 1 from public.trade_plans where account_id = $1", [a.accountId]),
+      locks: await count("select 1 from public.setup_locks where account_id = $1", [a.accountId]),
+      evaluations: await count("select 1 from public.risk_evaluations where account_id = $1", [a.accountId]),
+      trades: await count("select 1 from public.trades where account_id = $1", [a.accountId]),
+    });
+    const before = await written();
+    for (const proposalId of [stale.proposalId, discarded.proposalId, standalone]) {
+      await db.actor(OWNER);
+      await expect(db.query("select public.check_setup_risk($1, null)", [proposalId]), proposalId).rejects.toThrow(/^INVALID_INPUT: p_lock must be true or false/);
+    }
+    expect(await written()).toEqual(before);
+    expect(before.plans).toBe(0);
+    expect(await ledger(stale.tradeId)).toMatchObject({ lifecycle: "DRAFT", plan_id: null, latest_revision: 2 });
+    // The engine refuses NULL as well, whoever calls it (only the database's own functions can).
+    await db.admin();
+    await expect(db.query("select private.check_proposal_risk($1, null)", [standalone])).rejects.toThrow(/^INVALID_INPUT: p_lock must be true or false/);
+    await expect(db.query("select private.assess_plan($1, $2::jsonb, $3, $4, $5, null)",
+      [a.accountId, JSON.stringify(proposal(a, THIRD_PRICES)), standalone, a.riskId, a.observationId])).rejects.toThrow(/^INVALID_INPUT: p_lock must be true or false/);
+    expect(await written()).toEqual(before);
+  });
+
+  it("never lets an API request leave a plan without its trade (§2.1 in the database)", async () => {
+    // A V1 path that locks outside the trade model, reopened here on purpose: the deferred check at commit rolls back
+    // the plan, its reservation and its PLAN_LOCKED event.
+    const a = await db.bootstrapAccount(OWNER);
+    const plans = () => count("select 1 from public.trade_plans where account_id = $1", [a.accountId]);
+    const lockV1 = (key: string) => db.query("select public.lock_trade_plan($1, $2::jsonb, $3, $4, $5)",
+      [a.accountId, JSON.stringify(proposal(a)), key, a.riskId, a.observationId]);
+    await db.admin();
+    await db.exec("grant execute on function public.lock_trade_plan(uuid, jsonb, uuid, uuid, uuid) to authenticated");
+    try {
+      await db.actor(OWNER);
+      await expect(lockV1(randomUUID())).rejects.toThrow(/^PLAN_WITHOUT_TRADE: Every plan belongs to exactly one trade/);
+      expect(await plans()).toBe(0);
+      await db.admin();
+      expect(await count("select 1 from public.trade_events where account_id = $1 and event_type = 'PLAN_LOCKED'", [a.accountId])).toBe(0);
+    } finally {
+      await db.admin();
+      await db.exec("revoke execute on function public.lock_trade_plan(uuid, jsonb, uuid, uuid, uuid) from authenticated");
+    }
+    // Every V2 path links in the same transaction: lock_trade, the V1 lock of a draft and the wrap of a proposal (on a
+    // second account: Risk Plan V1.0 allows two trades a day).
+    const draft = await createDraft(a);
+    expect((await lock(draft.tradeId)).planId).toBeTruthy();
+    const viaV1 = await createDraft(a, SECOND_PRICES);
+    expect((await v1Lock(viaV1.proposalId)).planId).toBeTruthy();
+    expect(await plans()).toBe(2);
+    const b = await db.bootstrapAccount(OWNER);
+    const standalone = await value<string>("select public.save_setup_proposal($1, $2::jsonb, $3, $4, $5) as value",
+      [b.accountId, JSON.stringify(proposal(b)), randomUUID(), b.riskId, b.observationId]);
+    expect((await v1Lock(standalone)).planId).toBeTruthy();
+    expect(await count("select 1 from public.trade_plans p where p.account_id in ($1, $2) and not exists (select 1 from public.trade_plan_links l where l.plan_id = p.id)",
+      [a.accountId, b.accountId])).toBe(0);
+    // A session without an API role (migrations, operators, the synthetic history seed) is not checked: the V1 history
+    // it holds was linked by the 0015 backfill, never by an API request. The superuser keeps the session subject.
+    await db.actor(OWNER);
+    await db.admin();
+    const { planId: unlinked } = (await db.query<{ value: { planId: string } }>("select public.lock_trade_plan($1, $2::jsonb, $3, $4, $5) as value",
+      [b.accountId, JSON.stringify(proposal(b, SECOND_PRICES)), randomUUID(), b.riskId, b.observationId])).rows[0].value;
+    expect(await count("select 1 from public.trade_plan_links where plan_id = $1", [unlinked])).toBe(0);
+  });
+
   it("checks the latest revision on demand without reserving a slot", async () => {
     const a = await db.bootstrapAccount(OWNER);
     const draft = await createDraft(a);
@@ -435,6 +509,38 @@ describe("planned trades", () => {
     await expect(db.query("select public.duplicate_trade_draft($1, $2, $3, $4)", [(await createDraft(a)).tradeId, key, a.riskId, a.observationId])).rejects.toThrow(/^IDEMPOTENCY_CONFLICT:/);
     const live = await liveTrade(a, { symbol: "XAUUSD", direction: "LONG" });
     await expect(db.query("select public.duplicate_trade_draft($1, $2, $3, $4)", [live, randomUUID(), a.riskId, a.observationId])).rejects.toThrow(/^NO_PLAN_TO_DUPLICATE:/);
+  });
+
+  it("duplicates onto the account's current contract and asks to confirm it again when the source's was replaced", async () => {
+    // Edit Draft and the pickers move a superseded contract to the newest version of the symbol (created_at desc,
+    // id desc) and clear the confirmation: a duplicate is a new plan and must never be sized with replaced values.
+    const a = await db.bootstrapAccount(OWNER);
+    const source = await lockedTrade(a, { narrative: "Sized on the old contract" });
+    expect(await value<string>("select risk_result #>> '{calculations,quantity}' as value from public.trade_plans where id = $1", [source.planId])).toBe("0.25");
+    await db.actor(OWNER);
+    const current = await value<string>("select public.create_instrument_version($1, $2::jsonb) as value", [a.accountId, JSON.stringify({
+      symbol: "EURUSD", quantityUnit: "lots (100,000 EUR)", tickSize: "0.00001", pipSize: "0.0001", tickValue: "2", quantityStep: "0.01", minimumQuantity: "0.01" })]);
+    const copy = await value<{ tradeId: string; proposalId: string }>("select public.duplicate_trade_draft($1, $2, $3, $4) as value",
+      [source.tradeId, randomUUID(), a.riskId, a.observationId]);
+    const saved = (await db.query<{ proposal: Json; instrument: string; result: Report }>(`select s.proposal, s.instrument_version_id as instrument, e.result
+        from public.setup_proposals s join public.risk_evaluations e on e.id = s.risk_evaluation_id where s.id = $1`, [copy.proposalId])).rows[0];
+    expect(saved.proposal).toEqual(proposal(a, { instrumentId: current, contractConfirmed: false, news: "UNKNOWN", narrative: "Sized on the old contract" }));
+    expect(saved.instrument).toBe(current);
+    expect(saved.result.decision).toBe("BLOCKED");
+    expect(saved.result.issues.map((issue) => issue.code)).toContain("CONTRACT_UNCONFIRMED");
+    expect(await lock(copy.tradeId)).toMatchObject({ planId: null });
+    // Confirmed again, the copy locks with the current contract: half the size for the same 0.5% risk.
+    await revise(a, copy.tradeId, 1, { instrumentId: current, news: "CLEAR", narrative: "Sized on the old contract" });
+    const relocked = await lock(copy.tradeId, 2);
+    expect(relocked.planId).toBeTruthy();
+    expect(await value<Json>("select jsonb_build_object('instrument', instrument_version_id, 'quantity', risk_result #>> '{calculations,quantity}') as value from public.trade_plans where id = $1",
+      [relocked.planId])).toEqual({ instrument: current, quantity: "0.12" });
+    // A source written on the current contract keeps it and its confirmation.
+    const fresh = await createDraft(a, { instrumentId: current, ...THIRD_PRICES });
+    const again = await value<{ proposalId: string }>("select public.duplicate_trade_draft($1, $2, $3, $4) as value",
+      [fresh.tradeId, randomUUID(), a.riskId, a.observationId]);
+    expect(await value<Json>("select proposal as value from public.setup_proposals where id = $1", [again.proposalId]))
+      .toEqual(proposal(a, { instrumentId: current, ...THIRD_PRICES, news: "UNKNOWN" }));
   });
 
   it("discards drafts idempotently and refuses to discard anything else", async () => {
@@ -725,16 +831,64 @@ describe("trade journal", () => {
     const a = await db.bootstrapAccount(OWNER);
     const id = await liveTrade(a, { symbol: "XAUUSD", direction: "LONG" });
     const live = await journal(id, "NOTE", "Opened on impulse");
+    const target = await journal(id, "TARGET_CHANGE", null, { price: "2412.123" });
     await closeLive(id, { exitedAt: minutesAgo(0.1), netPnl: "5" });
     const after = await journal(id, "LESSON", "Plan first next time");
     expect(await journalRow(live)).toEqual({ phase: "LIVE", state_at_creation: "LIVE" });
+    expect(await journalRow(target)).toEqual({ phase: "LIVE", state_at_creation: "LIVE" });
     expect(await journalRow(after)).toEqual({ phase: "POST_TRADE", state_at_creation: "CLOSED" });
-    expect(await journal(id, "TARGET_CHANGE", null, { price: "2412.123" })).toBeTruthy();
+    await expect(journal(id, "TARGET_CHANGE", null, { price: "2412.123" })).rejects.toThrow(/^ENTRY_NOT_LIVE:/);
+  });
+
+  it("records stop moves, target changes and partial closes only while the trade is live (§5.2)", async () => {
+    const NOT_LIVE = /^ENTRY_NOT_LIVE: Stop, target and partial-close entries can only be recorded while the trade is live$/;
+    const management: [string, Json][] = [["STOP_CHANGE", { price: "1.0985" }], ["TARGET_CHANGE", { price: "1.107" }], ["PARTIAL_CLOSE", { percent: "50", price: "1.103" }]];
+    const a = await db.bootstrapAccount(OWNER);
+    const refusedEverywhere = async (tradeId: string, phase: string) => {
+      const entries = await count("select 1 from public.trade_journal_entries where trade_id = $1", [tradeId]);
+      for (const [kind, details] of management) {
+        await expect(journal(tradeId, kind, null, details), `${kind} ${phase}`).rejects.toThrow(NOT_LIVE);
+      }
+      expect(await count("select 1 from public.trade_journal_entries where trade_id = $1", [tradeId])).toBe(entries);
+      // Notes, decisions and lessons fit every phase.
+      for (const kind of ["NOTE", "DECISION", "LESSON"]) expect(await journal(tradeId, kind, `${kind} while ${phase}`), `${kind} ${phase}`).toBeTruthy();
+    };
+    const draft = await createDraft(a);
+    await refusedEverywhere(draft.tradeId, "a draft");
+    await lock(draft.tradeId);
+    await refusedEverywhere(draft.tradeId, "a locked plan");
+    await enter(draft.tradeId);
+    const accepted: { kind: string; details: Json; key: string; id: string }[] = [];
+    for (const [kind, details] of management) {
+      const key = randomUUID();
+      const id = await journal(draft.tradeId, kind, null, details, key);
+      expect(await journalRow(id), kind).toEqual({ phase: "LIVE", state_at_creation: "LIVE" });
+      accepted.push({ kind, details, key, id });
+    }
+    await closePlanned(draft.tradeId);
+    await refusedEverywhere(draft.tradeId, "a closed trade");
+    // A retry of a request accepted while live still answers with its entry.
+    for (const { kind, details, key, id } of accepted) {
+      expect(await journal(draft.tradeId, kind, null, details, key), kind).toBe(id);
+    }
+    // Plans that ended without an entry, and a live-first trade once closed.
+    const discarded = await createDraft(a, SECOND_PRICES);
+    await db.query("select public.discard_trade_draft($1, null, null)", [discarded.tradeId]);
+    await refusedEverywhere(discarded.tradeId, "a discarded draft");
+    const skipped = await lockedTrade(a, THIRD_PRICES);
+    await db.query("select public.set_planned_disposition($1, 'SKIPPED', 'No displacement')", [skipped.tradeId]);
+    await refusedEverywhere(skipped.tradeId, "a skipped plan");
+    const imported = await importedTrade(a, "XAUUSD", "SHORT");
+    expect(await journal(imported, "STOP_CHANGE", null, { price: "2405.5" })).toBeTruthy();
+    await closeLive(imported, { exitedAt: minutesAgo(0.1), netPnl: "-3" });
+    await refusedEverywhere(imported, "a closed import");
   });
 
   it("validates details per kind, normalizes the body and replays by request key", async () => {
     const a = await db.bootstrapAccount(OWNER);
     const { tradeId } = await lockedTrade(a);
+    // Stop, target and partial-close details are validated while the position is open (the only phase they fit).
+    await enter(tradeId);
     const key = randomUUID();
     const id = await journal(tradeId, "NOTE", "  Liquidity swept  \n", {}, key);
     expect(await journal(tradeId, "NOTE", "Liquidity swept", {}, key)).toBe(id);
@@ -841,7 +995,8 @@ describe("trade evidence", () => {
     const draft = await createDraft(a);
     const legacyId = randomUUID();
     const legacyPath = `${OWNER}/${draft.proposalId}/${legacyId}`;
-    await db.actor(OWNER, "service_role");
+    // V2 registers no legacy screenshots (0019 keeps no insert grant): the superuser stands in for a V1 registration.
+    await db.admin();
     await db.query("insert into public.setup_screenshots(id, user_id, account_id, proposal_id, role, storage_path, original_filename, mime_type, byte_size, sha256, width, height) values ($1, $2, $3, $4, 'H1', $5, 'h1.png', 'image/png', 1024, $6, 32, 32)",
       [legacyId, OWNER, a.accountId, draft.proposalId, legacyPath, sha("c")]);
     await db.query("insert into storage.objects(bucket_id, name) values ('setup-screenshots', $1)", [legacyPath]);
@@ -989,7 +1144,8 @@ describe("trade evidence", () => {
     const source = await createDraft(a);
     const screenshot = async (proposalId: string, seed: string) => {
       const id = randomUUID();
-      await db.actor(OWNER, "service_role");
+      // A V1 registration: V2 keeps no service-role insert grant on setup_screenshots (0019).
+      await db.admin();
       await db.query("insert into public.setup_screenshots(id, user_id, account_id, proposal_id, role, storage_path, original_filename, mime_type, byte_size, sha256, width, height) values ($1, $2, $3, $4, 'M15', $5, 'm15.png', 'image/png', 1024, $6, 32, 32)",
         [id, OWNER, a.accountId, proposalId, `${OWNER}/${proposalId}/${id}`, sha(seed)]);
       return id;

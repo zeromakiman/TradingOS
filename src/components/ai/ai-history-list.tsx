@@ -1,21 +1,27 @@
 import { CircleAlert, CircleCheck, Hourglass } from "lucide-react";
 import { formatDay, formatTime, STRATEGY_TIME, type TimeDisplay } from "@/domain/time-display";
-import type { AiHistoryRow, AiHistoryStatus, RevisionMarker } from "@/lib/ai-history";
+import type { AiHistoryStatus } from "@/lib/ai-history";
 import { cx } from "../ui/cx";
 import { Disclosure } from "../ui/disclosure";
 import { EmptyState } from "../ui/empty-state";
 import { TechnicalDetails } from "../ui/technical-details";
 import { dataToken, failureAccountingText, withKeys } from "./model";
+import { type AiHistoryEntry, HistoryFullAnalysis } from "./operation-cards";
 import { AiTechnicalFields } from "./technical";
 
 /**
  * Compact AI history (docs/V2_ARCHITECTURE.md §11.1): `Analyze Setup · Completed · 08:00` with the top finding;
- * failed rows give the reason and the accounting outcome in plain words. Codes, versions, provider, accounting and
- * ids sit in a collapsed Technical details element per row, which is part of the server HTML even while closed.
+ * failed rows give the reason and the accounting outcome in plain words. Every completed row that carries its card
+ * opens in full ("View full analysis"), so a result stays readable after a newer one replaced it on the card. Codes,
+ * versions, provider, accounting and ids sit in a collapsed Technical details element per row, which is part of the
+ * server HTML even while closed.
  */
 
-/** A history row from src/lib/ai-history.ts; pre-trade rows carry `revision`, periodic rows `scopeLabel`. */
-export type AiHistoryListRow = AiHistoryRow & { revision?: RevisionMarker; scopeLabel?: string };
+/**
+ * A history row from src/lib/ai-history.ts; pre-trade rows carry `revision`, periodic rows `scopeLabel`. Rows with a
+ * `card` (and, for the full analysis, a stored Risk Engine verdict, plan status or stored facts) open in full.
+ */
+export type AiHistoryListRow = AiHistoryEntry;
 
 export interface AiHistoryListProps {
   /** Newest first, as the ai-history loaders return them. */
@@ -72,6 +78,11 @@ function HistoryRow({ row, developerMode, display }: { row: AiHistoryListRow; de
         )}
       </p>
       {row.status === "COMPLETED" && row.headline && <p className="t-meta pl-6">{row.headline}</p>}
+      {row.status === "COMPLETED" && row.card && (
+        <div className="flex pl-6">
+          <HistoryFullAnalysis entry={row} developerMode={developerMode} timeDisplay={display} />
+        </div>
+      )}
       {row.status === "FAILED" && (
         <div className="flex flex-col gap-0.5 pl-6">
           {row.failureReason && <p className="t-meta">{row.failureReason}</p>}

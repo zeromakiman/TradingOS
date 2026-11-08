@@ -6,7 +6,7 @@ import { SESSION_LABELS } from "@/components/shell/session-labels";
 import type { StatusTone } from "@/components/ui/badge";
 import { formatMoney, formatR, formatSignedMoney, formatSignedMoneyList, plural } from "@/domain/format";
 import { ENTRY_MODELS, type EntryModel, type LedgerTrade, type TradeOrigin } from "@/domain/ledger";
-import { type BreakdownKey, type DistributionBin, EARLY_SAMPLE_NOTE, groupEvidence, type RMetrics } from "@/domain/performance";
+import { type BreakdownKey, type DistributionBin, EARLY_SAMPLE_NOTE, groupEvidence, type RMetrics, rMetrics } from "@/domain/performance";
 import { formatDay, strategyDay } from "@/domain/time-display";
 import { deriveTradeState } from "@/domain/trade-state";
 import type { AccountContext, ContextAccount } from "@/lib/account-context";
@@ -14,7 +14,7 @@ import { type LinkedBreakdownGroup, type PerformanceView, R_LABEL } from "@/lib/
 import { evidenceSource, journalHref, resolveAccountFilter } from "@/lib/trades-data";
 import type { EdgeData } from "./edge-data";
 import { formatDrawdownR, formatProfitFactor, formatRate, formatShare, type SignTone, sampleWords, signTone } from "./format";
-import { type EdgeQuery, RANGE_LABELS } from "./query";
+import { type EdgeQuery, linkFilterCount, RANGE_LABELS } from "./query";
 
 /**
  * Presentation model of EDGE (docs/V2_ARCHITECTURE.md §13.6–13.8, §14.6): every label pre-formatted with the domain
@@ -158,7 +158,7 @@ export function resultsJournalLink(data: Pick<EdgeData, "filters" | "view">): { 
 
 /** Filtered page without closed trades: what to change, naming the date range only when one is set. */
 export function noMatchDescription(query: EdgeQuery, now: string): string {
-  const dimensions = [query.model, query.session, query.origin, query.instrument].filter(Boolean).length;
+  const dimensions = [query.model, query.session, query.origin, query.instrument].filter(Boolean).length + linkFilterCount(query);
   // All time (or a custom range without bounds): the date range excludes nothing.
   if (!query.closedFrom && !query.closedTo) return "Remove a filter to see results.";
   const period = periodLabel(query, now);
@@ -197,7 +197,11 @@ export interface DailyData {
   days: number;
 }
 
-/** Daily net R and net P&L per currency (strategy day of the exit). */
+/**
+ * Daily net R and net P&L per currency (strategy day of the exit). A money bar describes one currency only (§9.3): its
+ * trade count, the trades without risk, its R (the sum over that currency's trades with a recorded risk, omitted when
+ * none has one) and its link (the Journal of exactly those trades) never include another currency's trades.
+ */
 export function dailyData(view: PerformanceView, rows: readonly LedgerTrade[]): DailyData {
   const byId = new Map(rows.map(row => [row.id, row]));
   const currencies = [...new Set(view.money.map(total => total.currency))];
@@ -214,11 +218,15 @@ export function dailyData(view: PerformanceView, rows: readonly LedgerTrade[]): 
     data: view.daily.flatMap(point => {
       const amount = point.money.find(entry => entry.currency === currency);
       if (!amount) return [];
-      const trades = point.tradeIds.map(id => byId.get(id)).filter(trade => trade?.currency === currency);
-      const excluded = withoutRiskLabel(trades.filter(trade => trade?.realized_r === null).length);
+      const trades = point.tradeIds.flatMap(id => {
+        const trade = byId.get(id);
+        return trade?.currency === currency ? [trade] : [];
+      });
+      const metrics = rMetrics(trades);
+      const excluded = withoutRiskLabel(metrics.excludedNoRiskBasis);
       return [{
         key: point.day, label: formatDay(point.day), value: amount.netPnl, valueLabel: formatSignedMoney(amount.netPnl, currency),
-        detail: [plural(trades.length, "trade"), ...(excluded ? [excluded] : []), ...(point.netR !== null ? [formatR(point.netR)] : [])].join(" · "), href: point.href,
+        detail: [plural(metrics.closed, "trade"), ...(excluded ? [excluded] : []), ...(metrics.netR !== null ? [formatR(metrics.netR)] : [])].join(" · "), href: amount.href,
       }];
     }),
   }));

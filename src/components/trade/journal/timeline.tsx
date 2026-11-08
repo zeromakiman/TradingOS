@@ -1,7 +1,7 @@
 // biome-ignore-all lint/performance/noImgElement: owner-only evidence thumbnails are served privately (no-store) and must not enter the image optimizer cache.
 import {
   Activity, Ban, ChartPie, CircleCheck, FilePen, History, Image as ImageIcon, ImageOff, Lightbulb, Lock, LogIn, LogOut, type LucideIcon,
-  MessageSquareText, RotateCcw, Scale, Shield, ShieldCheck, Signpost, Sparkles, StickyNote, Tags, Target, Trash2, TriangleAlert,
+  MessageSquareText, RotateCcw, Scale, Shield, ShieldCheck, ShieldOff, Signpost, Sparkles, StickyNote, Tags, Target, Trash2, TriangleAlert,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { evidenceHref, type GalleryItem, galleryItemName } from "@/components/evidence/gallery-model";
@@ -15,7 +15,8 @@ import { spansSeveralDays, timelineTime } from "./timeline-model";
 /**
  * Trade timeline (docs/V2_ARCHITECTURE.md §5.3–5.4, §14.4): the items of `buildTimeline` in three bands,
  * Before entry · While live · After close, each item with its exact time ("09:42 · recorded 10:15" when
- * recorded more than five minutes later), the "Recorded after execution began" flag, journal details in
+ * recorded more than five minutes later; every time dated once the times shown fall on more than one day,
+ * and both times of an item recorded on another day), the "Recorded after execution began" flag, journal details in
  * plain words, inline screenshot thumbnails that open the gallery viewer, compact AI rows and removal
  * records. Each item's DOM id is its `TimelineItem.id`, so `#journal:<id>` links scroll to it. Raw ids,
  * sources and details live in a collapsed Technical details block. Renders on the server or the client.
@@ -37,6 +38,7 @@ const KIND_ICONS: Readonly<Record<TimelineKind, LucideIcon>> = {
   PLAN_LOCKED: Lock,
   NOTE: StickyNote,
   TRADE_EVENT: Activity,
+  LEGACY_DECISION: Signpost,
   ENTRY: LogIn,
   SIZE_DEVIATION: Scale,
   JOURNAL: MessageSquareText,
@@ -62,6 +64,8 @@ const JOURNAL_ICONS: Readonly<Record<JournalKind, LucideIcon>> = {
 
 function iconOf(item: TimelineItem): LucideIcon {
   if (item.kind === "JOURNAL" && item.journalKind) return JOURNAL_ICONS[item.journalKind];
+  // A V1 decision taken while the Risk Engine or the AI blocked the setup ("Taken despite a block").
+  if (item.kind === "LEGACY_DECISION" && item.details?.eventType === "MANUAL_OVERRIDE") return ShieldOff;
   return Object.hasOwn(KIND_ICONS, item.kind) ? KIND_ICONS[item.kind] : History;
 }
 
@@ -123,8 +127,9 @@ function TimelineRow({ item, display, withDay, evidence }: { item: TimelineItem;
       <span aria-hidden="true" className="absolute top-2.5 -left-[2.0625rem] grid size-6 place-items-center rounded-full border border-border bg-surface text-text-2">
         <Icon className="size-3.5" />
       </span>
+      {/* The title keeps at least 8rem: a long (dated) time wraps below it instead of squeezing it on narrow screens. */}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-        <p className={cx("min-w-0 flex-1", compact ? "t-meta" : "font-medium text-text")}>{item.title}</p>
+        <p className={cx("min-w-0 flex-1 basis-32", compact ? "t-meta" : "font-medium text-text")}>{item.title}</p>
         <time dateTime={item.at} title={time.full} className="t-caption num shrink-0">
           {time.main}
           {time.recorded && <span> · recorded {time.recorded}</span>}

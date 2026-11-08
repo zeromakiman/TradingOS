@@ -122,7 +122,9 @@ server time whether an approval is still current ("Recheck needed" otherwise); t
 - Display never contradicts a verdict (`src/domain/format.ts`): values compared against a threshold are rounded toward
   the side that preserves the verdict (an RR of 2.995 against a minimum of 3 shows "2.99R"), policy inputs show their
   exact value padded to two decimals, prices use the instrument's tick scale, R is signed (`+1.01R`, `-1.00R`,
-  `0.00R`, never `-0.00R`), money is per currency and never converted.
+  `0.00R`, never `-0.00R`), money is per currency and never converted. Money at risk is rounded up to the cent and the
+  room left under a cap after locking is rounded down; a stored plan's RR is formatted against the minimum its own
+  check used, so a plan locked under a 2.995R minimum reads "2.995R" (V2_ARCHITECTURE.md §6.6).
 - Every issue renders from its code and `params` through `src/domain/risk-explain.ts`, the single message catalogue
   shared with SQL (which stores the same sentences for audit). The UI shows the exact blocking reasons in the primary
   view; warnings and notes are grouped below them.
@@ -136,3 +138,9 @@ usage and the server's `clock_timestamp()`. Only an approved evaluation writes t
 report, version links, locked time) and links it to the trade; locking a trade that already has a plan returns that
 plan (a replay). Locked plans are never edited: later decisions are journal entries, and entry and close facts are
 recorded once.
+
+No path locks a plan outside the trade model: `check_setup_risk`, `private.assess_plan` and
+`private.check_proposal_risk` refuse a NULL `p_lock` (`INVALID_INPUT`) before writing anything, V1 `save_setup_proposal`
+and `check_setup_risk` refuse archived accounts (`ACCOUNT_ARCHIVED`; a replay still answers), and the deferred
+`plan_requires_trade` check rolls back any API transaction that inserts a plan without its trade link
+(`PLAN_WITHOUT_TRADE`, V2_ARCHITECTURE.md §2.1).

@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import { stripZeros } from "@/domain/format";
+import { type AverageExit, averageExit, type SplitClose } from "@/domain/partial-closes";
 import { sizeDeviationWarning } from "@/domain/plan-vs-reality";
 import { compareInstants, type Instant, instantMicros, type TimeDisplay } from "@/domain/time-display";
 import { instantOfWallClock } from "./time-input";
@@ -26,6 +27,7 @@ export const FORM_COPY = Object.freeze({
   entryRequired: "Enter the entry price.",
   exit: "Exit price must be a positive number with up to 8 decimals.",
   exitRequired: "Enter the average exit price.",
+  restRequired: "Enter the exit price of the rest of the position.",
   quantity: "Size must be a positive number with up to 8 decimals.",
   quantityRequired: "Enter the size.",
   stop: "Stop must be a positive number with up to 8 decimals.",
@@ -162,12 +164,18 @@ export function validateEntry(
 export type PnlKind = "profit" | "loss" | "breakeven";
 
 export interface CloseDraft {
+  /** The average exit price of the whole position, typed by the trader. */
   exit: string;
   /** Reported net P&L amount without its sign (the sign is `pnlKind`). */
   netPnl: string;
   pnlKind: PnlKind | null;
   fees: string;
   time: TimeChoice;
+  /**
+   * Exit price of the rest of the position, when the journal's partial closes are known (`split`): the exit sent is
+   * then the average of every leg, worked out from them.
+   */
+  rest?: string;
 }
 
 export type CloseField = "exit" | "netPnl" | "pnlKind" | "fees" | "exitedAt";
@@ -178,15 +186,34 @@ export function signedPnl(kind: PnlKind, amount: string): string {
   return kind === "loss" ? `-${amount}` : amount;
 }
 
+/** The rest's exit price, checked like an exit, and the average exit of the whole position it gives. */
+function restExit(draft: CloseDraft, split: SplitClose, tickSize: string | null): { ok: true; average: AverageExit } | { ok: false; error: string } {
+  const rest = (draft.rest ?? "").trim();
+  if (!rest) return { ok: false, error: FORM_COPY.restRequired };
+  if (!isPositiveDecimal(rest)) return { ok: false, error: FORM_COPY.exit };
+  if (!isAligned(rest, tickSize)) return { ok: false, error: tickCopy(tickSize ?? "") };
+  const average = averageExit(split, rest, tickSize);
+  return average ? { ok: true, average } : { ok: false, error: FORM_COPY.exit };
+}
+
+/**
+ * The close's fields, or the field errors. With `split` (the journal's partial closes are known), the trader enters
+ * the exit of the rest (`draft.rest`) and the exit sent is the average of every leg on the tick (`average`); the close
+ * still records one price for the whole position.
+ */
 export function validateClose(
-  draft: CloseDraft, context: { mode: "planned" | "calculated" | "reported"; tickSize: string | null; display: TimeDisplay; enteredAt: TimeBound | null },
-): { ok: true; fields: Record<string, string> } | { ok: false; fieldErrors: Partial<Record<CloseField, string>> } {
+  draft: CloseDraft,
+  context: { mode: "planned" | "calculated" | "reported"; tickSize: string | null; display: TimeDisplay; enteredAt: TimeBound | null; split?: SplitClose | null },
+): { ok: true; fields: Record<string, string>; average?: AverageExit } | { ok: false; fieldErrors: Partial<Record<CloseField, string>> } {
   const errors: Partial<Record<CloseField, string>> = {};
-  const exit = draft.exit.trim();
+  const split = context.mode !== "reported" ? context.split ?? null : null;
+  const rest = split ? restExit(draft, split, context.tickSize) : null;
+  const exit = rest ? (rest.ok ? rest.average.price : "") : draft.exit.trim();
   const netPnl = draft.netPnl.trim();
   const fees = draft.fees.trim();
   const exitRequired = context.mode !== "reported";
-  if (!exit) {
+  if (rest && !rest.ok) errors.exit = rest.error;
+  else if (!exit) {
     if (exitRequired) errors.exit = FORM_COPY.exitRequired;
   } else if (!isPositiveDecimal(exit)) errors.exit = FORM_COPY.exit;
   else if (!isAligned(exit, context.tickSize)) errors.exit = tickCopy(context.tickSize ?? "");
@@ -210,7 +237,7 @@ export function validateClose(
     if (fees) fields.fees = fees;
     if (context.mode === "reported" && draft.pnlKind) fields.netPnl = signedPnl(draft.pnlKind, netPnl);
   }
-  return { ok: true, fields };
+  return rest?.ok ? { ok: true, fields, average: rest.average } : { ok: true, fields };
 }
 
 /** Field names of the close actions and of the client checks → the form's fields. */

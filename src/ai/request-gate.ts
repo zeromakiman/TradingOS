@@ -15,17 +15,25 @@ export interface AiLedger {
  recheck(id:string,userId:string,hash:string):Promise<void>;
  settle(id:string,userId:string,record:Record<string,unknown>):Promise<void>;
 }
-/** Usage marker of a dispatched request whose generation was never sent (0018 Part 4: SQL re-checks it). */
+/**
+ * Usage marker of a dispatched request that never reached the provider: no request of any kind (input count or
+ * generation) was issued for it. 0018 Part 4: SQL accepts it only while no generation was committed.
+ */
 export const GENERATION_NOT_SENT=Object.freeze({generation:"NOT_SENT"});
 /**
  * The only application entry to a paid provider. No automatic retries. Each deep pass reauthorizes.
  * Before anything is reserved, the whole request is estimated locally and refused when it is above the operation's
- * input limit. After dispatch, the adapter sends the paid generation request only once `beforeGenerate` resolved,
- * and that callback's recheck is where SQL records the generation commit (ai_request_generations). A failure before
- * that commit is provably unsent: its reservation is released at zero cost, and SQL refuses the release if a
- * generation was committed after all, in which case the full reservation stays held as UNCERTAIN. A reserve or
- * dispatch call that fails (even one that committed and lost its response) never reaches the adapter, so its
- * reservation is released the same way.
+ * input limit, so an oversized request never reaches the provider and never holds budget.
+ *
+ * A reservation is released at zero cost only when no provider request of any kind was issued for it: a failed
+ * reserve (including one that committed and lost its response), a failed dispatch (including one that committed and
+ * lost its response) and an adapter failure before its first provider request (envelope, image, payload or contract
+ * errors). The adapter reports every provider request through `beforeContact` before issuing it, and the input count
+ * is one: no billed-cost contract for token counting is established (docs/AI_BUDGET_REVIEW.md), so every failure
+ * after contact without usable usage (count unavailable, count above the limit, a refused recheck, a timeout, an
+ * aborted or unreadable response) keeps the full reservation held as UNCERTAIN, as in V1. A response with usable
+ * usage settles it. The paid generation request is sent only once `beforeGenerate` resolved; its recheck records the
+ * generation commit (ai_request_generations), after which SQL refuses any release.
  */
 export async function budgetedAiRequest(input: AiProviderRequest, owner:{userId:string;accountId:string;operationId:string;stage:string;operation:string}, ledger:AiLedger, transport?:typeof fetch) {
  // Own the request snapshot across async reservation/dispatch boundaries.
@@ -55,19 +63,20 @@ export async function budgetedAiRequest(input: AiProviderRequest, owner:{userId:
   await ledger.dispatch(id,owner.userId,hash);
   dispatched=true;
  } catch(error) {
-  // The adapter never ran, so no generation was committed or sent. A dispatch that lost its response may still
-  // have committed: the NOT_SENT marker lets SQL release the reservation either way (0018 Part 4).
+  // The adapter never ran, so nothing reached the provider. A dispatch that lost its response may still have
+  // committed: the NOT_SENT marker lets SQL release the reservation either way (0018 Part 4).
   await ledger.settle(id,owner.userId,{disposition:"CANCELLED",chargedMicros:0,usage:GENERATION_NOT_SENT,errorCode:"NOT_DISPATCHED"});
   throw error;
  }
- let result: AiProviderResult|undefined, failure:unknown, generationCommitted=false;
- try { result=await adapter.execute(input,transport,issueAiPermit(),operation,async()=>{assertOperationExecutionAllowed(operation.provider,input.apiKey);operationPricing(operation);await ledger.recheck(id,owner.userId,hash);generationCommitted=true;}); } catch(error) {failure=error;}
+ let result: AiProviderResult|undefined, failure:unknown, generationCommitted=false, providerContacted=false;
+ try { result=await adapter.execute(input,transport,issueAiPermit(),operation,async()=>{assertOperationExecutionAllowed(operation.provider,input.apiKey);operationPricing(operation);await ledger.recheck(id,owner.userId,hash);generationCommitted=true;},()=>{providerContacted=true;}); } catch(error) {failure=error;}
  const usage=result?.usage??(failure instanceof ProviderError?failure.usage:null);
  const responseModel=result?.model??(failure instanceof ProviderError?failure.model:null);
  const responseId=result?.responseId??(failure instanceof ProviderError?failure.responseId:null);
  const errorCode=failure instanceof ProviderError?failure.code:failure?"PROVIDER_FAILURE":null;
- // Provably unsent: no result, the generation was never committed and no provider response (usage, id, model) exists.
- if(!result&&!generationCommitted&&usage==null&&responseId==null&&responseModel==null){
+ // Never reached the provider: no request was issued (count or generation), so there is no result, no committed
+ // generation and no provider response (usage, id, model). Anything else is settled or held below.
+ if(!providerContacted&&!result&&!generationCommitted&&usage==null&&responseId==null&&responseModel==null){
   try {
    await ledger.settle(id,owner.userId,{disposition:"CANCELLED",chargedMicros:0,usage:GENERATION_NOT_SENT,errorCode});
   } catch {
@@ -75,7 +84,7 @@ export async function budgetedAiRequest(input: AiProviderRequest, owner:{userId:
    await ledger.settle(id,owner.userId,{disposition:"UNCERTAIN",chargedMicros:amount,usage:null,responseModel:null,responseId:null,errorCode});
    throw new ProviderError("ACCOUNTING_UNCERTAIN");
   }
-  throw failure;
+  throw failure??new ProviderError("NO_RESULT");
  }
  const record:Record<string,unknown>={disposition:"UNCERTAIN",chargedMicros:amount,usage,responseModel,responseId,errorCode};
  try {

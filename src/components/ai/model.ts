@@ -1,4 +1,7 @@
+import Decimal from "decimal.js";
 import type { AiAssessmentChip, SourceChip, SourceChipKind } from "@/domain/ai-summary";
+import { formatMoney } from "@/domain/format";
+import { formatDay, formatMonth } from "@/domain/time-display";
 
 /**
  * Presentation models shared by the AI components (docs/V2_ARCHITECTURE.md §11.1, §11.2, §13.9). Pure: no React, no
@@ -38,6 +41,8 @@ export interface AiCardItemModel {
 
 export interface AiCardSectionModel {
   heading: string;
+  /** A deterministic caveat from Trading OS shown under the heading (never AI text), for example a monthly review's change sections. */
+  note?: string;
   items: readonly AiCardItemModel[];
 }
 
@@ -112,35 +117,109 @@ export function riskLineText(line: AiRiskLine): string {
   return reason ? `Risk Engine · ${RISK_WORDS[line.decision]} — ${reason}` : `Risk Engine · ${RISK_WORDS[line.decision]}`;
 }
 
+/**
+ * The terminal accounting review of an unconfirmed cost (`ai_uncertainty_resolutions`, docs/AI_ACCOUNTING_RESOLUTION.md):
+ * no provider usage (nothing charged, the whole held amount released) or a confirmed cost (the difference released, or
+ * recorded on top when the cost was higher). A review that keeps the cost unconfirmed is not one.
+ */
+export interface AccountingReviewModel {
+  decision: "NO_PROVIDER_USAGE_CONFIRMED" | "USAGE_CONFIRMED";
+  /** The cost after the review, in micro-euros. */
+  reconciledMicros: number;
+  /** The part of the held amount the review released. */
+  releasedMicros: number;
+  /** A confirmed cost above the held amount. */
+  additionalMicros: number;
+}
+
 /** Accounting fields of a failed request (`AiHistoryTechnical`): whether money was held for it, and how it settled. */
 export interface FailureAccounting {
   /** The amount held for the request; null when nothing was held. */
   reservedMicros: number | null;
-  /** Stored usage outcome (`SETTLED`, `UNCERTAIN`, `CANCELLED`); null while it is not settled. */
+  /** Stored usage outcome (`SETTLED`, `UNCERTAIN`, `CANCELLED`); null while no usage record exists. */
   disposition: string | null;
+  /** Budget month the held amount counts toward (`YYYY-MM-01`, fixed UTC−5); null when unknown. */
+  holdPeriod?: string | null;
+  /** A held amount without a usage record whose budget month has ended: the monthly reset released it. */
+  holdExpired?: boolean;
+  /** The review that settled an unconfirmed cost; the stored `UNCERTAIN` record itself never changes. */
+  accountingReview?: AccountingReviewModel | null;
+}
+
+const MICROS_PER_CENT = 10_000;
+
+/** `€0.06`: a micro-euro amount in whole cents, rounded up like the budget's own figures (a cost is never understated). */
+export function centsText(micros: number): string {
+  const cents = new Decimal(Math.max(0, Number.isSafeInteger(micros) ? micros : 0)).div(MICROS_PER_CENT).toDecimalPlaces(0, Decimal.ROUND_UP);
+  return formatMoney(cents.div(100).toFixed(2), "EUR");
 }
 
 /**
- * What a failed request cost, in plain words (§11.1, §15): the stored accounting wording stays in Technical details.
- * Mirrors `aiFailureAccountingMessage`: nothing held means nothing could be charged.
+ * A budget month (`YYYY-MM-01`) in words and the day it resets (00:00 fixed UTC−5): `{ month: "October 2026", reset:
+ * "Nov 1" }`; null when the month is unreadable.
  */
-export function failureAccountingText({ reservedMicros, disposition }: FailureAccounting): string {
+export function budgetMonthWords(period: string | null | undefined): { month: string; reset: string } | null {
+  const match = period ? /^(\d{4})-(\d{2})-01$/.exec(period.slice(0, 10)) : null;
+  const month = match ? Number(match[2]) : 0;
+  if (!match || month < 1 || month > 12) return null;
+  // Date.UTC months are zero-based, so the 1-based month number is already the next month.
+  return { month: formatMonth(`${match[1]}-${match[2]}`), reset: formatDay(new Date(Date.UTC(Number(match[1]), month, 1)).toISOString().slice(0, 10)) };
+}
+
+function reviewedText(review: AccountingReviewModel): string {
+  if (review.decision === "NO_PROVIDER_USAGE_CONFIRMED") {
+    return "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released.";
+  }
+  const cost = centsText(review.reconciledMicros);
+  // No separately rounded difference: whole cents of a sub-cent difference would state an amount that is neither the
+  // real difference nor the difference of the amounts shown. The exact figures stay in Technical details.
+  if (review.additionalMicros > 0) return `Reviewed: the confirmed cost of ${cost} is recorded. It was more than the amount held for this attempt, and all of it counts toward the AI budget.`;
+  if (review.releasedMicros > 0) return `Reviewed: the confirmed cost of ${cost} is recorded, and the rest of the held amount was released.`;
+  return `Reviewed: the confirmed cost of ${cost} is recorded.`;
+}
+
+/**
+ * What a failed request cost, in plain words (§11.1, §15): the stored accounting values stay in Technical details. It
+ * follows what the budget applies (private.ai_budget_snapshot, 0014): an accounting review settles an unconfirmed cost,
+ * and a held amount without a usage record counts toward its own month's budget only. Nothing reviews such a hold (the
+ * operator procedure resolves unconfirmed usage records only), so the monthly reset is what releases it.
+ */
+export function failureAccountingText({ reservedMicros, disposition, holdPeriod, holdExpired, accountingReview }: FailureAccounting): string {
   if (reservedMicros === null) return "Nothing was charged for this attempt.";
   switch (disposition) {
     case "SETTLED":
       return "The cost is recorded; unused funds were released.";
     case "UNCERTAIN":
-      return "The cost could not be confirmed; the held amount stays until it is reviewed.";
+      return accountingReview ? reviewedText(accountingReview) : "The amount held for this attempt stays until an accounting review confirms the cost or releases it; nothing beyond it was charged.";
     case "CANCELLED":
       return "Nothing was charged; the held amount was released.";
+    case null: {
+      const words = budgetMonthWords(holdPeriod);
+      if (holdExpired) {
+        return words
+          ? `The amount held for this attempt counted toward the AI budget of ${words.month} only and was released when it reset on ${words.reset}; nothing beyond it was charged.`
+          : "The amount held for this attempt was released when the monthly AI budget reset; nothing beyond it was charged.";
+      }
+      return words
+        ? `The amount held for this attempt counts toward the AI budget of ${words.month} until it resets on ${words.reset}; nothing beyond it was charged.`
+        : "The amount held for this attempt counts toward its month's AI budget until that budget resets; nothing beyond it was charged.";
+    }
     default:
       return "The cost of this attempt is not settled yet; the held amount still counts toward this month's budget.";
   }
 }
 
-/** Link to the account's AI settings; `?account=` selects that account explicitly (spec §9.2). */
-export function aiSettingsHref(accountId: string): string {
-  return `/settings?${new URLSearchParams({ account: accountId })}#ai`;
+/** Settings → AI: it lists every trading account, archived ones included, without selecting any. */
+export const AI_SETTINGS_PATH = "/settings#ai";
+
+/**
+ * Link to an account's AI settings; `?account=` selects that account explicitly (spec §9.2). An archived account can
+ * never be the context, so its link opens Settings → AI without selecting an account: the page lists archived accounts
+ * there, read-only until they are restored. (A fix route for an archived account opens Manage account instead, where
+ * Restore lives: `AiSettingsLink`.)
+ */
+export function aiSettingsHref(accountId: string, archived = false): string {
+  return archived ? AI_SETTINGS_PATH : `/settings?${new URLSearchParams({ account: accountId })}#ai`;
 }
 
 /** `≈ €0.02` */
@@ -185,6 +264,7 @@ export function sourceChipModel(chip: SourceChip): SourceChipModel {
 
 interface ResolvedSection {
   title: string;
+  note?: string;
   items: readonly { text: string; sources: readonly SourceChip[] }[];
 }
 
@@ -192,7 +272,11 @@ interface ResolvedSection {
 export function sectionModels(sections: readonly ResolvedSection[]): AiCardSectionModel[] {
   return sections
     .filter(section => section.items.length > 0)
-    .map(section => ({ heading: section.title, items: section.items.map(item => ({ text: item.text, sources: item.sources.map(sourceChipModel) })) }));
+    .map(section => ({
+      heading: section.title,
+      ...(section.note === undefined ? {} : { note: section.note }),
+      items: section.items.map(item => ({ text: item.text, sources: item.sources.map(sourceChipModel) })),
+    }));
 }
 
 /** Every distinct citation of the given sections and headline, for the Technical details listing. */

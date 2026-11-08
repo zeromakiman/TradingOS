@@ -36,6 +36,8 @@ const m = vi.hoisted(() => {
     monthlyOwner: vi.fn(),
     monthlyFacts: vi.fn(),
     refresh: vi.fn(),
+    /** Accounts of the mocked account context (`getAccountContext`). */
+    contextAccounts: [] as { id: string; name: string; status?: string }[],
     actions: {
       requestTradeAnalyzeSetup: vi.fn(), requestTradeBiasChallenge: vi.fn(), requestTradeTimelineReview: vi.fn(),
       requestWeeklyAiReview: vi.fn(), requestRecentTradesAiReview: vi.fn(), requestMonthlyAiReview: vi.fn(),
@@ -56,7 +58,7 @@ vi.mock("@/lib/ai-history", async importOriginal => ({ ...(await importOriginal<
 vi.mock("@/lib/ai-budget", () => ({ accountAiAvailability: m.availability }));
 vi.mock("@/lib/account-context", () => ({
   getPreferences: async () => ({ theme: "system", timeDisplay: { mode: "strategy" }, developerMode: false, sidebarCollapsed: false }),
-  getAccountContext: async () => ({ accounts: [{ id: ACCOUNT, name: "FTMO 100K" }] }),
+  getAccountContext: async () => ({ accounts: m.contextAccounts }),
 }));
 vi.mock("@/lib/weekly-review-source", () => ({ ownedWeeklyAccount: m.weeklyOwner, loadWeeklyFacts: m.weeklyFacts, WeeklyScopeError: m.ScopeError }));
 vi.mock("@/lib/recent-trades-source", () => ({ ownedRecentAccount: m.recentOwner, loadRecentFacts: m.recentFacts, RecentScopeError: m.ScopeError }));
@@ -66,10 +68,11 @@ import { HELD_RESERVATION_MESSAGE } from "@/ai/availability";
 import type { PreTradePanel } from "@/ai/pre-trade-draft";
 import { analyzeSetupContext } from "@/ai/analyze-setup-context";
 import { biasChallengeContext } from "@/ai/bias-challenge-context";
-import { storedRiskLine } from "@/components/ai/panel-data";
+import { loadPeriodicAi, storedRiskLine } from "@/components/ai/panel-data";
 import { periodicScopeLine, PeriodicReviewPanel } from "@/components/ai/periodic-review-panel";
 import { PreTradeAiPanel } from "@/components/ai/pre-trade-ai-panel";
-import { TradeReviewAiPanel } from "@/components/ai/trade-review-ai-panel";
+import { preTradePlacement } from "@/components/ai/pre-trade-placement";
+import { TradeReviewAiPanel, tradeReviewEntries } from "@/components/ai/trade-review-ai-panel";
 import { type AiRequestRow, type AiResultRow, historyRow, resolvedCard, revisionMarker } from "@/lib/ai-history";
 import type { TradeTimelineReviewPanel } from "@/lib/trade-timeline-review-data";
 
@@ -158,6 +161,7 @@ function preTradePanel(operation: "ANALYZE_SETUP" | "CHALLENGE_BIAS", overrides:
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
+  m.contextAccounts = [{ id: ACCOUNT, name: "FTMO 100K" }];
   for (const fn of [m.requireUser, m.analyze, m.challenge, m.timeline, m.tradeHistory, m.availability, m.weeklyOwner, m.weeklyFacts, m.recentOwner, m.recentFacts, m.monthlyOwner, m.monthlyFacts, m.refresh, ...Object.values(m.actions)]) fn.mockReset();
 });
 afterEach(() => {
@@ -242,10 +246,17 @@ describe("PreTradeAiPanel", () => {
     expect(text).toContain("Based on draft revision 1 · current revision is 2");
     expect(text).toContain("AI interpretation · advisory");
     expect(text).not.toContain("Risk Engine ·");
-    // An analysis of the current revision needs no stored verdict, so nothing extra is read.
+    // An analysis of the current revision leads with today's verdict on its card; the verdicts stored with the requests
+    // are read once, for the full analyses of the history rows.
     m.requireUser.mockClear();
+    m.requireUser.mockResolvedValue({ db: fakeDb({ bias_challenges: [] }), user: { id: USER } });
     m.analyze.mockResolvedValue(preTradePanel("ANALYZE_SETUP", { history: [preTradeEntry("ANALYZE_SETUP", 1, analysisOutput, analyzeSetupContext(source, []), 2)] }));
     expect(count(visibleText(await html(PreTradeAiPanel(props))), "Risk Engine · Blocked — Requested risk 2.00%")).toBe(1);
+    expect(m.requireUser).toHaveBeenCalledTimes(1);
+    // Nothing completed, nothing to read.
+    m.requireUser.mockClear();
+    m.analyze.mockResolvedValue(preTradePanel("ANALYZE_SETUP"));
+    await html(PreTradeAiPanel(props));
     expect(m.requireUser).not.toHaveBeenCalled();
   });
 
@@ -346,6 +357,120 @@ describe("PreTradeAiPanel", () => {
     m.analyze.mockResolvedValue(preTradePanel("ANALYZE_SETUP", { state: "LOCKED", stateMessage: locked }));
     expect(await html(PreTradeAiPanel(props))).toBe("");
   });
+
+  describe("once the trade is no longer an open draft (spec §11.1: history stays readable in full)", () => {
+    const locked = "This plan is already locked. Earlier analyses remain available as advisory history.";
+    const RESERVATION = "80000000-0000-4000-8000-000000000001";
+    const failedRequest = request(3, "CHALLENGE_BIAS", "CHALLENGE_BIAS_V1", "2026-09-23T12:03:00Z");
+    const failedChallenge = {
+      ...historyRow(
+        "CHALLENGE_BIAS", failedRequest,
+        { status: "FAILED", interpretation: null, error_code: "TIMEOUT_OR_NETWORK", reservation_id: RESERVATION, created_at: "2026-09-23T12:03:30Z" },
+        { holds: [{ id: RESERVATION, operation_id: failedRequest.id, reserved_micros: 59_400, period: "2026-09-01" }], usage: [{ reservation_id: RESERVATION, charged_micros: 0, disposition: "CANCELLED" }] },
+        NOW,
+      ),
+      revision: revisionMarker(2, 2), card: null,
+    };
+    const storedFacts = () => fakeDb({
+      bias_challenges: [
+        { id: analysis.technical.requestId, user_id: USER, facts: analyzeSetupContext(source, []) },
+        { id: challenge.technical.requestId, user_id: USER, facts: biasChallengeContext(source, []) },
+      ],
+    });
+
+    it("shows a locked trade's analyses in a section of their own: stored verdicts, full analyses, failures with their accounting, no tools", async () => {
+      m.analyze.mockResolvedValue(preTradePanel("ANALYZE_SETUP", { state: "LOCKED", stateMessage: locked, revision: 2, evidence: [], history: [analysis] }));
+      m.challenge.mockResolvedValue(preTradePanel("CHALLENGE_BIAS", { state: "LOCKED", stateMessage: locked, revision: 2, evidence: [], history: [failedChallenge, challenge] }));
+      m.requireUser.mockResolvedValue({ db: storedFacts(), user: { id: USER } });
+      const markup = await html(PreTradeAiPanel({ ...props, frame: "section" }));
+      const text = visibleText(markup);
+      expect(markup).toMatch(/^<section id="pre-trade-ai" aria-labelledby="pre-trade-ai-heading"[^>]*class="card /);
+      expect(elementText(markup, "pre-trade-ai-heading")).toBe("Pre-trade AI");
+      expect(text).toContain(locked);
+      // Nothing can be requested from here.
+      expect(markup).not.toContain("data-operation=");
+      expect(text).not.toMatch(/≈ €|Select up to|screenshots selected|Analyze setup ·|Challenge my bias ·/);
+      expect(markup).not.toContain("/settings");
+      // Every card keeps the verdict stored with its request; today's line never leads an analysis of a locked plan.
+      expect(text).not.toContain("Requested risk 2.00%");
+      expect(text).toContain("Risk Engine · Blocked — Requested risk exceeds maximum · as checked for draft revision 1");
+      expect(text).toContain("Risk Engine · Blocked — Requested risk exceeds maximum · as checked for draft revision 2");
+      expect(text.indexOf("Setup analysis")).toBeGreaterThan(-1);
+      expect(text).toContain("Bias challenge");
+      expect(count(text, "Based on draft revision 1 · current revision is 2")).toBe(2); // card and history row
+      // Both cards and both completed history rows open in full; the failure says why and what it cost.
+      expect(count(text, "View full analysis")).toBe(4);
+      expect(text).toContain("Challenge My Bias · Failed · 07:03");
+      expect(text).toContain("The AI provider did not respond in time.");
+      expect(text).toContain("Nothing was charged; the held amount was released.");
+      expect(text).not.toMatch(UUID);
+      expect(stripDetails(markup)).not.toMatch(ENUM);
+      expect(m.requireUser).toHaveBeenCalledTimes(1);
+      expectNoAiRequest();
+    });
+
+    it("says why a discarded draft or an archived account's draft runs nothing, and renders nothing without analyses", async () => {
+      const discarded = "This draft is no longer open. Earlier analyses remain available as advisory history.";
+      m.requireUser.mockResolvedValue({ db: storedFacts(), user: { id: USER } });
+      m.analyze.mockResolvedValue(preTradePanel("ANALYZE_SETUP", { state: "NOT_DRAFT", stateMessage: discarded, history: [analysis] }));
+      m.challenge.mockResolvedValue(preTradePanel("CHALLENGE_BIAS", { state: "NOT_DRAFT", stateMessage: discarded }));
+      const gone = visibleText(await html(PreTradeAiPanel({ ...props, frame: "section" })));
+      expect(gone).toContain(discarded);
+      expect(gone).toContain("Setup analysis");
+      // An archived account's draft is still open, but no new analysis can run (§3.2, §9); its tools never show.
+      m.analyze.mockResolvedValue(preTradePanel("ANALYZE_SETUP", { history: [analysis] }));
+      m.challenge.mockResolvedValue(preTradePanel("CHALLENGE_BIAS", { history: [challenge] }));
+      const archived = await html(PreTradeAiPanel({ ...props, accountArchived: true }));
+      const text = visibleText(archived);
+      expect(text).toContain("This trading account is archived, so no new analysis can run. Earlier analyses remain available as advisory history.");
+      expect(archived).not.toContain("data-operation=");
+      expect(text).not.toContain("≈ €");
+      expect(text).not.toContain("Requested risk 2.00%");
+      expect(text).toContain("Risk Engine · Blocked — Requested risk exceeds maximum · as checked for draft revision 2");
+      expect(archived).toContain('data-state="history"');
+      // Without analyses there is nothing to show: no empty section.
+      m.analyze.mockResolvedValue(preTradePanel("ANALYZE_SETUP", { state: "LOCKED", stateMessage: locked }));
+      m.challenge.mockResolvedValue(preTradePanel("CHALLENGE_BIAS", { state: "LOCKED", stateMessage: locked }));
+      expect(await html(PreTradeAiPanel({ ...props, frame: "section" }))).toBe("");
+      expect(await html(PreTradeAiPanel({ ...props, accountArchived: true }))).toBe("");
+      // A section that can't load says so inside its own frame.
+      m.analyze.mockRejectedValue(new Error("Trade unavailable"));
+      const failed = await html(PreTradeAiPanel({ ...props, frame: "section" }));
+      expect(failed).toMatch(/^<section id="pre-trade-ai"/);
+      expect(visibleText(failed)).toContain("AI tools are unavailable");
+      expectNoAiRequest();
+    });
+  });
+});
+
+describe("preTradePlacement", () => {
+  const draft = { origin: "PLANNED", lifecycle: "DRAFT", hasDraft: true, accountArchived: false, requests: 0, completed: 0 };
+
+  it("offers the tools on an open draft of an active account, inside its Plan", () => {
+    expect(preTradePlacement(draft)).toEqual({ frame: "plan", tools: true });
+    expect(preTradePlacement({ ...draft, requests: 3, completed: 2 })).toEqual({ frame: "plan", tools: true });
+    expect(preTradePlacement({ ...draft, hasDraft: false })).toBeNull();
+  });
+
+  it("keeps analyses readable, without tools, on an archived account's draft and after the draft stage", () => {
+    expect(preTradePlacement({ ...draft, accountArchived: true })).toBeNull();
+    expect(preTradePlacement({ ...draft, accountArchived: true, requests: 1 })).toEqual({ frame: "plan", tools: false });
+    for (const lifecycle of ["LOCKED", "LIVE", "CLOSED", "REVIEWED", "SKIPPED", "CANCELLED", "DISCARDED"]) {
+      const ended = { ...draft, lifecycle, hasDraft: false };
+      expect(preTradePlacement(ended)).toBeNull();
+      // A failed attempt counts as well: its reason and accounting stay readable.
+      expect(preTradePlacement({ ...ended, requests: 1 })).toEqual({ frame: "section", tools: false });
+      // The history could not be read: the completed analyses of the activity read model decide.
+      expect(preTradePlacement({ ...ended, requests: null, completed: 1 })).toEqual({ frame: "section", tools: false });
+      expect(preTradePlacement({ ...ended, accountArchived: true, requests: 2 })).toEqual({ frame: "section", tools: false });
+    }
+  });
+
+  it("never places pre-trade AI on live-first or imported trades", () => {
+    for (const origin of ["LIVE_FIRST", "IMPORTED"]) {
+      expect(preTradePlacement({ ...draft, origin, lifecycle: "CLOSED", hasDraft: false, requests: 3, completed: 3 })).toBeNull();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -419,6 +544,58 @@ describe("TradeReviewAiPanel", () => {
     expect(markup).toContain('aria-disabled="true"');
     expect(inertButtonDescriptions(markup)).toEqual([HELD_RESERVATION_MESSAGE]);
     expect(markup).not.toContain("#ai");
+  });
+
+  const v1Card = { ...v1Row, card: resolvedCard(v1Row, tradeReviewOutput, {}) };
+
+  it("shows a V1 review that is the trade's only review as its card: dimension chips, lessons and the full analysis", async () => {
+    m.timeline.mockResolvedValue(panel({ history: [] }));
+    m.tradeHistory.mockResolvedValue({ latestRevision: 1, preTrade: [], reviews: [v1Card], error: null });
+    const markup = await html(TradeReviewAiPanel({ ...props, noPlan: false }));
+    const text = visibleText(markup);
+    // The card, in the format the review was written in.
+    expect(markup).toMatch(/<article[^>]*>[\s\S]*Trade review[\s\S]*Plan adherence · Insufficient evidence/);
+    expect(text).toContain("Lessons");
+    expect(count(markup, "Plan adherence ·")).toBe(1);
+    // The card and its history row each open the full analysis.
+    expect(count(text, "View full analysis")).toBe(2);
+    expect(text).toContain("Trade Review · Completed · 09:01 Sep 22");
+    expect(m.tradeHistory).toHaveBeenCalledWith(TRADE, { cards: true });
+    expect(stripDetails(markup)).not.toMatch(ENUM);
+    expectNoAiRequest();
+  });
+
+  it("leads with the newest completed review, whichever format it was written in, and keeps each earlier one openable", async () => {
+    const newerV1 = historyRow("REVIEW_TRADE", request(6, "REVIEW_TRADE", "REVIEW_TRADE_V1", "2026-09-24T14:00:00Z"), done(tradeReviewOutput, "2026-09-24T14:01:00Z"), { holds: [], usage: [] }, NOW);
+    const timelineCard = { ...timelineRow, card: resolvedCard(timelineRow, timelineOutput, {}) };
+    m.timeline.mockResolvedValue(panel());
+    m.tradeHistory.mockResolvedValue({ latestRevision: 1, preTrade: [], reviews: [{ ...newerV1, card: resolvedCard(newerV1, tradeReviewOutput, {}) }, timelineCard], error: null });
+    const text = visibleText(await html(TradeReviewAiPanel(props)));
+    expect(text).toContain("Plan adherence · Insufficient evidence");
+    expect(text).not.toContain("Live management · Disciplined");
+    expect(count(text, "View full analysis")).toBe(3);
+    // The timeline review keeps the review panel's card, whose screenshot chips carry the trade's evidence labels.
+    const panelCard = resolvedCard(timelineRow, timelineOutput, { marker: true });
+    const entries = tradeReviewEntries({ history: [{ ...timelineRow, review: null, card: panelCard }] }, { latestRevision: null, preTrade: [], reviews: [timelineCard], error: null }, true);
+    expect(entries.map(entry => [entry.card === panelCard, entry.noPlan])).toEqual([[true, true]]);
+  });
+
+  it("sends an archived account's trader to Manage account, never to settings that can't change until a restore", async () => {
+    m.timeline.mockResolvedValue(panel({ availability: { status: "ACCOUNT_OFF", message: "AI is OFF for this account. Enable it explicitly in Settings.", deepEnabled: false } }));
+    m.tradeHistory.mockResolvedValue({ latestRevision: null, preTrade: [], reviews: [timelineRow], error: null });
+    const markup = await html(TradeReviewAiPanel({ ...props, accountArchived: true }));
+    const reason = "AI is off for this trading account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI.";
+    expect(count(visibleText(markup), reason)).toBe(1);
+    expect(inertButtonDescriptions(markup)).toEqual([expect.stringContaining(reason)]);
+    expect(visibleText(markup)).not.toContain("Turn it on in Settings → AI.");
+    expect(visibleText(markup)).not.toContain("Open AI settings");
+    expect(visibleText(markup)).toContain("Restore in Manage");
+    expect(markup).toContain(`href="/accounts/${ACCOUNT}/manage"`);
+    expect(markup).not.toContain("/settings");
+    m.timeline.mockResolvedValue(panel({ availability: { status: "BUDGET_REACHED", message: "x", deepEnabled: false } }));
+    const reached = visibleText(await html(TradeReviewAiPanel({ ...props, accountArchived: true })));
+    expect(reached).toContain("This month's AI budget can't cover another request. The account is archived, so restore it in Manage account to change the limit in Settings → AI.");
+    expect(reached).toContain("Restore in Manage");
   });
 });
 
@@ -496,6 +673,63 @@ describe("PeriodicReviewPanel", () => {
     expect(text).toContain("Weekly Review · Completed · 07:01");
     expect(count(text, "Weekly Review ·")).toBe(2); // card meta and the one history row of this week
     expect(text).not.toMatch(UUID);
+  });
+
+  it("says whether the reviewed account is archived, so the panel's settings link can avoid selecting it (§9.2)", async () => {
+    m.weeklyOwner.mockResolvedValue(owner(tables()));
+    m.weeklyFacts.mockResolvedValue({ sample: { count: 8 } });
+    m.availability.mockResolvedValue(enabled);
+    expect(await loadPeriodicAi("weekly", ACCOUNT, weekStart)).toMatchObject({ accountName: "FTMO 100K", accountArchived: false });
+    m.contextAccounts = [{ id: ACCOUNT, name: "Old Prop 50K", status: "ARCHIVED" }];
+    expect(await loadPeriodicAi("weekly", ACCOUNT, weekStart)).toMatchObject({ accountName: "Old Prop 50K", accountArchived: true });
+    // Without a readable context the owned row's name stands, and the account is not assumed archived.
+    m.contextAccounts = [];
+    expect(await loadPeriodicAi("weekly", ACCOUNT, weekStart)).toMatchObject({ accountName: "Original name", accountArchived: false });
+  });
+
+  it("tells an archived account's trader to restore it in Manage account when AI is off or the limit is reached", async () => {
+    m.weeklyOwner.mockResolvedValue(owner(tables()));
+    m.weeklyFacts.mockResolvedValue({ sample: { count: 8 } });
+    m.contextAccounts = [{ id: ACCOUNT, name: "Old Prop 50K", status: "ARCHIVED" }];
+    m.availability.mockResolvedValue({ status: "ACCOUNT_OFF", message: "AI is OFF for this account. Enable it explicitly in Settings.", deepEnabled: false });
+    expect((await loadPeriodicAi("weekly", ACCOUNT, weekStart)).availability).toMatchObject({ status: "ACCOUNT_OFF", accountArchived: true });
+    const markup = await html(PeriodicReviewPanel({ kind: "weekly", accountId: ACCOUNT, period: weekStart }));
+    const reason = "AI is off for this trading account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI.";
+    expect(inertButtonDescriptions(markup)).toEqual([expect.stringContaining(reason)]);
+    expect(visibleText(markup)).toContain("Restore in Manage");
+    expect(markup).toContain(`href="/accounts/${ACCOUNT}/manage"`);
+    expect(markup).not.toContain("/settings");
+    m.availability.mockResolvedValue({ status: "BUDGET_REACHED", message: "x", deepEnabled: false });
+    const reached = await html(PeriodicReviewPanel({ kind: "weekly", accountId: ACCOUNT, period: weekStart }));
+    expect(inertButtonDescriptions(reached)).toEqual([
+      expect.stringContaining("This month's AI budget can't cover another request. The account is archived, so restore it in Manage account to change the limit in Settings → AI."),
+    ]);
+    // An active account keeps the Settings → AI route.
+    m.contextAccounts = [{ id: ACCOUNT, name: "FTMO 100K", status: "ACTIVE" }];
+    m.availability.mockResolvedValue({ status: "ACCOUNT_OFF", message: "AI is OFF for this account. Enable it explicitly in Settings.", deepEnabled: false });
+    const active = await html(PeriodicReviewPanel({ kind: "weekly", accountId: ACCOUNT, period: weekStart }));
+    expect(inertButtonDescriptions(active)).toEqual([expect.stringContaining("AI is off for this trading account. Turn it on in Settings → AI.")]);
+    expectSettingsLink(active);
+    expect(active).not.toContain("/manage");
+    expectNoAiRequest();
+  });
+
+  it("keeps an earlier review of the period openable in full after a newer one replaced it on the card", async () => {
+    const newer = { ...reviewRequest, id: "71000000-0000-4000-8000-000000000011", created_at: "2025-10-14T12:00:00Z" };
+    m.weeklyOwner.mockResolvedValue(owner({
+      weekly_ai_reviews: [newer, reviewRequest],
+      weekly_ai_review_results: [{ review_id: newer.id, ...done(weeklyOutput, "2025-10-14T12:01:00Z") }, { review_id: reviewRequest.id, ...done(weeklyOutput, "2025-10-13T12:01:00Z") }],
+      ai_request_reservations: [],
+      ai_usage_records: [],
+    }));
+    m.weeklyFacts.mockResolvedValue({ sample: { count: 8 } });
+    m.availability.mockResolvedValue(enabled);
+    const markup = await html(PeriodicReviewPanel({ kind: "weekly", accountId: ACCOUNT, period: weekStart }));
+    // The card's own trigger, then one per history row, each named after its row.
+    expect(count(visibleText(markup), "View full analysis")).toBe(3);
+    const labels = [...markup.matchAll(/aria-label="(View full analysis[^"]*)"/g)].map(match => match[1]);
+    expect(labels).toEqual(["View full analysis · Weekly Review · Completed · Oct 14, 07:01", "View full analysis · Weekly Review · Completed · Oct 13, 07:01"]);
+    expectNoAiRequest();
   });
 
   it("disables the run button with the scope reason, and for an empty period", async () => {

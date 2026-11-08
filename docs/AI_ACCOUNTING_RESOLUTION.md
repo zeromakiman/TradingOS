@@ -23,6 +23,12 @@ The migration does not create login credentials. Revoke membership after tempora
 3. Record a meaningful reason and a durable investigation/evidence reference. Do not store API keys, tokens, passwords or unrelated personal data in audit notes.
 4. Choose an explicit decision. Any ambiguity means KEEP_UNCERTAIN.
 
+What the stored records already say (V2 request gate, `src/ai/request-gate.ts`; see the outcome table in [AI_BUDGET_REVIEW.md](AI_BUDGET_REVIEW.md)):
+
+- An UNCERTAIN record with `INPUT_COUNT_UNAVAILABLE` or `INPUT_LIMIT_EXCEEDED`, or one whose pre-generation recheck was refused and that has no `ai_request_generations` row, reached the provider only with the input-count request: no generation was sent. Whether the count request is billed is not established, so such a record is still investigated like any other.
+- A CANCELLED record at zero cost with the usage marker `{"generation":"NOT_SENT"}` never reached the provider and needs no resolution. A request refused by the pre-flight size estimate has no reservation at all.
+- A reservation with no usage record at all (its settlement was never written, for example because the process stopped or the accounting write failed) cannot be resolved here: `resolve_ai_uncertainty` accepts only an UNCERTAIN usage record ("Reservation is not uncertain"). Such a hold counts toward the budget of its own month only (`private.ai_budget_snapshot`), does not pause the account, and is released by the monthly reset.
+
 | Decision | Effective budget accounting |
 | --- | --- |
 | KEEP_UNCERTAIN | Retain the original amount and account-wide block. Multiple investigations may append. |
@@ -63,6 +69,8 @@ A confirmed cost above the original amount is recorded in `additional_micros`, n
 Resolution, reserve, dispatch, settle and preferences use the same account row lock. The effective budget overlays only terminal decisions and charges the **original reservation month**. A historical release never grants extra credit in a new month. Any other unresolved incident, even from a prior month, continues to block the account.
 
 After resolving, read the audit row, original incident and authenticated `get_account_ai_budget` result. Check ownership, exact deltas, original history preservation and remaining uncertainty. This procedure does not request AI or retry an old review. An explicitly authorized future review gets a new immutable history entry and new reservation.
+
+The app's AI history (V2) shows the outcome of a terminal resolution in place of "stays until an accounting review…": "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released." for NO_PROVIDER_USAGE_CONFIRMED, or the confirmed cost (and whether the rest was released, or that it exceeded the hold) for USAGE_CONFIRMED. Technical details keep the original UNCERTAIN record and list the resolution beside it.
 
 ## Rollout boundary
 

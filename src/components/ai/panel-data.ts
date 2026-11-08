@@ -40,15 +40,30 @@ export async function displayPreference(): Promise<TimeDisplay> {
   return (await optional(getPreferences()))?.timeDisplay ?? STRATEGY_TIME;
 }
 
-/** Why a paid button is disabled, in the product's words. */
-export function availabilityReason(availability: Pick<AiAvailability, "status" | "message">): string | undefined {
+/**
+ * An account's AI availability as a panel shows it. `accountArchived`: Settings → AI shows an archived account
+ * read-only ("Restore an account to change its AI settings"), so turning AI on or changing its limit starts with
+ * restoring the account in Manage account (§9.2, §14.9).
+ */
+export type PanelAvailability = Pick<AiAvailability, "status" | "message"> & { accountArchived?: boolean };
+
+/**
+ * Why a paid button is disabled, in the product's words. AI off or a reached limit is fixed in Settings → AI, which an
+ * archived account reaches only after it is restored; the panels' fix link (`AiSettingsLink`) follows the same rule.
+ */
+export function availabilityReason(availability: PanelAvailability): string | undefined {
+  const archived = availability.accountArchived === true;
   switch (availability.status) {
     case "ENABLED":
       return undefined;
     case "ACCOUNT_OFF":
-      return "AI is off for this trading account. Turn it on in Settings → AI.";
+      return archived
+        ? "AI is off for this trading account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI."
+        : "AI is off for this trading account. Turn it on in Settings → AI.";
     case "BUDGET_REACHED":
-      return "This month's AI budget can't cover another request. Review the limit in Settings → AI.";
+      return archived
+        ? "This month's AI budget can't cover another request. The account is archived, so restore it in Manage account to change the limit in Settings → AI."
+        : "This month's AI budget can't cover another request. Review the limit in Settings → AI.";
     case "ACCOUNTING_REVIEW":
       return HELD_RESERVATION_MESSAGE;
     case "DISABLED":
@@ -124,6 +139,11 @@ export interface PeriodicAiData {
   operation: PeriodicOperation;
   accountId: string;
   accountName: string;
+  /**
+   * The account is archived: it keeps its history and can still be reviewed, but it can never be the context (§9.2)
+   * and its AI settings change only after a restore, so its fix link opens Manage account (`<AiSettingsLink archived>`).
+   */
+  accountArchived: boolean;
   /** "Week of Oct 6–12", "Most recent 20 completed trades", "September 2026". */
   periodLabel: string;
   /** Period with its clock where it matters: "Week of Oct 6–12 (UTC−5)". */
@@ -136,7 +156,8 @@ export interface PeriodicAiData {
   trades: number | null;
   /** Why this period cannot be reviewed now (incomplete period, size limits); null when it can. */
   scopeError: string | null;
-  availability: AiAvailability;
+  /** Carries `accountArchived`, so `availabilityReason(availability)` words the fix route for an archived account. */
+  availability: AiAvailability & { accountArchived: boolean };
   estimate: AiEstimateModel | null;
   /** This period's requests, newest first. */
   history: PeriodicHistoryEntry[];
@@ -258,9 +279,11 @@ async function periodHistory(kind: PeriodicKind, owner: Owner, period: ResolvedP
   });
 }
 
-async function accountName(accountId: string, fallback: string): Promise<string> {
+/** The account's display name (its latest profile) and whether it is archived; the owned row's name when unreadable. */
+async function accountProfile(accountId: string, fallback: string): Promise<{ name: string; archived: boolean }> {
   const context = await optional(getAccountContext());
-  return context?.accounts.find(account => account.id === accountId)?.name ?? fallback;
+  const account = context?.accounts.find(item => item.id === accountId);
+  return { name: account?.name ?? fallback, archived: account?.status === "ARCHIVED" };
 }
 
 /**
@@ -271,7 +294,7 @@ export async function loadPeriodicAi(kind: PeriodicKind, accountId: string, peri
   const resolved = resolvePeriod(kind, accountId, period);
   const operation = PERIODIC[kind].operation;
   const { owner, trades, scopeError } = await periodScope(kind, accountId, resolved);
-  const [availability, history, name] = await Promise.all([
+  const [availability, history, profile] = await Promise.all([
     accountAiAvailability(owner.account.id, operation),
     periodHistory(kind, owner, resolved).then(
       rows => ({ rows, error: null }),
@@ -280,11 +303,12 @@ export async function loadPeriodicAi(kind: PeriodicKind, accountId: string, peri
         return { rows: [] as PeriodicHistoryEntry[], error: "AI history is unavailable right now. Trading records are unaffected." };
       },
     ),
-    accountName(owner.account.id, owner.account.name),
+    accountProfile(owner.account.id, owner.account.name),
   ]);
   return {
-    kind, operation, accountId: owner.account.id, accountName: name, periodLabel: resolved.periodLabel, scopeLabel: resolved.scopeLabel,
-    runLabel: resolved.runLabel, payload: resolved.payload, trades, scopeError, availability, estimate: estimateModel(aiCostEstimate(operation)),
+    kind, operation, accountId: owner.account.id, accountName: profile.name, accountArchived: profile.archived, periodLabel: resolved.periodLabel, scopeLabel: resolved.scopeLabel,
+    runLabel: resolved.runLabel, payload: resolved.payload, trades, scopeError, availability: { ...availability, accountArchived: profile.archived },
+    estimate: estimateModel(aiCostEstimate(operation)),
     history: history.rows, error: history.error,
   };
 }

@@ -1,19 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTestDatabase, migrationFiles, OTHER, OWNER, type TestDatabase } from "./helpers/pglite";
 
-// docs/V2_ARCHITECTURE.md §10.4 and §10.1: purge_my_trading_data (with its password re-authentication check), the
-// scoped DELETE exception in private.reject_mutation, the foreign-key lookup indexes, the TRUNCATE guards and the
-// final privilege hygiene of 0019_account_erasure.sql, against every migration present. Fixtures are written through
-// the V1 and V2 write paths before 0019 is applied (0019 closes some V1 entry points), exactly like a database that is
-// upgraded in production.
+// docs/V2_ARCHITECTURE.md §10.4 and §10.1: purge_user_trading_data (service role only), the scoped DELETE exception in
+// private.reject_mutation, the foreign-key lookup indexes, the TRUNCATE guards and the final privilege hygiene of
+// 0019_account_erasure.sql, against every migration present. Fixtures are written like a database that is upgraded in
+// production: V1 history through the V1 write paths before 0015 (whose backfill wraps it into trades), V2 records
+// through the V2 RPCs before 0019 (which closes some V1 entry points).
+
+// A pinned clock (PGlite reads the JS Date): no run crosses 00:00 UTC−5, where the account values the seed records
+// would turn stale before the locks that follow. stepped() still gives every statement its own instant.
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+  vi.setSystemTime(new Date("2026-11-02T15:00:00Z"));
+});
+afterAll(() => { vi.useRealTimers(); });
 
 const PHRASE = "ERASE ALL MY TRADING OS DATA";
 const HASH = "b".repeat(64);
 const SHA = "a".repeat(64);
 const HAS_CONNECTIONS = migrationFiles().some((name) => name.startsWith("0017_"));
 const HAS_TIMELINE_REVIEWS = migrationFiles().some((name) => name.startsWith("0018_"));
-// Every tenant table that seedUser() writes at least one row to, for both users.
+// Every tenant table that seedV1() and seedV2() (or the 0015 backfill) write at least one row to, for both users.
 const SEEDED_TABLES = [
   "account_observations", "account_profiles", "accounts", "ai_analysis_attempts", "ai_preference_events", "ai_request_dispatches",
   "ai_request_reservations", "ai_uncertainty_resolutions", "ai_usage_records", "bias_challenge_results", "bias_challenges",
@@ -79,25 +87,39 @@ async function receipts(db: TestDatabase): Promise<{ table_counts: Counts; erase
 }
 
 /**
- * PostgREST's JSON claims (request.jwt.claims) of a session whose password sign-in was `ageSeconds` ago, as GoTrue's
- * amr claim records it. purge_my_trading_data requires one from the last 5 minutes.
+ * PostgREST's JSON claims (request.jwt.claims) of an ordinary browser login `ageSeconds` ago, as GoTrue's amr claim
+ * records it: exactly what a password re-authentication carries too.
  */
 function claims(user: string, ageSeconds = 0): Json {
   return { sub: user, role: "authenticated", amr: [{ method: "password", timestamp: Math.floor(Date.now() / 1000) - ageSeconds }] };
 }
 
-/** SQL that makes the rest of a rolledBack() transaction act as `user`, with `jwt` as the request's claims. */
-const signedIn = (user: string, jwt: Json = claims(user)) =>
-  `select set_config('request.jwt.claim.sub', '${user}', true); select set_config('request.jwt.claims', '${JSON.stringify(jwt)}', true);`;
+/** SQL that makes the rest of a rolledBack() transaction act as `user` signed in a moment ago. */
+const signedIn = (user: string) =>
+  `select set_config('request.jwt.claim.sub', '${user}', true); select set_config('request.jwt.claims', '${JSON.stringify(claims(user))}', true);`;
 
-async function purge(db: TestDatabase, user: string, phrase: string | null = PHRASE, jwt: Json | null = claims(user)): Promise<PurgeResult> {
-  await db.actor(user);
-  await db.query("select set_config('request.jwt.claims', $1, false)", [jwt === null ? "" : JSON.stringify(jwt)]);
-  try {
-    return await value<PurgeResult>(db, "select public.purge_my_trading_data($1) as value", [phrase]);
-  } finally {
-    await db.query("select set_config('request.jwt.claims', '', false)");
-  }
+/** The trusted server's call (secret key: service_role, no user in the token) after re-authenticating `user`. */
+const PURGE_AS_SERVER = (user: string, phrase = PHRASE) =>
+  `select set_config('request.jwt.claim.sub', '', true); select public.purge_user_trading_data('${user}', '${phrase}');`;
+
+async function purge(db: TestDatabase, user: string | null, phrase: string | null = PHRASE): Promise<PurgeResult> {
+  await db.actor("", "service_role");
+  return value<PurgeResult>(db, "select public.purge_user_trading_data($1, $2) as value", [user, phrase]);
+}
+
+/** Advances the pinned clock by a millisecond before every statement, so rows keep distinct, ordered timestamps. */
+function stepped(db: TestDatabase): TestDatabase {
+  const query = db.query.bind(db);
+  const exec = db.exec.bind(db);
+  db.query = ((sql: string, params?: unknown[]) => {
+    vi.advanceTimersByTime(1);
+    return query(sql, params);
+  }) as TestDatabase["query"];
+  db.exec = (sql: string) => {
+    vi.advanceTimersByTime(1);
+    return exec(sql);
+  };
+  return db;
 }
 
 /** Runs statements inside a transaction that is always rolled back; resolves to the error message, if any. */
@@ -147,21 +169,22 @@ async function seedConnection(db: TestDatabase, user: string, accountId: string)
   return connection;
 }
 
+interface V1History { v1Account: string; legacyPaths: string[] }
+
 /**
- * Writes rows for `user` into every table of SEEDED_TABLES: the V1 and V2 write paths through their RPCs, the trusted
- * server's direct inserts as service_role, and reserved or AI history tables through admin inserts.
+ * V1 history of `user`, written before 0015 like a production database that ran V1: the V1 write paths through their
+ * RPCs, the trusted server's direct inserts as service_role, and reserved or AI history tables through admin inserts.
+ * 0015's backfill then wraps every plan and unlocked proposal into a trade.
  */
-async function seedUser(db: TestDatabase, user: string): Promise<Seeded> {
+async function seedV1(db: TestDatabase, user: string): Promise<V1History> {
   const legacyPaths: string[] = [];
-  const evidencePaths: string[] = [];
   const v1 = await db.bootstrapAccount(user);
   const v1Account = v1.accountId;
   await db.actor(user);
   await db.query("select public.create_risk_version($1, $2::jsonb, true, 'Synthetic erasure seed')", [v1Account,
     JSON.stringify({ maxRiskPercent: "0.5", maxDailyTrades: 20, minRR: "3", rrPolicy: "BLOCK", newsPolicy: "WARN", dailyRiskCap: null, dailyLossCap: null })]);
   await db.query("select public.save_daily_context($1, 'Synthetic context')", [v1Account]);
-  await db.query("select public.update_account_profile($1, '{\"broker\":\"Synthetic broker\"}'::jsonb)", [v1Account]);
-  let ctx = await currentContext(db, v1Account);
+  const ctx = await currentContext(db, v1Account);
   const lockV1 = async (entry: string, stop: string, target: string): Promise<string> => {
     await db.actor(user);
     const result = await value<{ planId: string | null }>(db, "select public.lock_trade_plan($1, $2::jsonb, $3, $4, $5) as value",
@@ -264,9 +287,15 @@ async function seedUser(db: TestDatabase, user: string): Promise<Seeded> {
     original_rule, experimental_rule, start_date) values ($1, $2, $3, $4, $4, 'h', 'o', 'e', '2026-09-01')`, [experiment, user, v1Account, strategy]);
   await db.query("insert into public.experiment_reviews(user_id, account_id, experiment_id, sample_size, results, decision) values ($1, $2, $3, 0, '{}', 'KEEP_TESTING')",
     [user, v1Account, experiment]);
+  return { v1Account, legacyPaths: legacyPaths.sort() };
+}
 
-  // V2 account and trades (0015 RPCs).
+/** V2 records of `user` through the 0015-0018 RPCs: the migrated V1 account's profile, a V2 account and its trades. */
+async function seedV2(db: TestDatabase, user: string, history: V1History): Promise<Seeded> {
+  const { v1Account } = history;
+  const evidencePaths: string[] = [];
   await db.actor(user);
+  await db.query("select public.update_account_profile($1, '{\"broker\":\"Synthetic broker\"}'::jsonb)", [v1Account]);
   const v2Account = await value<string>(db, "select public.create_trading_account($1, $2::jsonb) as value", [randomUUID(),
     JSON.stringify({ name: "Synthetic funded", currency: "USD", accountType: "FUNDED", platform: "MT5", balance: "10000", equity: "10000" })]);
   await db.query("select public.create_risk_policy_version($1, $2::jsonb, true, 'Synthetic erasure seed')", [v2Account, JSON.stringify({
@@ -274,7 +303,7 @@ async function seedUser(db: TestDatabase, user: string): Promise<Seeded> {
   await db.query("select public.create_instrument_version($1, $2::jsonb)", [v2Account, JSON.stringify({
     symbol: "XAUUSD", quantityUnit: "oz", tickSize: "0.01", tickValue: "0.01", quantityStep: "1", minimumQuantity: "1" })]);
   await db.query("select public.record_account_values($1, '10000', '10000')", [v2Account]);
-  ctx = await currentContext(db, v2Account);
+  const ctx = await currentContext(db, v2Account);
   await db.actor(user);
   const draft = await value<{ tradeId: string }>(db, "select public.create_planned_trade($1, $2::jsonb, $3, $4, $5) as value",
     [v2Account, proposal(ctx.instrument, "1.10000", "1.09800", "1.10600"), randomUUID(), ctx.risk, ctx.observation]);
@@ -321,7 +350,7 @@ async function seedUser(db: TestDatabase, user: string): Promise<Seeded> {
     await db.query("insert into public.trade_timeline_review_results(review_id, user_id, account_id, status, error_code) values ($1, $2, $3, 'FAILED', 'MOCK_FAILURE')",
       [timelineReview, user, v2Account]);
   }
-  return { v1Account, v2Account, connection, legacyPaths: legacyPaths.sort(), evidencePaths: evidencePaths.sort() };
+  return { v1Account, v2Account, connection, legacyPaths: history.legacyPaths, evidencePaths: evidencePaths.sort() };
 }
 
 /**
@@ -334,22 +363,24 @@ const SUPABASE_DEFAULT_LEFTOVERS = `
   grant all on public.journal_analytics to authenticated;
   grant all on all sequences in schema public to anon, authenticated, service_role;`;
 
-/** All migrations before 0019, two seeded users, then 0019 (which must be the last migration). */
+/** V1 history of two users, the V2 migrations, their V2 records, then 0019 (which must be the last migration). */
 async function upgradedDatabase(beforeErasure = ""): Promise<{ db: TestDatabase; owner: Seeded; other: Seeded }> {
-  const db = await createTestDatabase();
-  await db.applyMigrations({ upTo: "0018" });
+  const db = stepped(await createTestDatabase());
+  await db.applyMigrations({ upTo: "0014" });
   await db.pinSession("ACTIVE_KILL_ZONE");
   await db.admin();
   await db.query("insert into public.evaluator_versions(version, schema_version, system_prompt, json_schema, config, sha256) values ('ERASURE_TEST_V1', '1', 'p', '{}', '{}', $1)", [SHA]);
-  const owner = await seedUser(db, OWNER);
-  const other = await seedUser(db, OTHER);
+  const histories = [await seedV1(db, OWNER), await seedV1(db, OTHER)];
+  await db.applyMigrations({ upTo: "0018" });
+  const owner = await seedV2(db, OWNER, histories[0]);
+  const other = await seedV2(db, OTHER, histories[1]);
   await db.admin();
   if (beforeErasure) await db.exec(beforeErasure);
   expect(await db.applyMigrations()).toEqual(["0019_account_erasure.sql"]);
   return { db, owner, other };
 }
 
-describe("purge_my_trading_data", () => {
+describe("purge_user_trading_data", () => {
   let db: TestDatabase;
   let owner: Seeded;
   let other: Seeded;
@@ -385,7 +416,7 @@ describe("purge_my_trading_data", () => {
     expect(await rolledBack(db, `delete from auth.users where id = '${OWNER}';`)).toMatch(/foreign key/);
   });
 
-  it("deletes exactly the caller's rows in every table, returns their storage paths and counts, and touches nothing else", async () => {
+  it("deletes exactly the user's rows in every table, returns their storage paths and counts, and touches nothing else", async () => {
     result = await purge(db, OWNER);
     expect(Object.keys(result).sort()).toEqual(["deleted", "storagePaths"]);
     expect(result.deleted).toEqual(ownerBefore);
@@ -407,9 +438,9 @@ describe("purge_my_trading_data", () => {
   it("clears the erase flag before it returns, inside the caller's own transaction", async () => {
     // A transaction-local setting vanishes with its transaction: only a check within the purge's transaction counts.
     const flagCheck = "do $$ begin if coalesce(current_setting('trading_os.erase_user_id', true), '') <> '' then raise exception 'ERASE_FLAG_LEFT_SET'; end if; end $$;";
-    await db.actor(OTHER);
+    await db.actor("", "service_role");
     expect(await rolledBack(db, `select set_config('trading_os.erase_user_id', '${OTHER}', true); ${flagCheck}`)).toBe("ERASE_FLAG_LEFT_SET");
-    expect(await rolledBack(db, `${signedIn(OTHER)} select public.purge_my_trading_data('${PHRASE}'); ${flagCheck}`)).toBeNull();
+    expect(await rolledBack(db, `${PURGE_AS_SERVER(OTHER)} ${flagCheck}`)).toBeNull();
     expect(await counts(db, OTHER)).toEqual(otherBefore);
   });
 
@@ -467,6 +498,9 @@ describe("erasure guards", () => {
     ({ db, owner } = await upgradedDatabase(SUPABASE_DEFAULT_LEFTOVERS));
     await refresh();
   }, 180_000);
+  // Each test starts from the rows the previous one left, even when it failed halfway: one failure never turns the
+  // unchanged() checks of the tests after it red.
+  afterEach(async () => { await refresh(); });
   afterAll(async () => { await db.close(); });
 
   it("never lets the erase flag delete outside the purge, update anything, or reach another user's or global rows", async () => {
@@ -486,50 +520,39 @@ describe("erasure guards", () => {
     await unchanged();
   });
 
-  it("is executable by authenticated users only", async () => {
+  it("is executable by the service role only: no user token, however fresh its password sign-in, erases anything", async () => {
+    // A browser's own login carries exactly the claims of a password re-authentication (amr password, now), so the
+    // database cannot tell them apart: the server action re-authenticates and then calls the purge with the secret key.
     await db.admin();
     const grants = (await db.query<{ anon: boolean; authenticated: boolean; service: boolean; definer: boolean; config: string[] }>(`
       select has_function_privilege('anon', p.oid, 'EXECUTE') as anon, has_function_privilege('authenticated', p.oid, 'EXECUTE') as authenticated,
              has_function_privilege('service_role', p.oid, 'EXECUTE') as service, p.prosecdef as definer, p.proconfig as config
-        from pg_proc p where p.oid = 'public.purge_my_trading_data(text)'::regprocedure`)).rows[0];
-    expect(grants).toEqual({ anon: false, authenticated: true, service: false, definer: true, config: ['search_path=""'] });
+        from pg_proc p where p.oid = 'public.purge_user_trading_data(uuid, text)'::regprocedure`)).rows[0];
+    expect(grants).toEqual({ anon: false, authenticated: false, service: true, definer: true, config: ['search_path=""'] });
+    // The self-service purge of the first 0019 draft is gone, and no other erasing function is reachable by a user.
+    expect(await value<string | null>(db, "select to_regprocedure('public.purge_my_trading_data(text)')::text as value")).toBeNull();
+    const reachable = (await db.query<{ signature: string }>(`
+      select p.oid::regprocedure::text as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+       where n.nspname in ('public', 'private') and (p.proname ~ '(purge|eras)' or p.prosrc ~* 'trading_os[.]erase_user_id')
+         and (has_function_privilege('anon', p.oid, 'EXECUTE') or has_function_privilege('authenticated', p.oid, 'EXECUTE'))`)).rows;
+    expect(reachable).toEqual([]);
+    for (const age of [0, 60, 4 * 60]) {
+      await db.actor(OWNER);
+      for (const target of [OWNER, OTHER]) {
+        const sql = `select set_config('request.jwt.claims', '${JSON.stringify(claims(OWNER, age))}', true); select public.purge_user_trading_data('${target}', '${PHRASE}');`;
+        expect(await rolledBack(db, sql), `login ${age}s ago, target ${target}`).toMatch(/permission denied for function purge_user_trading_data/);
+      }
+      expect(await rolledBack(db, `${signedIn(OWNER)} select public.purge_my_trading_data('${PHRASE}');`)).toMatch(/function public.purge_my_trading_data\(unknown\) does not exist/);
+    }
     await db.anon();
-    await expect(db.query("select public.purge_my_trading_data($1)", [PHRASE])).rejects.toThrow(/permission denied for function/);
-    await db.actor(OWNER, "service_role");
-    await expect(db.query("select public.purge_my_trading_data($1)", [PHRASE])).rejects.toThrow(/permission denied for function/);
-    await db.actor("");
-    await expect(db.query("select public.purge_my_trading_data($1)", [PHRASE])).rejects.toThrow(/^AUTH_REQUIRED:/);
+    await expect(db.query("select public.purge_user_trading_data($1, $2)", [OWNER, PHRASE])).rejects.toThrow(/permission denied for function/);
+    await expect(purge(db, null)).rejects.toThrow(/^INVALID_INPUT: A user id is required/);
     await unchanged();
   });
 
   it("rejects anything but the exact confirmation phrase", async () => {
     for (const phrase of ["DELETE", "erase all my trading os data", ` ${PHRASE}`, `${PHRASE}.`, "", null]) {
       await expect(purge(db, OWNER, phrase), String(phrase)).rejects.toThrow(/^CONFIRMATION_REQUIRED:/);
-    }
-    await unchanged();
-  });
-
-  it("requires the caller's own password sign-in from the last 5 minutes, so an access token alone erases nothing", async () => {
-    const now = Math.floor(Date.now() / 1000);
-    const refused: [string, Json | null][] = [
-      ["no JWT claims", null],
-      ["no amr claim", { sub: OWNER, role: "authenticated" }],
-      ["malformed amr", { sub: OWNER, role: "authenticated", amr: { method: "password", timestamp: now } }],
-      ["password sign-in 6 minutes ago, as a refreshed long-lived token keeps it", claims(OWNER, 6 * 60)],
-      ["fresh sign-in by another method", { sub: OWNER, role: "authenticated", amr: [{ method: "otp", timestamp: now }] }],
-      ["fresh password sign-in of another user", claims(OTHER)],
-    ];
-    for (const [name, jwt] of refused) {
-      await expect(purge(db, OWNER, PHRASE, jwt), name).rejects.toThrow(/^REAUTH_REQUIRED:/);
-    }
-    await unchanged();
-    const accepted: Json[] = [
-      claims(OWNER, 4 * 60),
-      { sub: OWNER, role: "authenticated", amr: [{ method: "totp", timestamp: now }, { method: "password", timestamp: now - 60 }] },
-    ];
-    for (const jwt of accepted) {
-      await db.actor(OWNER);
-      expect(await rolledBack(db, `${signedIn(OWNER, jwt)} select public.purge_my_trading_data('${PHRASE}');`), JSON.stringify(jwt)).toBeNull();
     }
     await unchanged();
   });
@@ -554,7 +577,8 @@ describe("erasure guards", () => {
       reserved_micros, period) select $1, user_id, id, 'CHALLENGE_BIAS', $2, 'A', $3, 'openai', 'synthetic-model', '{}', 1000,
       date_trunc('month', clock_timestamp())::date from public.accounts where user_id = $4 order by id limit 1`, [randomUUID(), randomUUID(), HASH, OTHER]);
     await refresh();
-    expect(await rolledBack(db, `${signedIn(OWNER)} select public.purge_my_trading_data('${PHRASE}');`)).toBeNull();
+    await db.actor("", "service_role");
+    expect(await rolledBack(db, PURGE_AS_SERVER(OWNER))).toBeNull();
     await unchanged();
   });
 
@@ -590,7 +614,6 @@ describe("erasure guards", () => {
     expect(rows).toEqual([
       { name: "evaluator_versions", privilege: "INSERT" },
       { name: "setup_evaluation_passes", privilege: "INSERT" },
-      { name: "setup_screenshots", privilege: "INSERT" },
     ]);
     await db.actor(OWNER, "service_role");
     await expect(db.query("insert into public.trade_plans(user_id) values ($1)", [OWNER])).rejects.toThrow(/permission denied/);
@@ -600,21 +623,21 @@ describe("erasure guards", () => {
     await unchanged();
   });
 
-  it("keeps the legacy trusted-server writes working: screenshot registration, evaluator upsert, evaluation passes", async () => {
+  it("keeps the legacy evaluator's trusted-server writes working, and registers no legacy screenshot any more", async () => {
     await db.admin();
     const target = (await db.query<{ proposal: string; evaluation: string }>(`
       select (select id from public.setup_proposals where account_id = $1 order by created_at limit 1) as proposal,
              (select id from public.setup_evaluations where account_id = $1 limit 1) as evaluation`, [owner.v1Account])).rows[0];
     const screenshot = randomUUID();
     await db.actor(OWNER, "service_role");
-    await db.query(`insert into public.setup_screenshots(id, user_id, account_id, proposal_id, role, storage_path, original_filename, mime_type, byte_size,
+    // V2 evidence goes through register_trade_evidence; no code registers V1 screenshots (0019 keeps no insert grant).
+    await expect(db.query(`insert into public.setup_screenshots(id, user_id, account_id, proposal_id, role, storage_path, original_filename, mime_type, byte_size,
       sha256, width, height) values ($1, $2, $3, $4, 'H1', $5, 'chart.png', 'image/png', 1024, $6, 32, 32)`,
-      [screenshot, OWNER, owner.v1Account, target.proposal, `${OWNER}/${target.proposal}/${screenshot}`, SHA]);
+      [screenshot, OWNER, owner.v1Account, target.proposal, `${OWNER}/${target.proposal}/${screenshot}`, SHA])).rejects.toThrow(/permission denied for table setup_screenshots/);
     await db.query("insert into public.evaluator_versions(version, schema_version, system_prompt, json_schema, config, sha256) values ('ERASURE_TEST_V1', '1', 'p', '{}', '{}', $1) on conflict (version) do nothing", [SHA]);
     expect(await value<string>(db, "select sha256 as value from public.evaluator_versions where version = 'ERASURE_TEST_V1'")).toBe(SHA);
     await db.query("insert into public.setup_evaluation_passes(id, user_id, account_id, evaluation_id, stage, status, model, output) values ($1, $2, $3, $4, 'B', 'VALID', 'synthetic-model', '{}')",
       [randomUUID(), OWNER, owner.v1Account, target.evaluation]);
-    await refresh();
   });
 
   it("leaves anon nothing and authenticated only SELECT on tables, views and sequences", async () => {
@@ -675,7 +698,6 @@ describe("erasure guards", () => {
     const legacy = await value<string>(db, "select public.save_setup_proposal($1, $2::jsonb, $3, $4, $5) as value",
       [owner.v1Account, proposal(v1.instrument, "1.60000", "1.59800", "1.60600"), randomUUID(), v1.risk, v1.observation]);
     expect((await value<{ planId: string | null }>(db, "select public.check_setup_risk($1, true) as value", [legacy])).planId).toBeTruthy();
-    await refresh();
   });
 
   it("indexes every foreign key into a tenant table by columns that identify the referenced row", async () => {

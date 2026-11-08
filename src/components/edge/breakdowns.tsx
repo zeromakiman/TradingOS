@@ -35,9 +35,6 @@ export function Breakdowns({ sections }: { sections: BreakdownSection[] }) {
             <Card className="h-full">
               <CardBody>
                 <HBarChart
-                  // Phones: each group's name and sample above a full-width bar (side by side leaves the bar no room).
-                  // A group's sample may name the trades without risk: it wraps instead of being cut off.
-                  className="[&_.hbar-detail]:whitespace-normal max-md:[&_.hbar-row]:grid-cols-1 max-md:[&_.hbar-row]:gap-1 max-md:[&_.hbar-row]:py-2"
                   title={section.title}
                   question={section.question}
                   sample={section.sample}

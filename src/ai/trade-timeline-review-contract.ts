@@ -6,7 +6,6 @@ import { tradeTimelineAllowedSources } from "./trade-timeline-review-sources";
  * validator (citations within the manifest, hindsight guard for the thesis check, no-plan rules, directive ban).
  */
 
-export const REVIEW_TRADE_TIMELINE_VERSION = "REVIEW_TRADE_TIMELINE_V1";
 export const REVIEW_TRADE_TIMELINE_CITATIONS_VERSION = "REVIEW_TRADE_TIMELINE_CITATIONS_V1";
 
 export const THESIS_ASSESSMENTS = ["CONSISTENT", "CHANGED", "NOT_RECORDED", "INSUFFICIENT_EVIDENCE"] as const;

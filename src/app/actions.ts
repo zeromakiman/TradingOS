@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect, unstable_rethrow } from "next/navigation";
 import { z } from "zod";
+import { ACCOUNT_CONTEXT_COOKIES, keepOwnAccountContext } from "@/lib/account-context";
 import { operationalFailure } from "@/lib/operational-log";
 import { publicConfig } from "@/lib/supabase/config";
 import { supabaseServer } from "@/lib/supabase/server";
@@ -38,11 +39,13 @@ export async function login(_state: ActionState, form: FormData): Promise<Action
     const email = z.email().parse(field(form, "email"));
     const password = z.string().min(1).max(256).parse(field(form, "password"));
     const db = await supabaseServer(true);
-    const { error } = await db.auth.signInWithPassword({ email, password });
+    const { data, error } = await db.auth.signInWithPassword({ email, password });
     if (error) {
       if (authOutage(error)) operationalFailure("auth_unavailable", 503);
       return { error: SIGN_IN_FAILED };
     }
+    // A previous session on this browser may have ended without signing out: its trading-account context goes (§9.2).
+    await keepOwnAccountContext(db, data.user?.id);
   } catch (error) {
     unstable_rethrow(error);
     if (error instanceof z.ZodError) return { error: error.issues.map(issue => issue.message).join(" ") };
@@ -59,8 +62,13 @@ export async function logout() {
       const db = await supabaseServer(true);
       await db.auth.signOut({ scope: "local" });
     } finally {
+      // The auth cookies and the trading-account context of the person who signed out (§9.2): the next person to sign
+      // in on this browser starts in their own context, without the previous person's account ids.
       const jar = await cookies();
-      for (const cookie of jar.getAll()) if (isChunkLike(cookie.name, config.cookiePrefix) || isChunkLike(cookie.name, `${config.cookiePrefix}-user`)) jar.delete(cookie.name);
+      for (const cookie of jar.getAll()) {
+        const auth = isChunkLike(cookie.name, config.cookiePrefix) || isChunkLike(cookie.name, `${config.cookiePrefix}-user`);
+        if (auth || ACCOUNT_CONTEXT_COOKIES.includes(cookie.name)) jar.delete(cookie.name);
+      }
     }
   }
   revalidatePath("/", "layout");

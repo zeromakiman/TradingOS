@@ -7,7 +7,8 @@ Accounts aggregation, security and data rights, advisory AI, the design system a
 migration steps are in [DEPLOYMENT.md](DEPLOYMENT.md).
 
 In one paragraph: one strict TypeScript Next.js 16 App Router application. `src/proxy.ts` refreshes the Supabase session
-on every request, keeps signed-out visitors on the public pages and applies the trading-account context. Server
+on every request (HttpOnly session cookies, Secure on HTTPS; no browser code holds a Supabase client), keeps signed-out
+visitors on the public pages and applies the trading-account context. Server
 components read with the signed-in user's session (owner RLS on every table); server actions validate input with zod
 and write only through `SECURITY DEFINER` RPCs with explicit ownership checks; the SQL Risk Engine decides at lock and the
 TypeScript engine mirrors it for previews. History is append-only and locked plans are immutable. Pure domain modules

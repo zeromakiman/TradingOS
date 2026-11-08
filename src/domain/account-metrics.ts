@@ -25,6 +25,10 @@ export const UNKNOWN_REASONS = Object.freeze({
   accountValues: "No account values have been recorded yet.",
   balanceFromTrades: "Needs a starting balance; Trading OS does not estimate one.",
   rStatistics: "No closed trades with a recorded risk yet.",
+  /** The account's trades could not all be read (the read stopped at its row limit). */
+  tooManyTrades: "More trades than this page can add up; a partial total is never shown.",
+  /** A currency total or the combined R of several accounts, one of which has such a reason. */
+  tooManyTradesTotal: "Includes an account with more trades than this page can add up; a partial total is never shown.",
 });
 
 export type Known<T> = { value: T; unknownReason: null } | { value: null; unknownReason: string };
@@ -62,6 +66,11 @@ export interface AccountMetricsInput {
   latestObservation: AccountObservationInput | null;
   /** Ledger rows; rows of other accounts are ignored. */
   trades: readonly AccountMetricsTrade[];
+  /**
+   * Whether `trades` holds every trade of the account. False when the read stopped at its row limit: every figure
+   * computed from trades is then unknown (`UNKNOWN_REASONS.tooManyTrades`), never a sum over part of them.
+   */
+  tradesComplete: boolean;
   /** Server time: decides today's and this month's strategy-day buckets. */
   now: Instant;
 }
@@ -74,7 +83,39 @@ export interface RecordedValue {
   label: string;
 }
 
-export interface AccountMetrics {
+/**
+ * What the account's trades add up to: every figure known, or (when its trades could not all be read) every figure
+ * null and `tradesUnknown` says why. Checking `tradesUnknown === null` makes all of them known.
+ */
+export type AccountTradeFigures =
+  | {
+      tradesUnknown: null;
+      /** Σ net P&L of closed trades recorded in Trading OS ("0" when none). */
+      realizedPnl: string;
+      /** Net P&L of trades whose exit falls on today's strategy day. */
+      todayPnl: string;
+      /** Net P&L of trades whose exit falls in this strategy month. */
+      monthPnl: string;
+      /** Closed trades with a recorded risk (the R statistics' sample). */
+      rTrades: number;
+      /** Closed trades left out of the R statistics for lack of a recorded risk. */
+      excludedNoRiskBasis: number;
+      closedCount: number;
+      openCount: number;
+    }
+  | {
+      /** `UNKNOWN_REASONS.tooManyTrades`. */
+      tradesUnknown: string;
+      realizedPnl: null;
+      todayPnl: null;
+      monthPnl: null;
+      rTrades: null;
+      excludedNoRiskBasis: null;
+      closedCount: null;
+      openCount: null;
+    };
+
+export type AccountMetrics = AccountTradeFigures & {
   accountId: string;
   name: string;
   currency: string;
@@ -87,31 +128,32 @@ export interface AccountMetrics {
   startingBalance: Known<string>;
   lastBalance: Known<RecordedValue>;
   lastEquity: Known<RecordedValue>;
-  /** Σ net P&L of closed trades recorded in Trading OS ("0" when none). */
-  realizedPnl: string;
   /** Starting balance + realized P&L; labelled with `BALANCE_FROM_TRADES_LABEL`. */
   balanceFromTrades: Known<string>;
-  /** Net P&L of trades whose exit falls on today's strategy day. */
-  todayPnl: string;
-  /** Net P&L of trades whose exit falls in this strategy month. */
-  monthPnl: string;
   cumulativeR: Known<string>;
   maxDrawdownR: Known<string>;
-  rTrades: number;
-  excludedNoRiskBasis: number;
-  closedCount: number;
-  openCount: number;
-}
+};
 
 function recordedValue(kind: "Balance" | "Equity", amount: string, observation: AccountObservationInput, nowDay: string): RecordedValue {
   const day = formatDay(observation.tradingDay, undefined, { year: observation.tradingDay.slice(0, 4) !== nowDay.slice(0, 4) });
   return { amount, day: observation.tradingDay, recordedAt: observation.recordedAt, label: `${kind} · recorded ${day}` };
 }
 
-export function accountMetrics(input: AccountMetricsInput): AccountMetrics {
-  const { account, profile, latestObservation: observation } = input;
-  const trades = input.trades.filter(trade => trade.account_id === account.id);
-  const today = strategyDay(input.now);
+type TradeResults = AccountTradeFigures & Pick<AccountMetrics, "balanceFromTrades" | "cumulativeR" | "maxDrawdownR">;
+
+/** Every figure computed from the account's trades, or all of them unknown when they could not all be read. */
+function tradeResults(input: AccountMetricsInput, today: string): TradeResults {
+  const startingBalance = input.profile.startingBalance;
+  if (!input.tradesComplete) {
+    const reason = UNKNOWN_REASONS.tooManyTrades;
+    return {
+      tradesUnknown: reason, realizedPnl: null, todayPnl: null, monthPnl: null, rTrades: null, excludedNoRiskBasis: null, closedCount: null, openCount: null,
+      balanceFromTrades: unknown(startingBalance === null ? UNKNOWN_REASONS.balanceFromTrades : reason),
+      cumulativeR: unknown(reason),
+      maxDrawdownR: unknown(reason),
+    };
+  }
+  const trades = input.trades.filter(trade => trade.account_id === input.account.id);
   const month = today.slice(0, 7);
   let realized = new M(0);
   let todayPnl = new M(0);
@@ -125,6 +167,24 @@ export function accountMetrics(input: AccountMetricsInput): AccountMetrics {
   }
   const metrics = rMetrics(trades);
   return {
+    tradesUnknown: null,
+    realizedPnl: realized.toFixed(),
+    todayPnl: todayPnl.toFixed(),
+    monthPnl: monthPnl.toFixed(),
+    rTrades: metrics.completed,
+    excludedNoRiskBasis: metrics.excludedNoRiskBasis,
+    closedCount: metrics.closed,
+    openCount: trades.filter(trade => deriveLifecycle(trade) === "LIVE").length,
+    balanceFromTrades: startingBalance === null ? unknown(UNKNOWN_REASONS.balanceFromTrades) : known(new M(startingBalance).plus(realized).toFixed()),
+    cumulativeR: metrics.netR === null ? unknown(UNKNOWN_REASONS.rStatistics) : known(metrics.netR),
+    maxDrawdownR: metrics.maxDrawdown === null ? unknown(UNKNOWN_REASONS.rStatistics) : known(metrics.maxDrawdown),
+  };
+}
+
+export function accountMetrics(input: AccountMetricsInput): AccountMetrics {
+  const { account, profile, latestObservation: observation } = input;
+  const today = strategyDay(input.now);
+  return {
     accountId: account.id,
     name: profile.displayName,
     currency: account.currency,
@@ -136,39 +196,35 @@ export function accountMetrics(input: AccountMetricsInput): AccountMetrics {
     startingBalance: profile.startingBalance === null ? unknown(UNKNOWN_REASONS.startingBalance) : known(new M(profile.startingBalance).toFixed()),
     lastBalance: observation ? known(recordedValue("Balance", observation.balance, observation, today)) : unknown(UNKNOWN_REASONS.accountValues),
     lastEquity: observation ? known(recordedValue("Equity", observation.equity, observation, today)) : unknown(UNKNOWN_REASONS.accountValues),
-    realizedPnl: realized.toFixed(),
-    balanceFromTrades: profile.startingBalance === null ? unknown(UNKNOWN_REASONS.balanceFromTrades) : known(new M(profile.startingBalance).plus(realized).toFixed()),
-    todayPnl: todayPnl.toFixed(),
-    monthPnl: monthPnl.toFixed(),
-    cumulativeR: metrics.netR === null ? unknown(UNKNOWN_REASONS.rStatistics) : known(metrics.netR),
-    maxDrawdownR: metrics.maxDrawdown === null ? unknown(UNKNOWN_REASONS.rStatistics) : known(metrics.maxDrawdown),
-    rTrades: metrics.completed,
-    excludedNoRiskBasis: metrics.excludedNoRiskBasis,
-    closedCount: metrics.closed,
-    openCount: trades.filter(trade => deriveLifecycle(trade) === "LIVE").length,
+    ...tradeResults(input, today),
   };
 }
 
-export interface CurrencyTotals {
-  currency: string;
-  accounts: number;
-  realizedPnl: string;
-  todayPnl: string;
-  monthPnl: string;
-}
+/**
+ * Money of the accounts that share one currency (never converted). Every total is null while one of those accounts'
+ * trades could not all be read (`UNKNOWN_REASONS.tooManyTradesTotal`): a total never adds up part of the trades.
+ */
+export type CurrencyTotals = { currency: string; accounts: number } & (
+  | { realizedPnl: string; todayPnl: string; monthPnl: string }
+  | { realizedPnl: null; todayPnl: null; monthPnl: null }
+);
 
 /** Accounts-page totals: money only within one currency (never converted). */
 export function accountCurrencyTotals(accounts: readonly AccountMetrics[]): CurrencyTotals[] {
-  const totals = new Map<string, { accounts: number; realized: Decimal; today: Decimal; month: Decimal }>();
-  for (const account of accounts) {
-    const entry = totals.get(account.currency) ?? { accounts: 0, realized: new M(0), today: new M(0), month: new M(0) };
-    entry.accounts += 1;
-    entry.realized = entry.realized.plus(account.realizedPnl);
-    entry.today = entry.today.plus(account.todayPnl);
-    entry.month = entry.month.plus(account.monthPnl);
-    totals.set(account.currency, entry);
-  }
-  return [...totals.entries()]
+  const byCurrency = new Map<string, AccountMetrics[]>();
+  for (const account of accounts) byCurrency.set(account.currency, [...(byCurrency.get(account.currency) ?? []), account]);
+  return [...byCurrency.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([currency, entry]) => ({ currency, accounts: entry.accounts, realizedPnl: entry.realized.toFixed(), todayPnl: entry.today.toFixed(), monthPnl: entry.month.toFixed() }));
+    .map(([currency, members]): CurrencyTotals => {
+      let realized = new M(0);
+      let today = new M(0);
+      let month = new M(0);
+      for (const member of members) {
+        if (member.tradesUnknown !== null) return { currency, accounts: members.length, realizedPnl: null, todayPnl: null, monthPnl: null };
+        realized = realized.plus(member.realizedPnl);
+        today = today.plus(member.todayPnl);
+        month = month.plus(member.monthPnl);
+      }
+      return { currency, accounts: members.length, realizedPnl: realized.toFixed(), todayPnl: today.toFixed(), monthPnl: month.toFixed() };
+    });
 }

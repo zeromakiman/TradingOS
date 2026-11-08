@@ -78,13 +78,16 @@ import TradePage, { generateMetadata } from "@/app/(app)/trades/[id]/page";
 import LegacyPlanNotFound from "@/app/journal/[id]/not-found";
 import LegacyPlanPage from "@/app/journal/[id]/page";
 import type { TradeExtras } from "@/components/trade/workspace-data";
+import { previewContext, previewProposal, usageFixture } from "@/domain/fixtures";
 import { formatR } from "@/domain/format";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
 import { planVsReality } from "@/domain/plan-vs-reality";
-import type { ExplainedIssue } from "@/domain/risk-explain";
+import { evaluateRisk, type RiskContext } from "@/domain/risk";
+import { type ExplainedIssue, explainReport } from "@/domain/risk-explain";
 import { STRATEGY_TIME } from "@/domain/time-display";
 import {
-  buildTimeline, groupByTiming, TIMING_FLAG_COPY, type TimelineEvidence, type TimelineItem, type TimelineJournalEntry, type TimelineRevision, type TimelineRiskCheck,
+  buildTimeline, groupByTiming, TIMING_FLAG_COPY, type TimelineEvidence, type TimelineItem, type TimelineJournalEntry, type TimelineLegacyDecision, type TimelineRevision,
+  type TimelineRiskCheck,
 } from "@/domain/timeline";
 import { deriveTradeState, planEndedAt } from "@/domain/trade-state";
 import type { CheckView, EvidenceItemView, ProposalView, TradeDetail } from "@/lib/trades-data";
@@ -158,6 +161,8 @@ interface Scenario {
   journal?: TimelineJournalEntry[];
   evidence?: (TimelineEvidence & { kind: "V2" })[];
   disposition?: TradeDetail["disposition"];
+  /** Decisions recorded in V1 on the trade's revisions (`setup_human_decisions`), oldest first. */
+  legacyDecisions?: TimelineLegacyDecision[];
   lifecycleEvents?: { id: string; event: "DRAFT_DISCARDED" | "REVIEW_COMPLETED" | "REVIEW_REOPENED"; reason: string | null; recordedAt: string }[];
   close?: Partial<NonNullable<TradeDetail["close"]>>;
   instrument?: TradeDetail["instrument"];
@@ -185,7 +190,9 @@ function detailOf(s: Scenario): TradeDetail {
     now: NOW, checkCurrent: s.checkCurrent ?? false, aiAvailable: s.aiAvailable ?? false,
     blockingReason: latestCheck?.decision === "BLOCKED" ? latestCheck.explained.blocking[0]?.detail : undefined, accountArchived: s.archived === true,
   });
-  const endedAt = planEndedAt(trade, { dispositionAt: s.disposition?.recordedAt ?? null });
+  // The loader dates a V1 skip by the trade's latest V1 decision when that decision is a skip.
+  const latestDecision = s.legacyDecisions?.at(-1);
+  const endedAt = planEndedAt(trade, { dispositionAt: s.disposition?.recordedAt ?? null, legacySkipAt: latestDecision?.decision === "SKIPPED" ? latestDecision.recordedAt : null });
   const timeline = buildTimeline({
     trade,
     instrument,
@@ -194,6 +201,7 @@ function detailOf(s: Scenario): TradeDetail {
     journal: s.journal ?? [],
     evidence: s.evidence ?? [],
     disposition: s.disposition ? { status: s.disposition.status, reason: s.disposition.reason, recordedAt: s.disposition.recordedAt } : null,
+    legacyDecisions: s.legacyDecisions ?? [],
     lifecycleEvents: s.lifecycleEvents ?? [],
     planEndedAt: endedAt,
     lockEvaluationId: s.lockEvaluationId ?? null,
@@ -266,7 +274,7 @@ function detailOf(s: Scenario): TradeDetail {
   };
 }
 
-const EXTRAS: TradeExtras = { strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [] };
+const EXTRAS: TradeExtras = { strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null };
 
 // Scenarios ------------------------------------------------------------------------------------------------------------
 const LOCKED_FIELDS: Partial<LedgerTrade> = {
@@ -646,7 +654,7 @@ describe("trade workspace · drafts", () => {
     expect(text).toContain("Blocked");
     // The stored sentence says "today" about the day of the check; the hint says which day that was.
     expect(text).toContain(
-      "Blocked when checked Oct 22, 13:44: Daily trade limit reached: 2 of 2 trades already used today (1 planned, 1 recorded live). Today's limits and session can differ, so recheck risk before you edit the draft.",
+      "Blocked when checked Oct 22, 13:44: Daily trade limit reached: 2 of 2 trades already used today (1 planned, 1 recorded live). (+1 more) Today's limits and session can differ, so recheck risk before you edit the draft.",
     );
     expect(primaryButtonLabels(html)[0]).toBe("Recheck risk");
     expect(html).not.toMatch(new RegExp(`<a class="[^"]*btn-primary[^"]*" href="/trades/${detail.tradeId}/edit"`));
@@ -663,6 +671,94 @@ describe("trade workspace · drafts", () => {
     };
     const text = visibleText(await render(readyDraft(), extras));
     expect(text).toContain("Strategy card");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// What clears a block found today (§2.4, §6.3, §10) and a contract the account updated since the draft (§3.4)
+// ---------------------------------------------------------------------------------------------------------------------
+describe("trade workspace · what clears a block, and an updated contract", () => {
+  const CHECKED = "2026-10-23T18:44:30Z"; // 13:44 UTC−5, today
+  const STALE_EQUITY = issue("STALE_EQUITY", "Account values not confirmed today", "Confirm today's account balance before locking (last recorded Oct 22).");
+  const blockedToday = (n: number, blocking: ExplainedIssue[]) => detailOf({
+    trade: ledger(n, { latest_check_decision: "BLOCKED", latest_check_at: CHECKED, draft_check: "BLOCKED", latest_check_evaluation_id: uuid(800) }),
+    checks: [check("BLOCKED", CHECKED, 1, blocking)],
+  });
+  /** The page header: the next action, the visible secondary actions and the hint under the title. */
+  const headerOf = (html: string) => html.slice(html.indexOf("<header"), html.indexOf("</header>"));
+
+  it("names how many more reasons block the draft after the first one, in the header and the check history", async () => {
+    const html = await render(blockedDraft());
+    expect(visibleText(headerOf(html))).toContain("Blocked: Requested risk 1.25% exceeds your configured maximum of 0.75%. (+1 more)");
+    expect(visibleText(sectionOf(html, "plan"))).toMatch(/13:44 · rev 2\s*Blocked\s*Requested risk 1\.25% exceeds your configured maximum of 0\.75%\. \(\+1 more\)/);
+  });
+
+  it("leads with Recheck risk when only the next trading day clears the block, with Edit draft beside it", async () => {
+    const detail = blockedToday(20, [MAX_TRADES]);
+    const html = await render(detail);
+    const header = headerOf(html);
+    expect(primaryButtonLabels(header)).toEqual(["Recheck risk"]);
+    expect(header).toMatch(new RegExp(`<a class="[^"]*btn-secondary[^"]*" href="/trades/${detail.tradeId}/edit"`));
+    const sentence = "The daily trade limit is used up for today: recheck risk on the next trading day.";
+    expect(visibleText(header)).toContain(`Blocked: ${MAX_TRADES.detail} ${sentence}`);
+    expect(visibleText(sectionOf(html, "plan"))).toContain(`Locking opens once a check approves this revision. Editing the draft won't clear this reason. ${sentence}`);
+    expectClean(html);
+  });
+
+  it("leads with Confirm account values when only today's account values are missing", async () => {
+    const html = await render(blockedToday(21, [STALE_EQUITY]));
+    const header = headerOf(html);
+    expect(primaryButtonLabels(header)).toEqual(["Confirm account values"]);
+    expect(header).toMatch(new RegExp(`<a class="[^"]*btn-primary[^"]*" href="/accounts/${ACCOUNT}/manage\\?tab=account-values"`));
+    // 14:00 UTC−5 is Dead Pool, where any check blocks: the recheck after confirming waits for its end.
+    expect(visibleText(header)).toContain(`Blocked: ${STALE_EQUITY.detail} Confirm today's account values, then recheck risk once Dead Pool ends at 18:00 UTC−5.`);
+    expectClean(html);
+  });
+
+  it("leads with Recheck risk once today's account values have been confirmed since the check", async () => {
+    const usage = { slotsUsed: 0, maxDailyTrades: 2, riskUsed: "0", dailyRiskCap: null, dailyLossCap: null };
+    const detail = blockedToday(23, [STALE_EQUITY]);
+    const html = await render(detail, { ...EXTRAS, lockUsage: { ...usage, valuesDay: "2026-10-23" } });
+    const header = headerOf(html);
+    expect(primaryButtonLabels(header)).toEqual(["Recheck risk"]);
+    expect(header).not.toContain("tab=account-values");
+    const wait = "Today's account values have been confirmed since the check: recheck risk once Dead Pool ends at 18:00 UTC−5.";
+    expect(visibleText(header)).toContain(`Blocked: ${STALE_EQUITY.detail} ${wait}`);
+    expect(visibleText(sectionOf(html, "plan"))).toContain(`Locking opens once a check approves this revision. ${wait}`);
+    // Values still from an earlier day: confirming them stays the step.
+    expect(primaryButtonLabels(headerOf(await render(detail, { ...EXTRAS, lockUsage: { ...usage, valuesDay: "2026-10-22" } })))).toEqual(["Confirm account values"]);
+    expectClean(html);
+  });
+
+  it("names the risk that fits the daily risk cap instead of saying an edit won't help, and keeps Edit draft first", async () => {
+    // The engine's own report 1.2: cap 70 with 50 reserved leaves $20 for a $50 trade on 10,000 equity.
+    const context: RiskContext = {
+      ...previewContext, now: "2026-10-23T14:00:00Z", observationDay: "2026-10-23", plan: { ...previewContext.plan, dailyRiskCap: "70" },
+      usage: usageFixture({ day: "2026-10-23", plannedRisk: "50", plannedSlots: 1 }),
+    };
+    const report = evaluateRisk({ ...previewProposal, narrative: "Sweep, MSS, OB.", contractConfirmed: true, news: "CLEAR" }, context);
+    const base = blockedToday(22, explainReport(report).blocking);
+    const detail: TradeDetail = { ...base, technical: { ...base.technical, checks: [{ evaluationId: uuid(800), recordedAt: CHECKED, report }] } };
+    const html = await render(detail);
+    const plan = visibleText(sectionOf(html, "plan"));
+    expect(plan).toContain("Edit the draft to resolve the reason above, then check again. A risk of 0.20% or less fits the $20.00 of daily risk left.");
+    expect(plan).not.toContain("won't clear");
+    expect(primaryButtonLabels(headerOf(html))).toEqual(["Edit draft"]);
+    expectClean(html);
+  });
+
+  it("says when the account updated a draft's contract, as Edit Draft does", async () => {
+    const html = await render(readyDraft(), { ...EXTRAS, contractUpdated: { symbol: "EURUSD" } });
+    const plan = visibleText(sectionOf(html, "plan"));
+    expect(plan).toContain(
+      "The EURUSD contract was updated This draft still uses the earlier contract values, and checks and locking size the trade with them. Edit the draft to use the current values and confirm them again.",
+    );
+    expect(plan).toContain("Contract values: Confirmed before the contract update");
+    expect(plan.indexOf("contract was updated")).toBeLessThan(plan.indexOf("Risk check ·"));
+    const current = visibleText(sectionOf(await render(readyDraft()), "plan"));
+    expect(current).not.toContain("contract was updated");
+    expect(current).toContain("Contract values: Match my broker");
+    expectClean(html);
   });
 });
 
@@ -769,10 +865,27 @@ describe("trade workspace · locked and live", () => {
     };
     const html = await render(liveFirst({ initial_stop: "23500.1", initial_risk: "51.8" }), extras);
     const text = visibleText(sectionOf(html, "execution"));
-    expect(text).toContain("Stop 23500.1 Added 13:20");
+    expect(text).toContain("Initial stop 23500.1 Added 13:20");
     expect(text).toContain("Risk at stop €51.80 Risk amount you recorded · added 13:20");
     expect(text).toContain("Entry 23476.1 Entry time 13:05 Size");
     expect(text).toContain("Recorded 13:10, with the position already open. Details marked “Added” were completed later.");
+    expectClean(html);
+  });
+
+  it("states the stop a live-first position was moved to while live, with its initial stop, as Today's card does", async () => {
+    const trade = ledger(23, {
+      origin: "LIVE_FIRST", revision_count: 0, latest_revision: null, latest_proposal_id: null, symbol: "DE40", currency: "EUR", direction: "LONG", entry_model: "OB_FIRST_TOUCH",
+      instrument_version_id: uuid(950), planned_entry: null, planned_stop: null, planned_target: null, requested_risk_percent: null, planned_rr: null, planned_quantity: null,
+      planned_risk: null, lifecycle: "LIVE", draft_check: null, created_at: "2026-10-23T18:10:00Z", entered_at: "2026-10-23T18:05:00Z", entry_price: "23454.5", quantity: "1.85",
+      initial_stop: "23426.5", initial_risk: "51.8",
+    });
+    const instrument = { ...EURUSD, symbol: "DE40", currency: "EUR", tickSize: "0.1", pipSize: null, quantityUnit: "contracts", quantityStep: "0.01", minimumQuantity: "0.1" };
+    const html = await render(detailOf({
+      trade, instrument,
+      journal: [{ id: uuid(2301), kind: "STOP_CHANGE", body: "Stop under the new swing low.", details: { price: "23432.5" }, phase: "LIVE", recordedAt: "2026-10-23T18:30:00Z" }],
+    }));
+    expect(visibleText(sectionOf(html, "execution"))).toContain("Size 1.85 contracts Stop 23432.5 Moved 13:30 Initial stop 23426.5 Risk at stop €51.80");
+    expect(visibleText(sectionOf(html, "journal"))).toContain("Stop moved to 23432.5");
     expectClean(html);
   });
 
@@ -795,6 +908,33 @@ describe("trade workspace · locked and live", () => {
     expect(before.indexOf("Draft created")).toBeLessThan(before.indexOf("Risk check: Approved"));
     expect(before.lastIndexOf("Risk check: Approved")).toBeLessThan(before.indexOf("Plan locked"));
     expect(before.indexOf("Risk check: Approved")).not.toBe(before.lastIndexOf("Risk check: Approved"));
+  });
+
+  it("keeps the plan's own approval Before entry when the entry was recorded in the lock's minute", async () => {
+    // "Earlier" typed in the lock's minute stores the entry at the lock instant; the lock writes its evaluation ~600 ms later.
+    const proposalId = uuid(1601);
+    const lockedAt = "2026-10-23T07:52:00.192180Z";
+    const detail = detailOf({
+      trade: ledger(16, {
+        ...LOCKED_FIELDS, lifecycle: "LIVE", created_at: "2026-10-23T07:40:00.000000Z", locked_at: lockedAt, entered_at: lockedAt, entry_recorded_at: "2026-10-23T07:58:00.000000Z",
+        entry_price: "1.1", quantity: "0.25", initial_risk: "500", actual_initial_risk: "500", oversize: false, entry_time_known: true,
+      }),
+      revisions: [{ proposalId, revision: 1, createdAt: "2026-10-23T07:40:00.009777Z" }],
+      timelineChecks: [
+        { id: uuid(1602), recordedAt: "2026-10-23T07:40:00.000000Z", decision: "APPROVED", proposalId },
+        { id: uuid(1603), recordedAt: "2026-10-23T07:52:00.799140Z", decision: "APPROVED", proposalId },
+      ],
+      lockEvaluationId: uuid(1603),
+      checks: [check("APPROVED", "2026-10-23T07:40:00.000000Z", 1), check("APPROVED", "2026-10-23T07:52:00.799140Z", 1)],
+    });
+    const journal = sectionOf(await render(detail), "journal");
+    const before = bandText(journal, "Before entry");
+    expect(before.lastIndexOf("Risk check: Approved")).toBeLessThan(before.indexOf("Plan locked"));
+    expect(before.indexOf("Risk check: Approved")).not.toBe(before.lastIndexOf("Risk check: Approved"));
+    const live = bandText(journal, "While live");
+    expect(live).toContain("Trade opened");
+    expect(live).not.toContain("Risk check");
+    expect(visibleText(journal)).not.toContain("Recorded after execution began");
   });
 
   it("explains how to add a contract when the account has none for the symbol", async () => {
@@ -890,6 +1030,41 @@ describe("trade workspace · result and review", () => {
     expectClean(html);
   });
 
+  it("explains a plan skipped in an earlier version with the trader's V1 reason, and shows its V1 decisions", async () => {
+    const skippedInV1 = (reason: string | null) => detailOf({
+      trade: ledger(17, { lifecycle: "SKIPPED", draft_check: null, legacy_decision: "SKIPPED", migrated_from: "V1_PROPOSAL" }),
+      legacyDecisions: [{
+        id: uuid(1701), decision: "SKIPPED", eventType: "HUMAN_DECISION", reason, riskDecision: "BLOCKED", aiDecision: "NOT_EVALUATED", recordedAt: "2026-10-23T13:17:00Z",
+      }],
+    });
+    const html = await render(skippedInV1("Spread widened to 3 pips at the London open, so I passed on it."));
+    const text = visibleText(html);
+    expect(text).toContain("Skipped before entry · 08:17");
+    expect(text).toContain("“Spread widened to 3 pips at the London open, so I passed on it.” Recorded in an earlier version of Trading OS.");
+    expect(text).not.toContain("without a reason");
+    const before = bandText(sectionOf(html, "journal"), "Before entry");
+    expect(before).toContain("Decision: Skipped");
+    expect(before).toContain("Spread widened to 3 pips at the London open, so I passed on it.");
+    expectClean(html);
+    // Only a skip recorded without a reason says so.
+    expect(visibleText(await render(skippedInV1(null)))).toContain("Skipped before entry · 08:17 Recorded in an earlier version of Trading OS, without a reason.");
+  });
+
+  it("shows a V1 decision to take a blocked setup as Taken despite a block, with the trader's reason", async () => {
+    const html = await render(detailOf({
+      trade: ledger(18, { legacy_decision: "TAKEN", migrated_from: "V1_PROPOSAL", latest_check_decision: "BLOCKED", latest_check_at: "2026-10-23T12:05:00Z", draft_check: "BLOCKED" }),
+      checks: [check("BLOCKED", "2026-10-23T12:05:00Z", 1, [RISK_LIMIT])],
+      legacyDecisions: [{
+        id: uuid(1801), decision: "TAKEN", eventType: "MANUAL_OVERRIDE", reason: "Took it anyway: news was priced in.", riskDecision: "BLOCKED", aiDecision: "NOT_EVALUATED",
+        recordedAt: "2026-10-23T12:10:00Z",
+      }],
+    }));
+    const before = bandText(sectionOf(html, "journal"), "Before entry");
+    expect(before).toContain("Taken despite a block");
+    expect(before).toContain("Took it anyway: news was priced in.");
+    expectClean(html);
+  });
+
   it("keeps what was recorded after a skip out of Before entry, in the timeline, the gallery and the lessons", async () => {
     for (const stored of ["POST_TRADE", "PRE_ENTRY"] as const) {
       const html = await render(skippedWithHindsight(stored));
@@ -941,9 +1116,51 @@ describe("trade workspace · result and review", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Journal composer kinds (§3.6): stop moves, target changes and partial closes describe an open position only
+// ---------------------------------------------------------------------------------------------------------------------
+describe("trade workspace · journal kinds", () => {
+  const ALL_KINDS = ["Note", "Decision", "Stop", "Target", "Partial", "Lesson"];
+  /** The journal composer's kind chips, in order. */
+  const kindChips = (html: string) => [...sectionOf(html, "journal").matchAll(/<label class="chip-toggle"><input[^>]*name="kind"[^>]*\/>([^<]+)<\/label>/g)].map(match => match[1]);
+
+  it("offers Stop, Target and Partial while the position is live, and Note, Decision and Lesson in every other state", async () => {
+    // add_journal_entry refuses the three in any other phase (ENTRY_NOT_LIVE): a stop moved or a partial taken before the
+    // entry or after the close never happened to a position.
+    expect(kindChips(await render(plannedLive()))).toEqual(ALL_KINDS);
+    expect(kindChips(await render(liveFirst()))).toEqual(ALL_KINDS);
+    for (const detail of [blockedDraft(), uncheckedDraft(), locked(), closedPlanned(), reviewedLiveFirstWithoutRisk(), skipped(), discarded()]) {
+      expect(kindChips(await render(detail)), detail.state.lifecycle).toEqual(["Note", "Decision", "Lesson"]);
+    }
+  });
+
+  it("points a draft's stop and target to Edit draft, and tells a locked plan they are journaled once it is entered", async () => {
+    const draft = sectionOf(await render(blockedDraft()), "journal");
+    expect(visibleText(draft)).toContain("Entry type Note Decision Lesson The stop and target are part of the plan: change them with Edit draft.");
+    expect(draft).toMatch(new RegExp(`<a [^>]*href="/trades/${uuid(1)}/edit"[^>]*>Edit draft</a>`));
+    // The note describes the chips for assistive technology too.
+    expect(draft).toMatch(/<fieldset[^>]*aria-describedby="journal-composer-kinds-note"/);
+    const plan = sectionOf(await render(locked()), "journal");
+    expect(visibleText(plan)).toContain("Stop moves, target changes and partial closes can be journaled once the entry is recorded.");
+    expect(plan).not.toContain("/edit");
+    // Live: nothing to explain. Closed, skipped or discarded: no position is left to manage.
+    for (const detail of [plannedLive(), closedPlanned(), skipped(), discarded()]) {
+      expect(sectionOf(await render(detail), "journal"), detail.state.lifecycle).not.toContain("journal-composer-kinds-note");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Time display, technical details, metadata, not found
 // ---------------------------------------------------------------------------------------------------------------------
 describe("trade workspace · page", () => {
+  it("links the account chip to the account's dashboard, which makes an active account the context (§9.2)", async () => {
+    const chip = (html: string) => html.match(/<a [^>]*aria-label="Trading account FTMO 100K \(USD\)"[^>]*>/)?.[0] ?? "";
+    expect(chip(await render(locked()))).toContain(`href="/accounts/${ACCOUNT}?account=${ACCOUNT}"`);
+    // An archived account can never be the context: its chip leaves the context as it is.
+    const archived = chip(await render(detailOf({ trade: ledger(5, { ...LOCKED_FIELDS, lifecycle: "LOCKED" }), archived: true })));
+    expect(archived).toContain(`href="/accounts/${ACCOUNT}"`);
+  });
+
   it("formats times in the person's time display", async () => {
     m.timeDisplay = { mode: "utc" };
     const text = visibleText(await render(locked()));
@@ -1021,5 +1238,34 @@ describe("legacy plan page", () => {
     await expect(LegacyPlanPage({ params: Promise.resolve({ id: PLAN }) })).rejects.toThrow("Trade unavailable");
     m.schemaReady = false;
     await expect(LegacyPlanPage({ params: Promise.resolve({ id: PLAN }) })).rejects.toMatchObject({ digest: expect.stringContaining("/today") });
+  });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Close form (§3.6, §57; spec §60.17): the Result section passes the trade's facts, so the confirmation shows the result
+// first and partial closes the journal recorded give the exit.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("trade workspace · close form", () => {
+  it("asks for the exit of the rest after journaled partial closes, and promises only a result the confirmation shows", async () => {
+    // plannedLive() with 30% of its 0.5 lots closed at 1.10200 while live.
+    const scaledOut = detailOf({
+      trade: ledger(6, {
+        ...LOCKED_FIELDS, lifecycle: "LIVE", entered_at: "2026-10-23T08:05:00Z", entry_recorded_at: "2026-10-23T08:06:00Z", entry_price: "1.10002", quantity: "0.5",
+        initial_risk: "500", actual_initial_risk: "1005", oversize: true, entry_time_known: true,
+      }),
+      journal: [
+        { id: uuid(611), kind: "PARTIAL_CLOSE", body: "Took 30% at the first target.", details: { percent: "30", price: "1.102" }, phase: "LIVE", recordedAt: "2026-10-23T09:00:00Z" },
+      ],
+    });
+    const text = visibleText(await render(scaledOut));
+    expect(text).toContain("Partial closes in your journal 30% (0.15 lots) at 1.10200");
+    expect(text).toContain("Exit price of the remaining 70% (0.35 lots)");
+    expect(text).not.toContain("Average exit price (all partials)");
+    // Only a form that has the position's facts says the result is checked before the close is recorded.
+    expect(text).toContain("Recorded once, after you check the result: the close can't be changed later.");
+    const plain = visibleText(await render(plannedLive()));
+    expect(plain).toContain("Average exit price (all partials)");
+    expect(plain).toContain("Recorded once, after you check the result: the close can't be changed later.");
   });
 });

@@ -38,7 +38,8 @@ import {
  * - completeLiveEntry: tradeId, requestKey, instrumentId?, entryModel?, entryPrice?, enteredAt?, quantity?, initialStop?, riskAmount?
  * - closeLiveTrade: tradeId, exitPrice?, exitedAt? (ISO or "now"; now when empty), fees?, netPnl?
  * - setTags: tradeId, grade?, liquidity?, mss?, tags (repeated or comma-separated)
- * - completeReview: tradeId, requestKey? · reopenReview: tradeId, reason?, requestKey?
+ * - completeReview: tradeId, requestKey?, saveTags? (with the setTags fields: unsaved tags, saved first) · reopenReview:
+ *   tradeId, reason?, requestKey?
  * - removeEvidence: evidenceId, kind (V2|LEGACY) · relabelEvidence: evidenceId, label, timeframe?, caption?
  *
  * "now" (and an empty entry or exit time where it defaults to now) is resolved on the server, never from the browser
@@ -690,19 +691,26 @@ const tagsInput = z.object({
   tags: z.array(z.string().regex(TAG)).max(12).refine(tags => new Set(tags).size === tags.length),
 });
 
+/** The tag set of a form (`setTags` fields), normalised before the database validates it again. */
+function tagsOf(form: FormData) {
+  const tags = [...new Set(formList(form, "tags").flatMap(value => value.split(",")).map(tag => tag.trim().toLowerCase().replace(/\s+/g, " ")).filter(Boolean))];
+  return tagsInput.safeParse({
+    tradeId: formText(form, "tradeId"), grade: formOptional(form, "grade") ?? null, liquidity: formOptional(form, "liquidity") ?? null,
+    mss: formOptional(form, "mss") ?? null, tags,
+  });
+}
+
+function saveTags(db: Db, input: z.output<typeof tagsInput>) {
+  return db.rpc("set_trade_tags", { p_trade_id: input.tradeId, p_grade: input.grade, p_liquidity: input.liquidity, p_mss: input.mss, p_tags: input.tags });
+}
+
 export async function setTags(_prev: ActionState, form: FormData): Promise<ActionState> {
   try {
     const session = await writableSession();
     if (!session) return actionError(SCHEMA_OUTDATED_MESSAGE);
-    const tags = [...new Set(formList(form, "tags").flatMap(value => value.split(",")).map(tag => tag.trim().toLowerCase().replace(/\s+/g, " ")).filter(Boolean))];
-    const input = tagsInput.safeParse({
-      tradeId: formText(form, "tradeId"), grade: formOptional(form, "grade") ?? null, liquidity: formOptional(form, "liquidity") ?? null,
-      mss: formOptional(form, "mss") ?? null, tags,
-    });
+    const input = tagsOf(form);
     if (!input.success) return actionError(INVALID_COPY, fieldErrors(input.error, "tags"));
-    const { error } = await session.db.rpc("set_trade_tags", {
-      p_trade_id: input.data.tradeId, p_grade: input.data.grade, p_liquidity: input.data.liquidity, p_mss: input.data.mss, p_tags: input.data.tags,
-    });
+    const { error } = await saveTags(session.db, input.data);
     if (error) return rpcFailure(error);
     revalidateTrade(input.data.tradeId, ["/edge"]);
     return actionSuccess("Tags saved.");
@@ -711,16 +719,34 @@ export async function setTags(_prev: ActionState, form: FormData): Promise<Actio
   }
 }
 
+/**
+ * Marks a closed trade reviewed. With `saveTags`, the form also carries the tags form's unsaved changes (`setTags`
+ * fields): they are saved first, and the trade is marked reviewed only once they are, so Mark reviewed never leaves
+ * the tags the trader just chose behind. A retry saves no second tag set (`set_trade_tags` keeps an identical latest set).
+ */
 export async function completeReview(_prev: ActionState, form: FormData): Promise<ActionState> {
   try {
     const session = await writableSession();
     if (!session) return actionError(SCHEMA_OUTDATED_MESSAGE);
     const input = z.object({ tradeId: uuid, requestKey: uuid.optional() }).safeParse({ tradeId: formText(form, "tradeId"), requestKey: formOptional(form, "requestKey") });
     if (!input.success) return actionError(INVALID_COPY, fieldErrors(input.error, "tradeId"));
+    const tags = formFlag(form, "saveTags") ? tagsOf(form) : null;
+    if (tags && !tags.success) return actionError(INVALID_COPY, fieldErrors(tags.error, "tags"));
+    if (tags) {
+      const saved = await saveTags(session.db, tags.data);
+      if (saved.error) return rpcFailure(saved.error);
+    }
     const { error } = await session.db.rpc("complete_trade_review", { p_trade_id: input.data.tradeId, p_request_key: input.data.requestKey ?? null });
-    if (error) return rpcFailure(error);
-    revalidateTrade(input.data.tradeId);
-    return actionSuccess("Marked reviewed.");
+    if (error && !tags) return rpcFailure(error);
+    // Saved tags also change what the EDGE filters find.
+    revalidateTrade(input.data.tradeId, tags ? ["/edge"] : []);
+    if (error) {
+      // The tags are saved; only the review is missing.
+      const copy = rpcErrorCopy(error);
+      if (copy === FAILED_COPY) operationalFailure("database_write_failed");
+      return actionError(`Tags saved, but the trade wasn't marked reviewed. ${copy === FAILED_COPY ? "Please try again." : copy}`);
+    }
+    return actionSuccess(tags ? "Tags saved and marked reviewed." : "Marked reviewed.");
   } catch (error) {
     return unexpected(error);
   }

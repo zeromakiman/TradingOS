@@ -190,7 +190,8 @@ export function AccountStatusCard({ status }: { status: AccountStatusView }) {
         <div className="flex flex-col gap-3 p-4 md:p-5">
           <div className="flex items-start justify-between gap-x-4 gap-y-2">
             <div className="flex min-w-0 flex-col gap-1">
-              <h2 id={STATUS_HEADING_ID} className="text-xs font-medium text-2">
+              {/* The account's whole name, wrapped (even without spaces) instead of widening the card. */}
+              <h2 id={STATUS_HEADING_ID} className="text-xs font-medium break-words text-2">
                 {STATUS_TITLE} · {status.name}
               </h2>
               <Headline status={status} />

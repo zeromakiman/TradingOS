@@ -57,9 +57,10 @@ vi.mock("@/components/ui/dropdown-menu", async importOriginal => {
 });
 
 import {
-  ADDED_COLUMNS, ALL_ACCOUNTS_SCOPE, BYTE_ORDER_MARK, byExit, CSV_COLUMNS, closedTradesCsv, dailySequences, exportFilename, exportHref, LAST_CLOSED, LEGACY_COLUMNS,
+  ADDED_COLUMNS, ALL_ACCOUNTS_SCOPE, BYTE_ORDER_MARK, byExit, CSV_COLUMNS, closedTradesCsv, dailySequences, exportFilename, exportHref, LEGACY_COLUMNS,
   legacySession, legacyWeekday, parseExportRequest, TOO_MANY_TRADES,
 } from "@/app/edge/export/contract";
+import { LEGACY_LAST_CLOSED } from "@/components/edge/query";
 import { GET } from "@/app/edge/export/route";
 import { type EdgeData, loadEdge } from "@/components/edge/edge-data";
 import { EdgeScreen } from "@/components/edge/edge-screen";
@@ -545,7 +546,7 @@ describe("filters", () => {
     const august = Array.from({ length: 31 }, (_, index) => `2026-08-${String(index + 1).padStart(2, "0")}`);
     db.tables.trade_ledger.push(...august.map((day, index) => closed(100 + index, { entered_at: `${day}T12:00:00Z`, exited_at: `${day}T13:00:00Z`, net_pnl: "1" })));
     const { rows } = await download(`?account=${FTMO}&period=last30`);
-    expect(rows).toHaveLength(LAST_CLOSED);
+    expect(rows).toHaveLength(LEGACY_LAST_CLOSED);
     expect(rows[0].exited_at).toBe("2026-08-07T13:00:00Z");
     expect(rows.at(-1)?.exited_at).toBe(EXIT[10]);
   });

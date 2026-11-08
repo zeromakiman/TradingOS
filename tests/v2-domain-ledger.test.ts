@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LEDGER_COLUMNS, type LedgerTrade, ledgerRow, parseLedgerRows } from "@/domain/ledger";
+import { LEDGER_COLUMNS, type LedgerTrade, ledgerRow } from "@/domain/ledger";
 
 // Normative column list, copied from V2_ARCHITECTURE.md §3.12.
 const SPEC_COLUMNS = `id, account_id, origin, created_at, duplicated_from, migrated_from, currency,
@@ -87,7 +87,7 @@ describe("trade_ledger row contract (spec §3.12)", () => {
   ])("rejects %s", (_name, row) => expect(ledgerRow.safeParse(row).success).toBe(false));
 
   it("parses pages of rows", () => {
-    expect(parseLedgerRows([plannedRow, liveFirstRow]).map(row => row.origin)).toEqual(["PLANNED", "LIVE_FIRST"]);
-    expect(() => parseLedgerRows([{ ...plannedRow, id: "not-a-uuid" }])).toThrow();
+    expect([plannedRow, liveFirstRow].map(row => ledgerRow.parse(row).origin)).toEqual(["PLANNED", "LIVE_FIRST"]);
+    expect(() => [plannedRow, { ...plannedRow, id: "not-a-uuid" }].map(row => ledgerRow.parse(row))).toThrow();
   });
 });

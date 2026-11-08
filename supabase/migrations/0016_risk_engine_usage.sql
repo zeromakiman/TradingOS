@@ -492,13 +492,16 @@ end $$;
 
 -- ---------------------------------------------------------------------------------------------------------
 -- Every engine path evaluates with report 1.2, private.active_risk_plan and private.daily_usage. Signatures,
--- envelopes, errors, persistence and locking are unchanged (0003 assess_plan, 0015 check_proposal_risk).
+-- envelopes, errors, persistence and locking are unchanged (0003 assess_plan, 0015 check_proposal_risk), except that
+-- p_lock must be true or false: with NULL every lock branch below was skipped while the final test still fell through
+-- to the plan insert, a lock outside every caller's checks.
 -- ---------------------------------------------------------------------------------------------------------
 create or replace function private.assess_plan(p_account_id uuid,p_proposal jsonb,p_key uuid,p_expected_risk_id uuid,p_expected_observation_id uuid,p_lock boolean)
 returns jsonb language plpgsql security definer set search_path='' as $$
 declare a public.accounts; o public.account_observations; r public.risk_plan_versions; i public.instrument_versions; s public.strategy_versions;
   existing public.trade_plans; new_plan public.trade_plans; v_now timestamptz; v_usage jsonb; duplicate boolean; result jsonb; evaluation_id uuid;
 begin
+  if p_lock is null then raise exception 'INVALID_INPUT: p_lock must be true or false'; end if;
   if auth.uid() is null then raise exception 'Authentication required'; end if;
   if p_lock and p_key is null then raise exception 'Lock request key required'; end if;
   select * into a from public.accounts where id=p_account_id and user_id=auth.uid() for update;
@@ -542,6 +545,7 @@ declare v public.setup_proposals; r uuid; o uuid; result jsonb; linked uuid;
  a public.accounts; obs public.account_observations; rp public.risk_plan_versions; inst public.instrument_versions; s public.strategy_versions;
  now_at timestamptz; v_usage jsonb; duplicate boolean; report jsonb; rid uuid;
 begin
+ if p_lock is null then raise exception 'INVALID_INPUT: p_lock must be true or false'; end if;
  select * into v from public.setup_proposals where id=p_proposal_id and user_id=auth.uid();
  if not found then raise exception 'Proposal not found'; end if;
  perform 1 from public.accounts where id=v.account_id for update;

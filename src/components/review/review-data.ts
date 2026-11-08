@@ -10,7 +10,7 @@ import { ACCOUNT_TYPE_LABELS } from "@/domain/account-metrics";
 import { plural } from "@/domain/format";
 import { TRADE_ORIGINS, type TradeOrigin } from "@/domain/ledger";
 import { isInstant, strategyDay, strategyMonth, type TimeDisplay } from "@/domain/time-display";
-import { type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext, getPreferences } from "@/lib/account-context";
+import { ALL_ACCOUNTS_VALUE, type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext, getPreferences } from "@/lib/account-context";
 import { loadAiBudget } from "@/lib/ai-budget";
 import { journalHref, type TradeFilters } from "@/lib/trades-data";
 import { PERIODIC_SOURCES } from "./copy";
@@ -90,8 +90,9 @@ export interface FactsJournalLink {
   /** Accessible name, starting with the visible text: "Open in Journal: trades closed Oct 12–18". */
   description: string;
   /**
-   * All Accounts: the link selects the account as the context (§9.2). It is never prefetched, and ReviewContextScope
-   * loads it in full so the header follows.
+   * All Accounts, an active account: the link selects the account as the context (§9.2), and ReviewContextScope loads
+   * it in full so the header follows. An archived account can never be the context: its link keeps All Accounts and
+   * narrows the Journal with the read-only account filter instead. Links that carry `?account=` are never prefetched.
    */
   switchesContext: boolean;
 }
@@ -423,11 +424,19 @@ export function sampleFacts(counts: PeriodCounts, sample: number, journal: Perio
 
 const JOURNAL_LABEL = "Open in Journal";
 
-function journalLink(allAccounts: boolean, accountId: string, filters: TradeFilters, what: string): FactsJournalLink {
-  return {
-    href: journalHref(filters, allAccounts ? { account: accountId } : {}), label: JOURNAL_LABEL, description: `${JOURNAL_LABEL}: ${what}`,
-    switchesContext: allAccounts,
-  };
+/**
+ * The Journal, filtered to the trades a fact block counts. In an account context the link keeps it. In All Accounts an
+ * active account becomes the context explicitly (`?account=`), while an archived one, which can never be the context
+ * (§9.2), keeps All Accounts with the read-only account filter, as the archived account dashboard's links do.
+ */
+export function journalLink(allAccounts: boolean, account: Pick<ContextAccount, "id" | "status">, filters: TradeFilters, what: string): FactsJournalLink {
+  const description = `${JOURNAL_LABEL}: ${what}`;
+  if (!allAccounts) return { href: journalHref(filters), label: JOURNAL_LABEL, description, switchesContext: false };
+  if (account.status === "ARCHIVED") {
+    // The drill-down of src/lib/performance-data.ts `accountHistoryDrill`.
+    return { href: journalHref({ ...filters, accountFilter: account.id }, { account: ALL_ACCOUNTS_VALUE }), label: JOURNAL_LABEL, description, switchesContext: false };
+  }
+  return { href: journalHref(filters, { account: account.id }), label: JOURNAL_LABEL, description, switchesContext: true };
 }
 
 interface PeriodicInput {
@@ -461,7 +470,7 @@ async function weeklyControls({ db, userId, query, account, allAccounts, now }: 
     href: week => reviewHref("weekly", { week, reviewAccount }),
   });
   const period = weeklyPeriod(query.week);
-  const journal = journalLink(allAccounts, account.id, { closedFrom: period.startDate, closedTo: period.endDate }, `trades closed ${weekRange(query.week)}`);
+  const journal = journalLink(allAccounts, account, { closedFrom: period.startDate, closedTo: period.endDate }, `trades closed ${weekRange(query.week)}`);
   const facts = counts === null ? null : periodFacts(weekFactsPeriod(query.week, lastCompleted), countsFor(counts, query.week), journal);
   return { period: { kind: "picker", picker }, facts };
 }
@@ -482,7 +491,7 @@ async function monthlyControls({ db, userId, query, account, allAccounts, now }:
     href: month => reviewHref("monthly", { month, reviewAccount }),
   });
   const period = monthlyPeriod(query.month);
-  const journal = journalLink(allAccounts, account.id, { closedFrom: period.startDate, closedTo: period.endDate }, `trades closed in ${monthTitle(query.month)}`);
+  const journal = journalLink(allAccounts, account, { closedFrom: period.startDate, closedTo: period.endDate }, `trades closed in ${monthTitle(query.month)}`);
   const facts = counts === null ? null : periodFacts(monthFactsPeriod(query.month, lastCompleted), countsFor(counts, query.month), journal);
   return { period: { kind: "picker", picker }, facts };
 }
@@ -495,7 +504,7 @@ async function recentControls({ db, query, account, allAccounts, now }: Periodic
   const period: PeriodControl = { kind: "sample", label: "Sample", items };
   if (counts === null) return { period, facts: null };
   const [planned, liveFirst, imported] = counts;
-  const journal = journalLink(allAccounts, account.id, { states: ["CLOSED", "REVIEWED"] }, "closed trades");
+  const journal = journalLink(allAccounts, account, { states: ["CLOSED", "REVIEWED"] }, "closed trades");
   return { period, facts: sampleFacts({ planned, liveFirst, imported }, query.sample, journal) };
 }
 

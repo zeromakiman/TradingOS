@@ -29,6 +29,43 @@ export function storedPeriodicFacts(facts: unknown): PeriodicFacts | null {
   return { trades, netR: isRecord(facts.edge) ? netRText(facts.edge.netR) : null };
 }
 
+/**
+ * True while a request of this period (or sample) has no result yet. The database runs one review of a period at a time
+ * (one recent-trades analysis per account), so another request would only be refused.
+ */
+export function periodicRequestRunning(history: readonly { status: string }[]): boolean {
+  return history.some(row => row.status === "IN_PROGRESS");
+}
+
+/** Why the run button waits: "A review of the week of Oct 6–12 is still running. Its result will appear in the history." */
+export function periodicRunningReason(kind: "weekly" | "recent" | "monthly", runLabel: string): string {
+  const subject = kind === "recent" ? `An analysis of the ${runLabel}` : kind === "weekly" ? `A review of the ${runLabel}` : `A review of ${runLabel}`;
+  return `${subject} is still running. Its result will appear in the history.`;
+}
+
+/**
+ * Why the Recent trades button waits while the account's analysis of another sample runs: the database runs one
+ * recent-trades analysis per account, whatever its sample, and the result appears in that sample's history.
+ */
+export function recentRunningElsewhereReason(sample: number): string {
+  return `An analysis of the last ${sample} trades is still running, and an account runs one recent-trades analysis at a time. Its result will appear under ${sample} trades.`;
+}
+
+/**
+ * Why the run button waits, or undefined when nothing of this period is running: a running request in the period's own
+ * history, or (Recent trades, whose lock covers the account) the account's running analysis of any sample.
+ */
+export function periodicRunningBlock(
+  kind: "weekly" | "recent" | "monthly",
+  runLabel: string,
+  history: readonly { status: string }[],
+  running: { sample: number; selected: number } | null = null,
+): string | undefined {
+  if (periodicRequestRunning(history)) return periodicRunningReason(kind, runLabel);
+  if (kind !== "recent" || running === null) return undefined;
+  return running.sample === running.selected ? periodicRunningReason(kind, runLabel) : recentRunningElsewhereReason(running.sample);
+}
+
 /** "From Trading OS" strip: `Sample 8 trades · Net R +3.40R` with the small-sample caveat (§13.8). */
 export function periodicFactModels(facts: PeriodicFacts): { facts: AiFactModel[]; note: string } {
   const list: AiFactModel[] = [{ label: "Sample", value: plural(facts.trades, "trade") }];

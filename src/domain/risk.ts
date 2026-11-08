@@ -24,7 +24,6 @@ import { isCalendarDay } from "./time-display";
 
 const V1 = Decimal.clone({ precision: 40, rounding: Decimal.ROUND_DOWN });
 export const decimalString = z.string().refine(v => /^\d{1,12}(\.\d{1,8})?$/.test(v) && new V1(v).gt(0), "Use a positive decimal, up to 8 decimal places.");
-export const moneyString = z.string().refine(v => /^\d{1,12}(\.\d{1,2})?$/.test(v) && new V1(v).gt(0), "Use a positive monetary amount with up to two decimal places.");
 export const proposalSchema = z.object({
   instrumentId: z.string().uuid(), direction: z.enum(["LONG", "SHORT"]), model: z.enum(["OB_FIRST_TOUCH", "OTE"]),
   entry: decimalString, stop: decimalString.nullable(), target: decimalString,

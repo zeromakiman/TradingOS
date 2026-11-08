@@ -96,7 +96,8 @@ async function legacyEvidenceRow(a: BootstrappedAccount, tradeId: string, seed: 
 
 async function legacyScreenshot(a: BootstrappedAccount, proposalId: string, seed: string): Promise<string> {
   const id = randomUUID();
-  await db.actor(OWNER, "service_role");
+  // A V1 registration: V2 keeps no service-role insert grant on setup_screenshots (0019), so the superuser stands in.
+  await db.admin();
   await db.query(`insert into public.setup_screenshots(id, user_id, account_id, proposal_id, role, storage_path, original_filename, mime_type, byte_size, sha256, width, height)
                   values ($1, $2, $3, $4, 'M15', $5, 'm15.png', 'image/png', 1024, $6, 32, 32)`,
     [id, OWNER, a.accountId, proposalId, `${OWNER}/${proposalId}/${id}`, sha(seed)]);

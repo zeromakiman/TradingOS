@@ -18,7 +18,7 @@ import { AccountMenuItems } from "@/components/shell/account-selector";
 import { accountFields, callShellAction, persistChoice, switchAccountContext, themeFields, timeDisplayFields } from "@/components/shell/actions";
 import { AppShell, type AppShellProps } from "@/components/shell/app-shell";
 import { CommandPaletteBody } from "@/components/shell/command-palette";
-import { fuzzyScore, rankByQuery } from "@/components/shell/fuzzy";
+import { fuzzyScore, scoreByQuery } from "@/components/shell/fuzzy";
 import { MobileTabBar } from "@/components/shell/mobile-tab-bar";
 import { activeNavKey, contextLabel, newTradeAction, withAccountParam } from "@/components/shell/navigation";
 import { clearPaletteHistory, readPaletteHistory, recentItemIds, rememberPaletteItem } from "@/components/shell/palette-history";
@@ -328,6 +328,23 @@ describe("Context actions", () => {
     expect(pushed).toEqual([href, href]);
   });
 
+  it("on a page whose URL names a context, stores the switch first, then follows the ?account= link", async () => {
+    // Following first would let the next page (a header link, a reload) render the old stored context for a moment.
+    const log: string[] = [];
+    const href = `/journal?model=OTE&account=${accounts[1].id}`;
+    const storing: ShellAction = async () => {
+      log.push("action");
+      return { status: "success" };
+    };
+    const options = { followLink: true, stored: (value: string) => log.push(`stored ${value}`) };
+    await switchAccountContext(storing, accounts[1].id, href, (target) => log.push(`navigate ${target}`), options);
+    expect(log).toEqual(["action", `stored ${accounts[1].id}`, `navigate ${href}`]);
+    // A refused switch is not reported as stored; the link is still followed, and the page explains the refusal.
+    log.length = 0;
+    await switchAccountContext(async () => ({ status: "error", message: "That trading account isn't available." }), accounts[1].id, href, (target) => log.push(`navigate ${target}`), options);
+    expect(log).toEqual([`navigate ${href}`]);
+  });
+
   it("leaves a redirect (for example to sign in again) to Next.js instead of treating it as a failure", async () => {
     const error = redirectError();
     const redirecting: ShellAction = () => Promise.reject(error);
@@ -490,8 +507,8 @@ describe("fuzzy matching", () => {
     expect(fuzzyScore("", "anything")).toBe(0);
     expect(fuzzyScore("Revue", "Review")).toBeNull();
     expect(fuzzyScore("cafe", "Café notes")).not.toBeNull();
-    const ranked = rankByQuery(["Weekly review", "Review", "Recent trades review"], "rev", (text) => text);
-    expect(ranked[0]).toBe("Review");
+    const ranked = scoreByQuery(["Weekly review", "Review", "Recent trades review"], "rev", (text) => text);
+    expect(ranked[0].item).toBe("Review");
   });
 });
 

@@ -13,6 +13,11 @@ const m = vi.hoisted(() => ({
   context: vi.fn(),
   push: vi.fn(),
   refresh: vi.fn(),
+  // The loaders' reads (accounts-data's own logic runs for real in "Accounts loaders").
+  ledgerRows: vi.fn(),
+  workspace: vi.fn(),
+  ledgerPage: vi.fn(),
+  decorate: vi.fn(),
   pathname: "/accounts/new",
   actions: {
     createTradingAccount: vi.fn(), updateProfile: vi.fn(), archiveAccount: vi.fn(), restoreAccount: vi.fn(), createInstrument: vi.fn(), recordAccountValues: vi.fn(),
@@ -43,18 +48,25 @@ vi.mock("@/lib/accounts-data", async importOriginal => ({
   getAccountManage: m.manage,
 }));
 vi.mock("@/components/accounts/connection-data", () => ({ loadConnectionDetails: m.connection }));
+vi.mock("@/lib/performance-data", async importOriginal => ({ ...(await importOriginal<typeof import("@/lib/performance-data")>()), loadLedgerRows: m.ledgerRows }));
+vi.mock("@/lib/workspace", async importOriginal => ({ ...(await importOriginal<typeof import("@/lib/workspace")>()), loadAccountWorkspace: m.workspace }));
+vi.mock("@/lib/trades-data", async importOriginal => ({
+  ...(await importOriginal<typeof import("@/lib/trades-data")>()),
+  loadLedgerPage: m.ledgerPage,
+  decorateTrades: m.decorate,
+}));
 
 import AccountDashboardPage, { generateMetadata as dashboardMetadata } from "@/app/(app)/accounts/[id]/page";
 import ManageAccountPage from "@/app/(app)/accounts/[id]/manage/page";
 import NewAccountPage from "@/app/(app)/accounts/new/page";
 import AccountsPage from "@/app/(app)/accounts/page";
 import { AccountDashboardView, dashboardHref, parseCalendarMode, recordedOn } from "@/components/accounts/account-dashboard";
-import { AccountsOverviewView, connectionLabel } from "@/components/accounts/accounts-overview";
+import { AccountsOverviewView, combinedR, connectionLabel } from "@/components/accounts/accounts-overview";
 import type { ConnectionDetails } from "@/components/accounts/connection-data";
 import { contextSwitchTarget } from "@/components/accounts/context-switch-scope";
 import {
-  ACTIVE_ACCOUNTS_HEADING, ARCHIVE_COPY, ARCHIVED_DASHBOARD_COPY, ARCHIVED_VALUES_COPY, CONFIRM_UNCHANGED, EXTERNAL_LOSS_HELPER, EXTERNAL_LOSSES_TITLE,
-  IMMEDIATE_OPTION_COPY, manageHref, MANUAL_CONNECTION_COPY, parseManageTab, R_UNITS_NOTE, tickValueNote, UPDATE_VALUES, VERSIONING_COPY,
+  ACTIVE_ACCOUNTS_HEADING, ARCHIVE_COPY, ARCHIVED_DASHBOARD_COPY, ARCHIVED_VALUES_COPY, accountDashboardHref, CONFIRM_UNCHANGED, EXTERNAL_LOSS_HELPER,
+  EXTERNAL_LOSSES_TITLE, IMMEDIATE_OPTION_COPY, manageHref, MANUAL_CONNECTION_COPY, parseManageTab, R_UNITS_NOTE, tickValueNote, UPDATE_VALUES, VERSIONING_COPY,
 } from "@/components/accounts/copy";
 import { CreateAccountForm, DEFAULT_PLAN_NOTE } from "@/components/accounts/create-account-form";
 import { focusElement, restoreFocusAfterDialog, restoreFocusWhenGone } from "@/components/accounts/focus";
@@ -62,17 +74,20 @@ import { type InstrumentDraft, InstrumentForm, instrumentDraftKey } from "@/comp
 import { ManageView, type ManageViewProps } from "@/components/accounts/manage-view";
 import { checkField, checkForm, type FieldRule } from "@/components/accounts/form-checks";
 import { fieldError } from "@/components/accounts/use-account-action";
-import { accountCurrencyTotals, accountMetrics, BALANCE_FROM_TRADES_LABEL } from "@/domain/account-metrics";
+import { prefetchFor } from "@/components/ui/links";
+import { accountCurrencyTotals, accountMetrics, BALANCE_FROM_TRADES_LABEL, UNKNOWN_REASONS } from "@/domain/account-metrics";
 import { dailyStatusV2 } from "@/domain/daily-status";
+import { formatR } from "@/domain/format";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
 import { breakdown, dailySeries, drawdownSeries, equityCurveR, isClosed } from "@/domain/performance";
 import type { DailyUsage, Instrument } from "@/domain/risk";
 import { deriveTradeState } from "@/domain/trade-state";
 import { type ContextAccount, resolveAccountContext } from "@/lib/account-context";
 import {
-  type AccountDashboard, type AccountManage, type AccountsOverview, type AccountSummary, balanceCurve, minimumRrWarning, riskPlanTimeline,
+  type AccountDashboard, type AccountManage, type AccountsOverview, type AccountSummary, balanceCurve, loadAccountDashboard, loadAccountsOverview, minimumRrWarning,
+  riskPlanTimeline,
 } from "@/lib/accounts-data";
-import { breakdownHref, closedOnHref, linkedCalendar } from "@/lib/performance-data";
+import { breakdownHref, closedOnHref, linkedCalendar, MAX_LEDGER_ROWS } from "@/lib/performance-data";
 import type { AccountConnectionState, ExternalExecution, PlatformConnection, PlatformOption } from "@/lib/sync-service";
 import { journalHref, type TradeListRow } from "@/lib/trades-data";
 import type { AccountWorkspace, WorkspaceObservation, WorkspaceRiskPlan } from "@/lib/workspace";
@@ -140,18 +155,22 @@ function observation(tradingDay: string, balance = "101000", equity = "100950"):
   return { id: "d1000000-0000-4000-8000-000000000001", balance, equity, grossLossToday: null, tradingDay, recordedAt: `${tradingDay}T13:00:00Z` };
 }
 
-function metricsFor(target: ContextAccount, trades: LedgerTrade[], latest: WorkspaceObservation | null) {
+/** `complete: false`: the account's read stopped at the row limit (its trade figures are unknown). */
+function metricsFor(target: ContextAccount, trades: LedgerTrade[], latest: WorkspaceObservation | null, complete = true) {
   return accountMetrics({
     account: { id: target.id, currency: target.currency },
     profile: { displayName: target.name, broker: target.broker, platform: target.platform, accountType: target.type, startingBalance: target.startingBalance, status: target.status },
     latestObservation: latest ? { balance: latest.balance, equity: latest.equity, tradingDay: latest.tradingDay, recordedAt: latest.recordedAt } : null,
     trades,
+    tradesComplete: complete,
     now: NOW,
   });
 }
 
-function summary(target: ContextAccount, trades: LedgerTrade[], latest: WorkspaceObservation | null): AccountSummary {
-  return { account: target, metrics: metricsFor(target, trades, latest), connection: MANUAL, href: `/accounts/${target.id}`, manageHref: `/accounts/${target.id}/manage` };
+function summary(target: ContextAccount, trades: LedgerTrade[], latest: WorkspaceObservation | null, complete = true): AccountSummary {
+  return {
+    account: target, metrics: metricsFor(target, trades, latest, complete), connection: MANUAL, href: accountDashboardHref(target), manageHref: `/accounts/${target.id}/manage`,
+  };
 }
 
 const ftmo = account(FTMO);
@@ -318,7 +337,10 @@ const execution = (n: number, overrides: Partial<ExternalExecution> = {}): Exter
 });
 
 beforeEach(() => {
-  for (const fn of [m.overview, m.dashboard, m.manage, m.connection, m.context, m.push, m.refresh, ...Object.values(m.actions), ...Object.values(m.connectionActions)]) fn.mockReset();
+  for (const fn of [
+    m.overview, m.dashboard, m.manage, m.connection, m.context, m.push, m.refresh, m.ledgerRows, m.workspace, m.ledgerPage, m.decorate, ...Object.values(m.actions),
+    ...Object.values(m.connectionActions),
+  ]) fn.mockReset();
   m.context.mockResolvedValue(resolveAccountContext({ accounts: [ftmo, demo, personal, archived], stored: "all", lastAccount: null, proxyNotice: false }));
   m.pathname = "/accounts/new";
 });
@@ -343,7 +365,42 @@ describe("Accounts workspace", () => {
     expect(text).toContain("+$1,000.00");
     expect(text).toContain("+2.00R");
     expect(text).toContain("1 live");
-    expect(markup).toContain(`href="/accounts/${FTMO}"`);
+    expect(markup).toContain(`href="/accounts/${FTMO}?account=${FTMO}"`);
+  });
+
+  it("opens an active account's dashboard as the context (never prefetched, loaded in full when it switches); an archived one keeps the context", () => {
+    const markup = render(createElement(AccountsOverviewView, { overview: overviewFixture(), display: STRATEGY }));
+    const links = [...markup.matchAll(/<a [^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/g)].map(match => [decode(match[2]), decode(match[1])]);
+    // Desktop rows and phone cards.
+    for (const target of [ftmo, demo, personal]) expect(links.filter(([name]) => name === target.name).map(([, href]) => href)).toEqual(Array(2).fill(`/accounts/${target.id}?account=${target.id}`));
+    expect(links.filter(([name]) => name === "Old challenge").map(([, href]) => href)).toEqual([`/accounts/${OLD}`, `/accounts/${OLD}`]);
+    expect(accountDashboardHref({ id: DEMO, status: "ACTIVE" })).toBe(`/accounts/${DEMO}?account=${DEMO}`);
+    expect(accountDashboardHref({ id: OLD, status: "ARCHIVED" })).toBe(`/accounts/${OLD}`);
+    expect(prefetchFor(accountDashboardHref(demo), undefined)).toBe(false);
+    // From All Accounts (this overview's context) the click loads the dashboard in full, so the header names the account.
+    expect(contextSwitchTarget(accountDashboardHref(demo), "all", "http://127.0.0.1:3000/accounts")).toBe(`http://127.0.0.1:3000/accounts/${DEMO}?account=${DEMO}`);
+    expect(contextSwitchTarget(accountDashboardHref(demo), DEMO, "http://127.0.0.1:3000/accounts")).toBeNull();
+  });
+
+  it("shows “—” with the reason for an account whose trades could not all be read, and in every total that would include it (never a partial sum)", () => {
+    const active = [summary(ftmo, overviewTrades, observation(TODAY), false), summary(demo, overviewTrades, observation("2026-10-16", "100400", "100380")), summary(personal, overviewTrades, null)];
+    const overview: AccountsOverview = { ...overviewFixture([ftmo, demo, personal]), active, archived: [], totals: accountCurrencyTotals(active.map(item => item.metrics)) };
+    const markup = render(createElement(AccountsOverviewView, { overview, display: STRATEGY }));
+    const text = visibleText(markup);
+    expectClean(markup);
+    expect(text).toContain("Some results are not added up");
+    expect(text).toContain(`FTMO 100K has more than ${MAX_LEDGER_ROWS.toLocaleString("en-US")} trades, more than this page can add up.`);
+    // FTMO's Today, This month, Cumulative R and Trades, in its table row and its phone card.
+    expect(count(markup, `aria-label="Not known. ${UNKNOWN_REASONS.tooManyTrades}"`)).toBe(8);
+    // Total USD's Today and This month and the combined R, in the table footer and the phone totals card.
+    expect(count(markup, `aria-label="Not known. ${UNKNOWN_REASONS.tooManyTradesTotal}"`)).toBe(6);
+    // FTMO's +$1,000.00 today (part of its trades) appears nowhere, alone or in a total; what was recorded, and Demo, stay.
+    expect(text).not.toContain("+$1,000.00");
+    expect(text).toContain("$101,000.00");
+    expect(text).toContain("+$400.00");
+    expect(combinedR(active.map(item => item.metrics))).toEqual({ netR: { value: null, unknownReason: UNKNOWN_REASONS.tooManyTradesTotal }, excluded: 0 });
+    // Without such an account there is no notice.
+    expect(visibleText(render(createElement(AccountsOverviewView, { overview: overviewFixture(), display: STRATEGY })))).not.toContain("Some results are not added up");
   });
 
   it("totals money only within a currency shared by several accounts and adds R across accounts with its label", () => {
@@ -505,7 +562,7 @@ describe("Account dashboard", () => {
     expect(noInstruments).toContain(`href="${manageHref(FTMO, "instruments")}"`);
   });
 
-  it("replaces empty charts with one explanation and the two ways to start while no trade is closed", () => {
+  it("replaces empty charts with one explanation while no trade is closed, and offers Plan Trade and Record Live Trade once", () => {
     const empty: AccountDashboard = {
       ...dashboardFixture(), metrics: metricsFor(ftmo, [], observation(TODAY)), balanceCurve: balanceCurve("100000", []), curve: equityCurveR([]), drawdown: [], daily: [],
       recentTrades: [], liveTrades: [], breakdowns: { model: [], session: [] },
@@ -515,11 +572,18 @@ describe("Account dashboard", () => {
     expectClean(markup);
     expect(text).toContain("No closed trades on this account yet.");
     for (const title of ["Cumulative R", "R drawdown", "Daily P&L", "When am I winning or losing?", "Recent trades", "Results"]) expect(text).not.toContain(title);
-    expect(markup).toContain(`href="/trades/new?account=${FTMO}"`);
-    expect(markup).toContain(`href="/trades/live/new?account=${FTMO}"`);
+    // The header's pair plans on this account; the explanation does not repeat it.
+    expect(count(markup, `href="/trades/new?account=${FTMO}"`)).toBe(1);
+    expect(count(markup, `href="/trades/live/new?account=${FTMO}"`)).toBe(1);
+    expect(count(text, "Plan Trade")).toBe(1);
+    expect(count(text, "Record Live Trade")).toBe(1);
+    const explanation = /<section[^>]*aria-labelledby="no-results"[\s\S]*?<\/section>/.exec(markup)?.[0] ?? "";
+    expect(visibleText(explanation)).toContain("appear after the first trade is closed");
+    expect(explanation).not.toContain("<a ");
     // An archived account offers no new trade.
     const archivedEmpty = view({ ...empty, account: { ...ftmo, status: "ARCHIVED" } });
-    expect(archivedEmpty).not.toContain("/trades/new?account=");
+    expect(archivedEmpty).not.toContain("/trades/new");
+    expect(archivedEmpty).not.toContain("/trades/live/new");
   });
 
   it("never estimates balance from trades without a starting balance", () => {
@@ -629,12 +693,314 @@ describe("Account dashboard", () => {
     expect(await dashboardMetadata({ params: Promise.resolve({ id: FTMO.toUpperCase() }) })).toEqual({ title: "FTMO 100K · Accounts · Trading OS" });
     expect(await dashboardMetadata({ params: Promise.resolve({ id: "unknown" }) })).toEqual({ title: "Account · Trading OS" });
   });
+
+  it("plans and records live trades on the account on screen, whatever the header's context (§9.2, 60.11)", () => {
+    const header = (markup: string) => /<header[\s\S]*?<\/header>/.exec(markup)?.[0] ?? "";
+    for (const currentContext of ["all", DEMO]) {
+      const markup = header(render(createElement(AccountDashboardView, { dashboard: dashboardFixture(), display: STRATEGY, month: "2026-10", mode: "NET_R", currentContext })));
+      // Named as in the top bar and the forms they open.
+      expect(visibleText(markup)).toContain("Plan Trade Record Live Trade Journal Manage");
+      expect(markup).toContain(`href="/trades/new?account=${FTMO}"`);
+      expect(markup).toContain(`href="/trades/live/new?account=${FTMO}"`);
+      expect(markup).toContain('aria-label="Plan Trade on FTMO 100K"');
+      expect(markup).toContain('aria-label="Record Live Trade on FTMO 100K"');
+    }
+    // From another context, following them loads the form in full with this account as the context.
+    expect(contextSwitchTarget(`/trades/new?account=${FTMO}`, DEMO, `http://127.0.0.1:3000/accounts/${FTMO}`)).toBe(`http://127.0.0.1:3000/trades/new?account=${FTMO}`);
+    // An archived account takes no new trades.
+    const archivedHeader = header(view(dashboardFixture({ target: { ...ftmo, status: "ARCHIVED" } })));
+    expect(archivedHeader).not.toContain("/trades/new");
+    expect(archivedHeader).not.toContain("/trades/live/new");
+  });
+
+  it("says how many trades of a group, day or calendar day have no recorded risk next to their R (§9.3)", () => {
+    const trades = [
+      closedTrade(FTMO, "2026-10-20T15:00:00Z", "-1", "-500"),
+      // Live-first, no risk recorded: in the day's and the group's P&L and counts, not in their R.
+      closedTrade(FTMO, "2026-10-20T16:00:00Z", null, "-30", { origin: "LIVE_FIRST", plan_id: null, locked_at: null, requested_risk_percent: null }),
+      closedTrade(FTMO, "2026-10-22T15:00:00Z", "2", "1000", { entry_model: "OB_FIRST_TOUCH" }),
+    ];
+    const drill = { base: {}, account: FTMO };
+    const names = { [FTMO]: ftmo.name };
+    const dashboard: AccountDashboard = {
+      ...dashboardFixture(), metrics: metricsFor(ftmo, trades, observation(TODAY)), balanceCurve: balanceCurve("100000", trades), curve: equityCurveR(trades),
+      drawdown: drawdownSeries(trades), daily: dailySeries(trades).map(point => ({ ...point, href: closedOnHref(point.day, drill) })),
+      calendar: linkedCalendar(trades, "2026-10", "NET_R", drill),
+      breakdowns: {
+        model: breakdown(trades, "model", { accountNames: names }).map(group => ({ ...group, href: breakdownHref(group, drill) })),
+        session: breakdown(trades, "session", { accountNames: names }).map(group => ({ ...group, href: breakdownHref(group, drill) })),
+      },
+    };
+    const text = visibleText(view(dashboard));
+    // Groups: N and the evidence label count the trades with a recorded risk; the others are counted next to them.
+    expect(text).toContain("OTE N = 1 · 1 without risk · Insufficient evidence");
+    expect(text).toContain("OB first touch N = 1 · Insufficient evidence");
+    expect(text).toContain("3 closed trades · N counts trades with recorded risk");
+    expect(text).not.toMatch(/\d+ trades? · insufficient evidence/i);
+    // Daily P&L: the bar is both trades' P&L, its R covers one of them.
+    expect(text).toContain(`2 trades · ${formatR("-1")} (1 of 2 with risk)`);
+    expect(text).toContain(`1 trade · ${formatR("2")}`);
+    // Calendar (table view): the day's net R and how many of its closed trades have no risk.
+    expect(text).toContain("2 closed trades · 1 without risk");
+  });
+
+  it("adds up every trade of the account or none: “—” with the reason and no result or chart from part of its trades", () => {
+    const drill = { base: {}, account: FTMO };
+    const dashboard: AccountDashboard = {
+      ...dashboardFixture(), truncated: true, metrics: metricsFor(ftmo, dashboardTrades, observation(TODAY), false), balanceCurve: balanceCurve("100000", []),
+      curve: equityCurveR([]), drawdown: drawdownSeries([]), daily: [], calendar: linkedCalendar([], "2026-10", "NET_R", drill), breakdowns: { model: [], session: [] },
+    };
+    const markup = view(dashboard);
+    const text = visibleText(markup);
+    expectClean(markup);
+    expect(text).toContain("More trades than this page can add up.");
+    expect(text).toContain(`This account has more than ${MAX_LEDGER_ROWS.toLocaleString("en-US")} live and closed trades.`);
+    for (const title of ["Results", "Performance", "Cumulative R", "R drawdown", "Daily P&L", "When am I winning or losing?", "Model and session", "No closed trades on this account yet."]) {
+      expect(text).not.toContain(title);
+    }
+    expect(text).not.toContain("first 20,000");
+    // Realized P&L and Balance from trades: "—" with the reason; what the trader recorded stays.
+    expect(count(markup, `aria-label="Not known. ${UNKNOWN_REASONS.tooManyTrades}"`)).toBe(2);
+    expect(text).not.toContain("+$1,130.00");
+    expect(text).toContain("Recorded balance $101,000.00");
+    // Recent and live trades are separate reads and stay; EDGE and the Journal show the trades for a date range.
+    expect(text).toContain("Recent trades");
+    expect(text).toContain("GBPUSD · Short");
+    const links = hrefs(markup);
+    expect(links).toContain(`/edge?account=${FTMO}`);
+    expect(links).toContain(journalHref({}, { account: FTMO }));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Loaders (§9.4): every trade of an account, or none of its trade figures.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("Accounts loaders", () => {
+  /** PostgREST double: every query of a table answers its rows (the reads the tests care about are mocked above). */
+  function fakeDb(tables: Record<string, unknown[]> = {}) {
+    const query = (table: string) => {
+      const chain: Record<string, unknown> = {};
+      for (const method of ["select", "eq", "in", "gt", "not", "is", "order", "limit"]) chain[method] = () => chain;
+      // biome-ignore lint/suspicious/noThenProperty: models the thenable PostgREST query builder of supabase-js.
+      chain.then = (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) => Promise.resolve({ data: tables[table] ?? [], error: null }).then(resolve, reject);
+      return chain;
+    };
+    return { from: query } as never;
+  }
+  /**
+   * PostgREST double of the ledger reads, for the real loadLedgerRows: the account and lifecycle filters, the id keyset
+   * and the page size it asks for, rows in id order. Every other table answers no rows.
+   */
+  function ledgerDb(rows: readonly LedgerTrade[]) {
+    const sorted = [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const query = (table: string) => {
+      const keep: ((row: LedgerTrade) => boolean)[] = [];
+      let limit = Number.POSITIVE_INFINITY;
+      const filter = (test: (row: LedgerTrade) => boolean) => {
+        keep.push(test);
+        return chain;
+      };
+      const chain: Record<string, unknown> = {
+        select: () => chain,
+        eq: (column: keyof LedgerTrade, value: unknown) => filter(row => row[column] === value),
+        in: (column: keyof LedgerTrade, values: readonly unknown[]) => filter(row => values.includes(row[column])),
+        gt: (column: keyof LedgerTrade, value: string) => filter(row => String(row[column]) > value),
+        order: () => chain,
+        limit: (count: number) => {
+          limit = count;
+          return chain;
+        },
+      };
+      // biome-ignore lint/suspicious/noThenProperty: models the thenable PostgREST query builder of supabase-js.
+      chain.then = (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) => {
+        const data = table === "trade_ledger" ? sorted.filter(row => keep.every(test => test(row))).slice(0, limit) : [];
+        return Promise.resolve({ data, error: null }).then(resolve, reject);
+      };
+      return chain;
+    };
+    return { from: query } as never;
+  }
+  const lifecycles = ["LIVE", "CLOSED", "REVIEWED"];
+  /** One row more than the ledger read limit may be asked for: exactly MAX_LEDGER_ROWS trades are read in full. */
+  const ledgerOptions = { lifecycles, maxRows: MAX_LEDGER_ROWS + 1 };
+  const ofAccount = (accountId: string) => overviewTrades.filter(trade => trade.account_id === accountId);
+  /** `count` closed trades of +1 each, ids ascending from `prefix`. */
+  const bulkClosed = (accountId: string, prefix: string, count: number) =>
+    Array.from({ length: count }, (_, index) => closedTrade(accountId, "2026-10-21T15:00:00Z", "1", "1", { id: `${prefix}${index.toString(16).padStart(7, "0")}-0000-4000-8000-000000000000` }));
+
+  it("reads each account's trades on their own: one with more than a read holds has its figures and the totals with it unknown, the others stay known", async () => {
+    m.ledgerRows.mockImplementation(async (_db: unknown, _user: string, scope: { mode: string; accountId?: string }) =>
+      // A shared read would stop somewhere among every account's trades; FTMO alone has more than one read holds.
+      scope.mode !== "account" ? { rows: overviewTrades.slice(0, 2), truncated: true }
+        : scope.accountId === FTMO ? { rows: ofAccount(FTMO).slice(0, 1), truncated: true }
+        : { rows: ofAccount(scope.accountId ?? ""), truncated: false },
+    );
+    const context = resolveAccountContext({ accounts: [ftmo, demo, personal, archived], stored: "all", lastAccount: null, proxyNotice: false });
+    const overview = await loadAccountsOverview(fakeDb(), "user", context, NOW);
+    expect(m.ledgerRows.mock.calls.map(call => (call[2] as { accountId: string }).accountId).sort()).toEqual([FTMO, DEMO, PERSONAL, OLD].sort());
+    for (const call of m.ledgerRows.mock.calls) {
+      expect(call[2]).toMatchObject({ mode: "account" });
+      expect(call[4]).toEqual(ledgerOptions);
+    }
+    const byId = new Map([...overview.active, ...overview.archived].map(item => [item.account.id, item] as const));
+    expect(byId.get(FTMO)?.metrics).toMatchObject({ tradesUnknown: UNKNOWN_REASONS.tooManyTrades, realizedPnl: null, todayPnl: null, monthPnl: null, closedCount: null, openCount: null });
+    expect(byId.get(FTMO)?.metrics.cumulativeR).toEqual({ value: null, unknownReason: UNKNOWN_REASONS.tooManyTrades });
+    expect(byId.get(FTMO)?.metrics.balanceFromTrades).toEqual({ value: null, unknownReason: UNKNOWN_REASONS.tooManyTrades });
+    expect(byId.get(DEMO)?.metrics).toMatchObject({ tradesUnknown: null, realizedPnl: "400", todayPnl: "0", monthPnl: "400", closedCount: 1, openCount: 1 });
+    expect(overview.totals).toEqual([
+      { currency: "EUR", accounts: 1, realizedPnl: "0", todayPnl: "0", monthPnl: "0" },
+      { currency: "USD", accounts: 2, realizedPnl: null, todayPnl: null, monthPnl: null },
+    ]);
+    // Opening an active account makes it the context; an archived one never can be.
+    expect(byId.get(DEMO)?.href).toBe(`/accounts/${DEMO}?account=${DEMO}`);
+    expect(byId.get(OLD)?.href).toBe(`/accounts/${OLD}`);
+  });
+
+  it("draws no result or chart from part of an account's trades, and still lists its recent trades", async () => {
+    const partial = [closedTrade(FTMO, "2026-10-23T15:00:00Z", "2", "100"), closedTrade(FTMO, "2026-10-20T15:00:00Z", "-1", "-40")];
+    m.ledgerRows.mockResolvedValue({ rows: partial, truncated: true });
+    m.workspace.mockResolvedValue(workspace(ftmo, observation(TODAY)));
+    m.ledgerPage.mockResolvedValue({ rows: dashboardTrades, nextCursor: null, scanned: dashboardTrades.length });
+    m.decorate.mockImplementation(async (_deps: unknown, rows: LedgerTrade[]) => rows.map(listRow));
+    const context = resolveAccountContext({ accounts: [ftmo, demo], stored: "all", lastAccount: null, proxyNotice: false });
+    const dashboard = await loadAccountDashboard(fakeDb(), "user", context, ftmo, NOW);
+    expect(m.ledgerRows).toHaveBeenCalledWith(expect.anything(), "user", { mode: "account", accountId: FTMO }, {}, ledgerOptions);
+    expect(dashboard.truncated).toBe(true);
+    expect(dashboard.metrics).toMatchObject({ tradesUnknown: UNKNOWN_REASONS.tooManyTrades, realizedPnl: null, todayPnl: null, closedCount: null });
+    expect(dashboard.metrics.balanceFromTrades).toEqual({ value: null, unknownReason: UNKNOWN_REASONS.tooManyTrades });
+    expect([...dashboard.curve, ...dashboard.drawdown, ...(dashboard.balanceCurve ?? [])].filter(point => point.tradeId !== null)).toEqual([]);
+    expect(dashboard.daily).toEqual([]);
+    expect(dashboard.calendar.closed).toBe(0);
+    expect(dashboard.breakdowns).toEqual({ model: [], session: [] });
+    expect(dashboard.recentTrades).toHaveLength(dashboardTrades.length);
+    // Complete reads keep every figure and series.
+    m.ledgerRows.mockResolvedValue({ rows: partial, truncated: false });
+    const complete = await loadAccountDashboard(fakeDb(), "user", context, ftmo, NOW);
+    expect(complete.metrics).toMatchObject({ tradesUnknown: null, realizedPnl: "60", closedCount: 2 });
+    expect(complete.daily).toHaveLength(2);
+  });
+
+  it("adds up an account with exactly MAX_LEDGER_ROWS trades in full; one more is “more than 20,000”, even when read whole", async () => {
+    // The real keyset read (500-row pages) over the double: 20,000 rows fill 40 pages, the 20,001st is on a 41st page.
+    const { loadLedgerRows } = await vi.importActual<typeof import("@/lib/performance-data")>("@/lib/performance-data");
+    m.ledgerRows.mockImplementation(loadLedgerRows);
+    const exact = bulkClosed(FTMO, "e", MAX_LEDGER_ROWS);
+    const more = bulkClosed(DEMO, "f", MAX_LEDGER_ROWS + 1);
+    const context = resolveAccountContext({ accounts: [ftmo, demo], stored: "all", lastAccount: null, proxyNotice: false });
+    const overview = await loadAccountsOverview(ledgerDb([...exact, ...more]), "user", context, NOW);
+    const [ftmoSummary, demoSummary] = overview.active;
+    expect(ftmoSummary.metrics).toMatchObject({ tradesUnknown: null, closedCount: MAX_LEDGER_ROWS, realizedPnl: String(MAX_LEDGER_ROWS), rTrades: MAX_LEDGER_ROWS });
+    expect(ftmoSummary.metrics.cumulativeR).toEqual({ value: String(MAX_LEDGER_ROWS), unknownReason: null });
+    expect(demoSummary.metrics).toMatchObject({ tradesUnknown: UNKNOWN_REASONS.tooManyTrades, closedCount: null, realizedPnl: null });
+    expect(overview.totals).toEqual([{ currency: "USD", accounts: 2, realizedPnl: null, todayPnl: null, monthPnl: null }]);
+    // The notice names only the account that does have more than 20,000 trades.
+    const text = visibleText(render(createElement(AccountsOverviewView, { overview, display: STRATEGY })));
+    expect(text).toContain(`Demo 100K has more than ${MAX_LEDGER_ROWS.toLocaleString("en-US")} trades`);
+    expect(text).not.toContain("FTMO 100K has more than");
+    // The dashboard of the account at the limit adds up and draws every trade; the one above it neither.
+    m.workspace.mockResolvedValue(workspace(ftmo, observation(TODAY)));
+    m.ledgerPage.mockResolvedValue({ rows: [], nextCursor: null, scanned: 0 });
+    m.decorate.mockResolvedValue([]);
+    const atLimit = await loadAccountDashboard(ledgerDb(exact), "user", context, ftmo, NOW);
+    expect(atLimit.truncated).toBe(false);
+    expect(atLimit.metrics).toMatchObject({ tradesUnknown: null, closedCount: MAX_LEDGER_ROWS });
+    expect(atLimit.curve).toHaveLength(MAX_LEDGER_ROWS + 1);
+    const above = await loadAccountDashboard(ledgerDb(more), "user", context, demo, NOW);
+    expect(above.truncated).toBe(true);
+    expect(above.metrics).toMatchObject({ tradesUnknown: UNKNOWN_REASONS.tooManyTrades, closedCount: null });
+    expect(above.curve.filter(point => point.tradeId !== null)).toEqual([]);
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Risk plan versions (§3.10 precedence, §14.9 labels).
+// ---------------------------------------------------------------------------------------------------------------------
+describe("Risk plan history", () => {
+  const c9 = [
+    plan("e2000000-0000-4000-8000-000000000001", "Risk Plan V1.0", "2026-10-01T12:00:00Z", "2026-10-01"),
+    // A loosening scheduled for Oct 30 on Oct 29...
+    plan("e2000000-0000-4000-8000-000000000002", "Risk Plan V1.1", "2026-10-29T15:00:00Z", "2026-10-30", { maxRiskPercent: "1" }),
+    // ...then an immediate tightening the same day: the loosening never applies on any day (private.active_risk_plan).
+    plan("e2000000-0000-4000-8000-000000000003", "Risk Plan V1.2", "2026-10-29T16:00:00Z", "2026-10-29", { maxRiskPercent: "0.5", overrideReason: "Two full losses" }),
+  ];
+  const labels = (plans: WorkspaceRiskPlan[], day: string) => riskPlanTimeline(plans, day).map(item => `${item.version}: ${item.statusLabel}`);
+
+  it("labels a version a later change overtook “Replaced before it started” on every day, also once its own day has come (C9)", () => {
+    for (const day of ["2026-10-29", "2026-10-30", "2026-10-31", "2027-01-04"]) {
+      expect(labels(c9, day), day).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced before it started", "Risk Plan V1.0: Replaced"]);
+    }
+    // The dashboard's earlier versions say so after the loosening's day.
+    const markup = render(createElement(AccountDashboardView, { dashboard: { ...dashboardFixture(), riskPlans: riskPlanTimeline(c9, "2026-10-31") }, display: STRATEGY, month: "2026-10", mode: "NET_R", currentContext: "all" }));
+    expect(visibleText(markup)).toContain("Earlier versions · 2");
+    expect(visibleText(markup)).toContain("Replaced before it started");
+  });
+
+  it("orders versions created at the same instant by id, as the database does (created_at desc, id desc)", () => {
+    const sameInstant = { ...c9[1], createdAt: c9[2].createdAt };
+    expect(labels([c9[0], sameInstant, c9[2]], "2026-10-29")).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced before it started", "Risk Plan V1.0: Replaced"]);
+    // With the higher id the loosening is the newer version: it takes effect on its day and the tightening was in effect before it.
+    const newerById = { ...sameInstant, id: "e2000000-0000-4000-8000-000000000009" };
+    expect(labels([c9[0], newerById, c9[2]], "2026-10-29")).toEqual(["Risk Plan V1.1: Starts tomorrow", "Risk Plan V1.2: Active", "Risk Plan V1.0: Replaced"]);
+    expect(labels([c9[0], newerById, c9[2]], "2026-10-30")).toEqual(["Risk Plan V1.1: Active", "Risk Plan V1.2: Replaced", "Risk Plan V1.0: Replaced"]);
+  });
+
+  it("keeps the labels of versions that did take effect", () => {
+    // V1.1 took effect on Oct 2 and was replaced by V1.2 on Oct 24; before that, V1.2 starts tomorrow.
+    expect(labels(PLANS, TODAY)).toEqual(["Risk Plan V1.2: Starts tomorrow", "Risk Plan V1.1: Active", "Risk Plan V1.0: Replaced"]);
+    expect(labels(PLANS, "2026-10-24")).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced", "Risk Plan V1.0: Replaced"]);
+  });
+
+  it("says “Replaced” of a version replaced during its own first day: it governed the checks made before that (60.20)", () => {
+    const start = plan("e3000000-0000-4000-8000-000000000001", "Risk Plan V1.0", "2026-10-01T12:00:00Z", "2026-10-01");
+    // Two immediate changes on Oct 31, at 09:00 and 11:00 UTC−5: a plan locked between them keeps V1.1.
+    const first = plan("e3000000-0000-4000-8000-000000000002", "Risk Plan V1.1", "2026-10-31T14:00:00Z", "2026-10-31", { overrideReason: "First full loss" });
+    const second = plan("e3000000-0000-4000-8000-000000000003", "Risk Plan V1.2", "2026-10-31T16:00:00Z", "2026-10-31", { overrideReason: "Second full loss" });
+    for (const day of ["2026-10-31", "2026-11-01", "2027-01-04"]) {
+      expect(labels([start, first, second], day), day).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced", "Risk Plan V1.0: Replaced"]);
+    }
+    // An immediate change on the day the account was created: the first version governed the checks before it.
+    const created = plan("e3000000-0000-4000-8000-000000000004", "Risk Plan V1.0", "2026-10-31T13:00:00Z", "2026-10-31");
+    expect(labels([created, first], "2026-10-31")).toEqual(["Risk Plan V1.1: Active", "Risk Plan V1.0: Replaced"]);
+    // A version scheduled for Nov 2 and replaced at 09:00 UTC−5 that day governed the first nine hours of its day.
+    const scheduled = plan("e3000000-0000-4000-8000-000000000005", "Risk Plan V1.1", "2026-10-31T15:00:00Z", "2026-11-02", { maxRiskPercent: "1" });
+    const midday = plan("e3000000-0000-4000-8000-000000000006", "Risk Plan V1.2", "2026-11-02T14:00:00Z", "2026-11-02", { overrideReason: "Tighten after a loss" });
+    expect(labels([start, scheduled], "2026-11-01")).toEqual(["Risk Plan V1.1: Starts tomorrow", "Risk Plan V1.0: Active"]);
+    for (const day of ["2026-11-02", "2026-11-03"]) {
+      expect(labels([start, scheduled, midday], day), day).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced", "Risk Plan V1.0: Replaced"]);
+    }
+    // The dashboard's earlier versions say so.
+    const markup = render(createElement(AccountDashboardView, { dashboard: { ...dashboardFixture(), riskPlans: riskPlanTimeline([start, first, second], "2026-11-01") }, display: STRATEGY, month: "2026-10", mode: "NET_R", currentContext: "all" }));
+    expect(visibleText(markup)).toContain("Earlier versions · 2");
+    expect(visibleText(markup)).not.toContain("Replaced before it started");
+  });
+
+  it("calls a version never in effect only when a newer one already applied at the first instant it could", () => {
+    // Created at the same instant (one transaction): the higher id applies from that instant, the other never does.
+    const lower = plan("e4000000-0000-4000-8000-000000000001", "Risk Plan V1.1", "2026-10-31T14:00:00Z", "2026-10-31");
+    const higher = plan("e4000000-0000-4000-8000-000000000002", "Risk Plan V1.2", "2026-10-31T14:00:00Z", "2026-10-31");
+    expect(labels([lower, higher], "2026-11-01")).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced before it started"]);
+    // A newer version created at the very instant a scheduled version's day begins (00:00 UTC−5) applies from it;
+    // one created a microsecond later leaves that microsecond to the scheduled version.
+    const scheduled = plan("e4000000-0000-4000-8000-000000000003", "Risk Plan V1.1", "2026-10-31T15:00:00Z", "2026-11-02");
+    const atDayStart = plan("e4000000-0000-4000-8000-000000000004", "Risk Plan V1.2", "2026-11-02T05:00:00Z", "2026-11-02");
+    expect(labels([scheduled, atDayStart], "2026-11-03")).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced before it started"]);
+    expect(labels([scheduled, { ...atDayStart, createdAt: "2026-11-02T05:00:00.000001Z" }], "2026-11-03")).toEqual(["Risk Plan V1.2: Active", "Risk Plan V1.1: Replaced"]);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Manage (§14.9).
 // ---------------------------------------------------------------------------------------------------------------------
 describe("Manage account", () => {
+  it("goes back to an active account's dashboard as the context, and to an archived one's without switching (§9.2)", () => {
+    const back = (markup: string) => /<header[\s\S]*?<a [^>]*href="([^"]*)"/.exec(markup)?.[1];
+    expect(back(manageView("profile"))).toBe(`/accounts/${FTMO}?account=${FTMO}`);
+    const archivedManage = render(createElement(ManageView, {
+      manage: manageFixture({ account: { ...ftmo, status: "ARCHIVED" }, archived: true }), display: STRATEGY, tab: "profile", connection: null, instrumentDraft: null,
+    }));
+    expect(back(archivedManage)).toBe(`/accounts/${FTMO}`);
+  });
+
   it("links every section as a tab, the current one marked", () => {
     const markup = manageView("risk-policy");
     for (const label of ["Profile", "Account values", "External losses", "Risk policy", "Instruments", "Connection"]) expect(visibleText(markup)).toContain(label);

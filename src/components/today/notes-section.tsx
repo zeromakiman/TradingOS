@@ -26,12 +26,16 @@ export function NotesSection({ notes }: { notes: NotesView }) {
             <p className="t-meta">{NOTES_ALL_ACCOUNTS_COPY}</p>
           </div>
         </div>
+        {/* Account names run up to 100 characters: a chip never gets wider than the card and a long name ends in an
+            ellipsis (the whole name stays the link's text, so its accessible name, and its tooltip). */}
         {notes.accounts.length > 0 && (
-          <ul className="flex flex-wrap gap-2 sm:pl-11" aria-label="Write today's plan for">
+          <ul className="flex min-w-0 flex-wrap gap-2 sm:pl-11" aria-label="Write today's plan for">
             {notes.accounts.map(account => (
-              <li key={account.href}>
-                <Link href={account.href} prefetch={false} className={buttonClasses({ variant: "secondary", size: "sm" })}>
-                  {account.label}
+              <li key={account.href} className="max-w-full min-w-0">
+                <Link href={account.href} prefetch={false} className={buttonClasses({ variant: "secondary", size: "sm", className: "max-w-full" })}>
+                  <span className="truncate" title={account.label}>
+                    {account.label}
+                  </span>
                 </Link>
               </li>
             ))}

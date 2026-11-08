@@ -83,7 +83,8 @@ function enableBlockedReason(entry: SettingsAiAccount, deploymentReason: string 
 function AiAccountCard({ entry, data }: { entry: SettingsAiAccount; data: SettingsPageData }) {
   const { account, budget } = entry;
   return (
-    <Card as="article" aria-label={`AI · ${account.name}`}>
+    // The card prints the account's name (up to 100 characters, maybe without spaces): a word wider than the card breaks.
+    <Card as="article" aria-label={`AI · ${account.name}`} className="wrap-anywhere">
       <AiBudgetSummary accountName={account.name} budget={budget} timeDisplay={data.preferences.timeDisplay} now={new Date(data.nowIso)} inSettings className="border-0 bg-transparent" />
       {budget.snapshot && (
         <div className="border-t border-border p-4 md:p-5">
@@ -125,7 +126,8 @@ function AiSection({ data }: { data: SettingsPageData }) {
       )}
       {archived.length > 0 && (
         <Disclosure summary={`Archived accounts · ${archived.length}`}>
-          <div className="flex flex-col gap-2">
+          {/* Account names of up to 100 characters, maybe without spaces, break instead of widening the list. */}
+          <div className="flex flex-col gap-2 wrap-anywhere">
             {archived.map(entry => (
               <AiBudgetSummary key={entry.account.id} accountName={entry.account.name} budget={entry.budget} compact now={new Date(data.nowIso)} />
             ))}
@@ -167,7 +169,8 @@ function ConnectionsSection({ data }: { data: SettingsPageData }) {
                   <li key={account.id} className="flex flex-col gap-1 py-3 first:pt-0 last:pb-0">
                     <div className="flex items-center justify-between gap-3">
                       <p className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                        <span className="font-semibold text-text">{account.name}</span>
+                        {/* A name of up to 100 characters, maybe without spaces, wraps instead of widening the list. */}
+                        <span className="min-w-0 font-semibold text-text wrap-anywhere">{account.name}</span>
                         <span className="t-caption">{accountMeta(account)}</span>
                       </p>
                       <div className="flex flex-none items-center gap-1">

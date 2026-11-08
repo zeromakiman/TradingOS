@@ -62,6 +62,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       timeDisplay={preferences.timeDisplay}
       sidebarCollapsed={preferences.sidebarCollapsed}
       notice={context.noticeText}
+      storedContextUnavailable={context.storedUnavailable === true}
       selectAccountAction={setAccountContext}
       setThemeAction={setTheme}
       setTimeDisplayAction={setTimeDisplay}

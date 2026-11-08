@@ -18,8 +18,9 @@ import type { AiProviderRequest } from "./provider-contract";
  * ceil(UTF-8 bytes / 4) of the whole count body, which is what the local mock provider counts. Images count by the
  * high-detail tile formula, an unreadable image as the maximum.
  *
- * The provider's exact count still runs after dispatch; a request it refuses is released before any generation,
- * without charge (src/ai/request-gate.ts).
+ * The provider's exact count still runs after dispatch and is authoritative. The count request itself reaches the
+ * provider, so a request it refuses never generates but keeps its full reservation held as UNCERTAIN
+ * (src/ai/request-gate.ts): this estimate is what keeps oversized requests from ever getting that far.
  */
 
 export const TEXT_BYTES_PER_TOKEN = 4;
@@ -155,9 +156,4 @@ export function estimateRequest(operation: AiOperation, input: EstimateInput): R
   const text = read.reduce((sum, part) => sum + textTokens(part), 0);
   const bytes = byteTokens(body);
   return { tokens: Math.max(text, bytes) + images, limit: operation.maxInputTokens, textBytes: utf8Bytes(body), textTokens: text, byteTokens: bytes, imageTokens: images };
-}
-
-/** True when the estimate of the whole request is above the operation's input limit. */
-export function exceedsInputLimit(operation: AiOperation, input: EstimateInput): boolean {
-  return estimateRequest(operation, input).tokens > operation.maxInputTokens;
 }

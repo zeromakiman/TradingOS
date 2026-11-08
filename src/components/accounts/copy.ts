@@ -1,4 +1,4 @@
-import { ACCOUNT_TYPE_LABELS, type AccountPlatform, type AccountType, PLATFORM_LABELS } from "@/domain/account-metrics";
+import { ACCOUNT_TYPE_LABELS, type AccountPlatform, type AccountStatus, type AccountType, PLATFORM_LABELS } from "@/domain/account-metrics";
 
 /**
  * Copy and choice lists of the Accounts screens (docs/V2_ARCHITECTURE.md §8.4, §9, §14.7–14.9, §15). Pure data, safe
@@ -102,4 +102,23 @@ export const ACTIVE_ACCOUNTS_HEADING = "accounts-active";
 
 export function manageHref(accountId: string, tab: ManageTab = "profile"): string {
   return tab === "profile" ? `/accounts/${accountId}/manage` : `/accounts/${accountId}/manage?tab=${tab}`;
+}
+
+/**
+ * An account's dashboard. Opening an active account's dashboard makes it the trading-account context (`?account=`,
+ * §9.2), so the header and its Plan Trade / Record Live Trade name the account on screen (master spec 60.11). An
+ * archived account can never be the context: its link leaves the context as it is. Context links are never
+ * prefetched (`prefetchFor`).
+ */
+export function accountDashboardHref(account: { id: string; status: AccountStatus }): string {
+  return account.status === "ACTIVE" ? `/accounts/${account.id}?account=${account.id}` : `/accounts/${account.id}`;
+}
+
+/** Plan Trade and Record Live Trade on this account, whatever the context (they also switch it, §9.2). */
+export function planTradeHref(accountId: string): string {
+  return `/trades/new?account=${accountId}`;
+}
+
+export function recordLiveTradeHref(accountId: string): string {
+  return `/trades/live/new?account=${accountId}`;
 }

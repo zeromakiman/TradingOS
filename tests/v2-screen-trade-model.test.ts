@@ -64,10 +64,10 @@ import {
   validateEntry, validateEntryDetails,
 } from "@/components/trade/form-model";
 import {
-  ARCHIVED_DRAFT_HINT, addedLater, blockedOnEarlierDay, blockingCheckOf, closeMode, duplicateNotes, entryDefaults, entryLine, evidenceMode, headerActions, headerFacts,
-  lastRevisionSource, lessonsOf, lessonTiming, listInWords, lockBlockedReason, lockedLine, lockSummary, missingEntryFields, newEntriesLabel, nextStepHint,
-  outcomeView, planChecks, planFacts, positionFacts, positionRecordedLine, resultSummary, reviewMode, riskBasisPreview, skipSlotNote, whenLabel,
-  workspaceLayout,
+  ARCHIVED_DRAFT_HINT, addedLater, type BlockingCheck, blockedOnEarlierDay, blockingCheckOf, blockingNow, closeMode, draftSource, duplicateNotes, entryDefaults, entryLine,
+  evidenceMode, headerActions, headerFacts, lastRevisionSource, lessonsOf, lessonTiming, listInWords, liveStopMove, lockBlockedReason, lockedLine, lockedSource,
+  lockSummary, missingEntryFields, newEntriesLabel, nextStepHint, outcomeView, type PlanSource, pageState, planChecks, planFacts, positionFacts, positionRecordedLine,
+  resultSummary, reviewMode, riskBasisPreview, skipSlotNote, whenLabel, workspaceLayout,
 } from "@/components/trade/model";
 import { RecordEntryForm } from "@/components/trade/record-entry-form";
 import { returnFocusTo, reveal, revealTradeTarget, TRADE_TARGETS, tradeTargetOf } from "@/components/trade/reveal";
@@ -75,11 +75,15 @@ import { TagsForm } from "@/components/trade/tags-form";
 import { instantOfWallClock, wallClockOf, zoneHint } from "@/components/trade/time-input";
 import { TradeProgress } from "@/components/trade/trade-progress";
 import { loadTradeExtras } from "@/components/trade/workspace-data";
+import { previewContext, previewProposal, usageFixture } from "@/domain/fixtures";
 import { LEDGER_COLUMNS, LIFECYCLES, type LedgerTrade, type Lifecycle } from "@/domain/ledger";
 import { planVsReality } from "@/domain/plan-vs-reality";
+import { type DailyUsage, evaluateRisk, type RiskContext } from "@/domain/risk";
+import { explainReport } from "@/domain/risk-explain";
+import type { RiskReportV12 } from "@/domain/risk-report";
 import { STRATEGY_TIME } from "@/domain/time-display";
 import type { TimelineItem, TimelineKind, Timing } from "@/domain/timeline";
-import { deriveTradeState, planEndedAt } from "@/domain/trade-state";
+import { blockingFindingsOf, deriveTradeState, planEndedAt } from "@/domain/trade-state";
 import type { CheckView, EvidenceItemView, ProposalView, TradeDetail } from "@/lib/trades-data";
 
 const NOW = "2026-10-23T19:00:00.000Z"; // Fri Oct 23, 14:00 UTC−5
@@ -108,6 +112,31 @@ function checkView(decision: "APPROVED" | "BLOCKED", plannedRR = "2.995"): Check
     explained: { decision, blocking: decision === "BLOCKED" ? [{ code: "RISK_LIMIT", severity: "BLOCK", title: "Requested risk exceeds maximum", detail: "Requested risk 1.25% exceeds your configured maximum of 0.75%." }] : [], warnings: [], notes: [] },
     calculations: { quantity: "0.25", nominalRisk: "500", plannedRR, budget: "500", stopDistance: "0.002" },
   };
+}
+
+/** Fri Oct 23, 09:00 UTC−5: a check in the kill zone of the page's trading day (NOW, 14:00 UTC−5, is in Dead Pool). */
+const CHECKED = "2026-10-23T14:00:00Z";
+/** The preview account on the page's trading day: equity 10,000, maximum 0.5%, minimum 3R, 2 trades a day, no caps; EURUSD. */
+const ENGINE: RiskContext = { ...previewContext, now: CHECKED, observationDay: "2026-10-23", usage: usageFixture({ day: "2026-10-23" }) };
+
+/**
+ * The real engine's report 1.2 for a plan (0.5% of 10,000 = a $50 budget: 0.25 lots × 200 ticks × 1), and its check as
+ * the trade detail shows it (revision 2, checked at CHECKED).
+ */
+function engineCheck(proposal: Record<string, unknown> = {}, plan: Partial<RiskContext["plan"]> = {}, usage: Partial<DailyUsage> = {}, changes: Partial<RiskContext> = {}) {
+  const ctx: RiskContext = { ...ENGINE, ...changes, plan: { ...ENGINE.plan, ...plan }, usage: usageFixture({ day: "2026-10-23", ...usage }) };
+  const report = evaluateRisk({ ...previewProposal, narrative: "Sweep, MSS, OB.", contractConfirmed: true, news: "CLEAR", ...proposal }, ctx);
+  const calc = report.calculations;
+  const check: CheckView = {
+    recordedAt: CHECKED, decision: report.decision, revision: 2, explained: explainReport(report), statusLine: "",
+    calculations: calc ? { quantity: calc.quantity, nominalRisk: calc.nominalRisk, plannedRR: calc.plannedRR, budget: calc.budget, stopDistance: calc.stopDistance } : null,
+  };
+  return { report, check, ctx };
+}
+
+/** The detail with `report` stored as its latest check's (Technical details keep every check's report). */
+function withReport(base: TradeDetail, report: RiskReportV12): TradeDetail {
+  return { ...base, technical: { ...base.technical, latestCheckEvaluationId: uuid(80), checks: [{ evaluationId: uuid(80), recordedAt: CHECKED, report }] } };
 }
 
 interface DetailOptions {
@@ -301,6 +330,15 @@ describe("plan values and the lock confirmation (§6.6, §8.1)", () => {
     expect(facts).toContainEqual({ label: "Size", value: "0.25 lots" });
     expect(facts).toContainEqual({ label: "Entry", value: "1.10000" });
     expect(facts).toContainEqual({ label: "Risk at stop", value: "$500.00" });
+    // Against a known minimum the decimals follow it (formatAgainst), so the verdict and the words agree both ways.
+    const rr = (plannedRR: string, minRR: string) => planFacts(detail(ledger()), { proposal: PROPOSAL, check: checkView("APPROVED", plannedRR), nominalRisk: null, minRR })
+      .find(fact => fact.label === "Planned RR")?.value;
+    expect(rr("2.995", "2.995")).toBe("2.995R");
+    expect(rr("1.5075", "1.505")).toBe("1.507R");
+    expect(rr("1.505", "1.505")).toBe("1.505R");
+    expect(rr("1.50499999", "1.505")).toBe("1.504R");
+    expect(rr("2.99666666", "3")).toBe("2.99R");
+    expect(rr("3", "3")).toBe("3.00R");
     expect(planFacts(detail(ledger()), { proposal: { ...PROPOSAL, stop: null }, check: null, nominalRisk: null })).toContainEqual({ label: "Stop", value: "Missing", tone: "warning" });
     expect(planChecks({ ...PROPOSAL, news: "RESTRICTED", contractConfirmed: false, contradiction: true })).toEqual([
       { label: "Economic news", value: "Restricted window", tone: "warning" },
@@ -327,6 +365,64 @@ describe("plan values and the lock confirmation (§6.6, §8.1)", () => {
     expect(lockSummary(trade, { slotsUsed: 0, maxDailyTrades: 3, riskUsed: "0", dailyRiskCap: null, dailyLossCap: null }).reserved)
       .toEqual(["1 daily trade: 1 of 3 used today after locking (2 trades left).", "$500.00 of daily risk (no daily risk cap is configured)."]);
     expect(lockSummary(trade, null).reserved).toEqual(["One of today's trade slots and this trade's risk count toward your daily limits."]);
+  });
+
+  it("reads a plan locked at its minimum RR as meeting it, from the report of the check it shows (§6.6)", () => {
+    // Minimum 2.995R (BLOCK): EURUSD 1.10000 / 1.09800 / 1.10599 plans exactly 2.995R and is approved and locked.
+    const { report, check } = engineCheck({ target: "1.10599" }, { minRR: "2.995" });
+    expect(report).toMatchObject({ decision: "APPROVED", calculations: { plannedRR: "2.995" } });
+    const draft = withReport(detail(ledger({ latest_check_decision: "APPROVED", latest_check_at: CHECKED, draft_check: "APPROVED" }), { check, checkCurrent: true }), report);
+    const plannedRR = (source: PlanSource | null) => (source ? planFacts(draft, source).find(fact => fact.label === "Planned RR")?.value : undefined);
+    expect(draftSource(draft)?.minRR).toBe("2.995");
+    expect(plannedRR(draftSource(draft))).toBe("2.995R");
+    // The locked plan reads its own report at lock; a never-locked draft the report of its last check.
+    const locked = detail(ledger({ ...LOCKED, lifecycle: "LOCKED" }));
+    const sealed: TradeDetail = {
+      ...locked, plan: { ...(locked.plan as NonNullable<TradeDetail["plan"]>), check }, technical: { ...locked.technical, planReport: report },
+    };
+    expect(plannedRR(lockedSource(sealed))).toBe("2.995R");
+    const discarded = withReport(detail(ledger({ lifecycle: "DISCARDED", draft_check: null, discarded_at: NOW }), { check }), report);
+    expect(plannedRR(lastRevisionSource(discarded, PROPOSAL))).toBe("2.995R");
+    // Without a readable report 1.2 the minimum is unknown: 2 decimals, truncated.
+    expect(plannedRR(draftSource(detail(ledger({ latest_check_decision: "APPROVED", latest_check_at: CHECKED, draft_check: "APPROVED" }), { check })))).toBe("2.99R");
+    // An older report (engine 1.0 or 1.1, V1-migrated plans) states no limits: the check view carries the minimum of the
+    // risk plan version it was evaluated with, the one Plan vs reality compares with too.
+    const older: CheckView = { ...check, minRR: "2.995" };
+    expect(plannedRR(draftSource(detail(ledger({ latest_check_decision: "APPROVED", latest_check_at: CHECKED, draft_check: "APPROVED" }), { check: older })))).toBe("2.995R");
+    expect(plannedRR(lockedSource({ ...locked, plan: { ...(locked.plan as NonNullable<TradeDetail["plan"]>), check: older } }))).toBe("2.995R");
+    const ended = detail(ledger({ lifecycle: "DISCARDED", draft_check: null, discarded_at: NOW }), { check: older });
+    expect(plannedRR(lastRevisionSource(ended, PROPOSAL))).toBe("2.995R");
+    expect(planVsReality(ledger({ ...LIVE, planned_rr: "2.995" }), EURUSD, { minRR: "2.995" }).rows.find(row => row.key === "RR")?.planned).toBe("2.995R");
+  });
+
+  it("never understates money at risk or overstates the room a lock leaves (§6.6)", () => {
+    // USDJPY-like sizing: the engine's nominal risk 530.452 reads $530.46 wherever the page or the lock dialog states it.
+    const check: CheckView = { ...checkView("APPROVED"), calculations: { quantity: "4.04", nominalRisk: "530.452", plannedRR: "3", budget: "531.25", stopDistance: "0.202" } };
+    const trade = detail(ledger({ latest_check_decision: "APPROVED", latest_check_at: "2026-10-23T18:58:00Z", draft_check: "APPROVED" }), { checkCurrent: true, check });
+    expect(planFacts(trade, draftSource(trade) as PlanSource)).toContainEqual({ label: "Risk at stop", value: "$530.46" });
+    const summary = lockSummary(trade, { slotsUsed: 1, maxDailyTrades: 3, riskUsed: "500", dailyRiskCap: "3533.31", dailyLossCap: null });
+    expect(summary.immutable[2]).toBe("Risk 0.50% · 4.04 lots · $530.46 at the stop");
+    // 3533.31 − 500 − 530.452 = 2502.858: never promised as $2,502.86.
+    expect(summary.reserved[1]).toBe("$530.46 of your $3,533.31 daily risk cap ($2,502.85 left after locking).");
+    expect(lockSummary(trade, { slotsUsed: 0, maxDailyTrades: 3, riskUsed: "0", dailyRiskCap: null, dailyLossCap: null }).reserved[1])
+      .toBe("$530.46 of daily risk (no daily risk cap is configured).");
+    expect(lockSummary(trade, { slotsUsed: 0, maxDailyTrades: 3, riskUsed: "3200", dailyRiskCap: "3533.31", dailyLossCap: null }).reserved[1])
+      .toBe("$530.46 of your $3,533.31 daily risk cap ($0.00 left after locking).");
+    // The R basis reads the same amount as "Risk at stop".
+    const live = detail(ledger({ ...LIVE, initial_risk: "530.452", planned_risk: "530.452" }));
+    expect(riskBasisPreview(live)).toBe("R based on locked risk: realized R = net P&L ÷ $530.46.");
+    expect(outcomeView(detail(ledger({ ...CLOSED, initial_risk: "530.452" })), NOW, STRATEGY_TIME)?.basis).toBe("R based on locked risk · realized R = net P&L ÷ $530.46");
+    const liveFirst = detail(ledger({ ...LIVE_FIRST, initial_risk: "51.805" }));
+    expect(positionFacts(liveFirst, NOW, STRATEGY_TIME).find(fact => fact.label === "Risk at stop")?.value).toBe("$51.81");
+    // Plan vs reality on the same page states the locked and the actual risk at the stop the same way.
+    const pvr = planVsReality(ledger({ ...LIVE, planned_risk: "530.452", actual_initial_risk: "1060.904" }), EURUSD);
+    expect(pvr.kind === "PLANNED" ? pvr.rows.find(row => row.key === "RISK") : null).toMatchObject({ planned: "$530.46", actual: "$1,060.91" });
+  });
+
+  it("marks a contract confirmation the account's newer contract replaced", () => {
+    expect(planChecks(PROPOSAL, { contractUpdated: true })[1]).toEqual({ label: "Contract values", value: "Confirmed before the contract update", tone: "warning" });
+    expect(planChecks({ ...PROPOSAL, contractConfirmed: false }, { contractUpdated: true })[1]).toEqual({ label: "Contract values", value: "Not confirmed", tone: "warning" });
+    expect(planChecks(PROPOSAL)[1]).toEqual({ label: "Contract values", value: "Match my broker" });
   });
 
   it("says why Lock plan can't run yet", () => {
@@ -453,6 +549,7 @@ describe("records added after a plan ended (§5.3)", () => {
 describe("a block recorded on an earlier trading day (§2.4, §6.3)", () => {
   const YESTERDAY = "2026-10-22T18:44:00Z"; // Thu Oct 22, 13:44 UTC−5
   const MAX_TRADES = { code: "MAX_TRADES", severity: "BLOCK" as const, title: "Daily trade limit reached", detail: "Daily trade limit reached: 2 of 2 trades already used today (1 planned, 1 recorded live)." };
+  const RISK_LIMIT = { code: "RISK_LIMIT", severity: "BLOCK" as const, title: "Requested risk exceeds maximum", detail: "Requested risk 1.25% exceeds your configured maximum of 0.75%." };
   const blockedAt = (recordedAt: string, blocking = [MAX_TRADES]) => {
     const check: CheckView = { ...checkView("BLOCKED"), recordedAt, explained: { decision: "BLOCKED", blocking, warnings: [], notes: [] } };
     return detail(ledger({ latest_check_decision: "BLOCKED", latest_check_at: recordedAt, draft_check: "BLOCKED" }), { check });
@@ -467,34 +564,215 @@ describe("a block recorded on an earlier trading day (§2.4, §6.3)", () => {
     });
     // The header reads deriveTradeState's next action, the one Today, the Journal and the command palette read too.
     expect(stale.state.nextAction).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
-    const actions = headerActions(stale.state);
+    const actions = headerActions(pageState(stale));
     expect(actions.primary).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
     expect(actions.secondary.map(action => action.label)).toEqual(["Edit draft"]);
     expect(actions.menu.map(entry => [entry.kind, entry.compactOnly ?? false])).toEqual([["EDIT_DRAFT", true], ["DUPLICATE", false], ["DISCARD", false], ["TECHNICAL", false]]);
-    // A block from today keeps Edit draft as the next action with the exact reason (§2.4).
-    const today = blockedAt("2026-10-23T18:44:00Z");
+    // A block from today that an edit can clear keeps Edit draft as the next action with the exact reason (§2.4).
+    const today = blockedAt("2026-10-23T18:44:00Z", [RISK_LIMIT]);
     expect(blockedOnEarlierDay(today)).toBe(false);
-    expect(headerActions(today.state).primary).toEqual({ kind: "EDIT_DRAFT", label: "Edit draft", detail: MAX_TRADES.detail });
-    expect(nextStepHint(today, NOW, STRATEGY_TIME)?.text).toBe(`Blocked: ${MAX_TRADES.detail}`);
+    expect(headerActions(pageState(today)).primary).toEqual({ kind: "EDIT_DRAFT", label: "Edit draft", detail: RISK_LIMIT.detail });
+    expect(nextStepHint(today, NOW, STRATEGY_TIME)?.text).toBe(`Blocked: ${RISK_LIMIT.detail}`);
     // Only a blocked draft is led by a recheck for its day: a current approval keeps Lock plan.
     const ready = detail(ledger({ latest_check_decision: "APPROVED", latest_check_at: "2026-10-23T18:58:00Z", draft_check: "APPROVED" }), { checkCurrent: true });
     expect(blockedOnEarlierDay(ready)).toBe(false);
-    expect(headerActions(ready.state).primary?.label).toBe("Lock plan");
+    expect(headerActions(pageState(ready)).primary?.label).toBe("Lock plan");
   });
 
-  it("says what resolves a block: a recheck for an earlier day or reasons bound to the session or the day, an edit otherwise", () => {
+  it("says a block from an earlier day is resolved by a recheck first", () => {
     const blocked = { draftCheck: "BLOCKED" as const, checkCurrent: false };
-    expect(blockingCheckOf(blockedAt(YESTERDAY))).toEqual({ checkedAt: YESTERDAY, codes: ["MAX_TRADES"] });
-    expect(lockBlockedReason(blocked, { checkedAt: YESTERDAY, codes: ["RISK_LIMIT"] }, NOW)).toBe(
+    expect(blockingCheckOf(blockedAt(YESTERDAY))).toEqual({
+      checkedAt: YESTERDAY, codes: ["MAX_TRADES"], findings: [{ code: "MAX_TRADES" }], equity: null, maxRiskPercent: null, minimumRisk: null, currency: "USD",
+    });
+    expect(lockBlockedReason(blocked, block(["RISK_LIMIT"], YESTERDAY), NOW)).toBe(
       "Locking opens once a check approves this revision. This check is from Oct 22; today's limits and session can differ, so recheck risk before you edit the draft.",
     );
-    expect(lockBlockedReason(blocked, { checkedAt: "2026-10-23T18:44:00Z", codes: ["DEAD_POOL", "MAX_TRADES"] }, NOW)).toBe(
-      "Locking opens once a check approves this revision. Editing the draft won't clear these reasons: they depend on the session, today's limits or today's account values. Recheck risk once they no longer apply.",
+    expect(lockBlockedReason(blocked, block(["RISK_LIMIT"], "2025-12-31T18:00:00Z"), NOW)).toContain("This check is from Dec 31, 2025;");
+  });
+});
+
+/** A blocking check from today (13:44 UTC−5) with these reasons and no report amounts. */
+function block(codes: readonly string[], checkedAt = "2026-10-23T18:44:00Z", changes: Partial<BlockingCheck> = {}): BlockingCheck {
+  return { checkedAt, codes, findings: codes.map(code => ({ code })), equity: null, maxRiskPercent: null, minimumRisk: null, currency: "USD", ...changes };
+}
+
+describe("a block found today: what an edit clears, and what only time or the account values clear (§2.4, §6.3, §10)", () => {
+  const blocked = { draftCheck: "BLOCKED" as const, checkCurrent: false };
+  const DEAD_POOL_NOW = NOW; // 14:00 UTC−5
+  const EVENING = "2026-10-23T23:30:00Z"; // 18:30 UTC−5, same trading day
+
+  /** A draft whose latest check is the engine's report: the page reads its amounts from Technical details. */
+  const engineDraft = (...args: Parameters<typeof engineCheck>) => {
+    const { report, check, ctx } = engineCheck(...args);
+    const trade = detail(ledger({ latest_check_decision: report.decision, latest_check_at: CHECKED, draft_check: report.decision }), { check });
+    return { trade: withReport(trade, report), report, ctx };
+  };
+  /** The engine's verdict on the same plan at another risk, in the same context. */
+  const approvedAt = (riskPercent: string, ctx: RiskContext) => evaluateRisk({ ...previewProposal, narrative: "x", contractConfirmed: true, news: "CLEAR", riskPercent }, ctx).decision;
+
+  it("never says an edit won't help when a lower risk fits the daily risk cap, and names the risk that fits", () => {
+    // Cap 70, 50 already reserved: the $50 trade doesn't fit the $20 left; 0.20% (a $20 budget, 0.10 lots, $20 at the stop) does.
+    const { trade, ctx } = engineDraft({}, { dailyRiskCap: "70" }, { plannedRisk: "50", plannedSlots: 1 });
+    expect(trade.draft?.latestCheck?.explained.blocking.map(issue => issue.code)).toEqual(["DAILY_RISK_LIMIT"]);
+    const reason = lockBlockedReason(blocked, blockingCheckOf(trade), DEAD_POOL_NOW);
+    expect(reason).toBe("Locking opens once a check approves this revision. Edit the draft to resolve the reason above, then check again. A risk of 0.20% or less fits the $20.00 of daily risk left.");
+    expect(reason).not.toContain("won't clear");
+    // The budget never exceeds the room, so the hinted risk always fits; the size steps may let a little more fit.
+    expect(approvedAt("0.2", ctx)).toBe("APPROVED");
+    expect(approvedAt("0.25", ctx)).toBe("BLOCKED");
+    expect(headerActions(pageState(trade)).primary?.kind).toBe("EDIT_DRAFT");
+    expect(nextStepHint(trade, DEAD_POOL_NOW, STRATEGY_TIME)?.text).toMatch(/^Blocked: Remaining daily risk \$20\.00 is insufficient for this trade's \$50\.00 risk/);
+  });
+
+  it("names the risk that fits the room left under the daily loss limit, and the tighter cap when both block", () => {
+    const loss = engineDraft({}, { dailyLossCap: "100" }, { realizedLoss: "60" });
+    expect(lockBlockedReason(blocked, blockingCheckOf(loss.trade), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Edit the draft to resolve the reason above, then check again. A risk of 0.40% or less fits the $40.00 left under your daily loss limit.",
     );
-    expect(lockBlockedReason(blocked, { checkedAt: "2026-10-23T18:44:00Z", codes: ["RISK_LIMIT", "DEAD_POOL"] }, NOW)).toBe(
-      "Locking opens once a check approves this revision. Edit the draft to resolve the reasons above, then check again.",
+    expect(approvedAt("0.4", loss.ctx)).toBe("APPROVED");
+    const both = engineDraft({}, { dailyRiskCap: "100", dailyLossCap: "100" }, { plannedRisk: "70", plannedSlots: 1, realizedLoss: "55" });
+    expect(both.trade.draft?.latestCheck?.explained.blocking.map(issue => issue.code)).toEqual(["DAILY_RISK_LIMIT", "DAILY_LOSS_LIMIT"]);
+    expect(lockBlockedReason(blocked, blockingCheckOf(both.trade), DEAD_POOL_NOW)).toContain("A risk of 0.30% or less fits the $30.00 of daily risk left.");
+    expect(approvedAt("0.3", both.ctx)).toBe("APPROVED");
+    // A room the minimum size can't fit at this stop: no risk is suggested.
+    const tiny = engineDraft({}, { dailyRiskCap: "51" }, { plannedRisk: "50", plannedSlots: 1 });
+    expect(lockBlockedReason(blocked, blockingCheckOf(tiny.trade), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Edit the draft to resolve the reason above, then check again. Only $1.00 of daily risk is left: even the minimum size risks $2.00 at this stop.",
     );
-    expect(lockBlockedReason(blocked, { checkedAt: "2025-12-31T18:00:00Z", codes: ["RISK_LIMIT"] }, NOW)).toContain("This check is from Dec 31, 2025;");
+  });
+
+  it("says what a duplicate must change instead of telling the trader to wait", () => {
+    const { trade } = engineDraft({}, {}, {}, { duplicate: true });
+    expect(lockBlockedReason(blocked, blockingCheckOf(trade), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Edit the draft to resolve the reason above, then check again. Change the instrument, direction, model, entry, stop or target so it differs from the plan already locked today.",
+    );
+    expect(headerActions(pageState(trade)).primary?.kind).toBe("EDIT_DRAFT");
+  });
+
+  it("leads with Recheck risk when only the next trading day clears the block, and says so", () => {
+    // Daily trade limit reached, and a daily risk cap with nothing left.
+    for (const { trade, sentence } of [
+      { trade: engineDraft({}, {}, { plannedSlots: 2, plannedRisk: "60" }).trade, sentence: "The daily trade limit is used up for today: recheck risk on the next trading day." },
+      { trade: engineDraft({}, { dailyRiskCap: "50" }, { plannedRisk: "50", plannedSlots: 1 }).trade, sentence: "The daily risk cap is used up for today: recheck risk on the next trading day." },
+      { trade: engineDraft({}, { dailyLossCap: "100" }, { realizedLoss: "100" }).trade, sentence: "The daily loss limit is used up for today: recheck risk on the next trading day." },
+    ]) {
+      const reasons = trade.draft?.latestCheck?.explained.blocking ?? [];
+      expect(lockBlockedReason(blocked, blockingCheckOf(trade), DEAD_POOL_NOW)).toBe(
+        `Locking opens once a check approves this revision. Editing the draft won't clear ${reasons.length > 1 ? "these reasons" : "this reason"}. ${sentence}`,
+      );
+      const actions = headerActions(pageState(trade));
+      expect(actions.primary).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
+      expect(actions.secondary.map(action => action.label)).toEqual(["Edit draft"]);
+      expect(nextStepHint(trade, DEAD_POOL_NOW, STRATEGY_TIME)?.text).toMatch(new RegExp(`${sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+      // The trade's own state is unchanged: only the page leads with the step that clears it.
+      expect(trade.state.nextAction?.kind).toBe("EDIT_DRAFT");
+    }
+    // Both limits at once read as one sentence.
+    expect(lockBlockedReason(blocked, block(["MAX_TRADES", "DAILY_RISK_LIMIT"], undefined, { findings: [{ code: "MAX_TRADES" }, { code: "DAILY_RISK_LIMIT", room: "0" }] }), DEAD_POOL_NOW))
+      .toBe("Locking opens once a check approves this revision. Editing the draft won't clear these reasons. The daily trade limit and the daily risk cap are used up for today: recheck risk on the next trading day.");
+  });
+
+  it("waits for open positions when they fill the daily loss limit, and for the end of Dead Pool", () => {
+    const open = engineDraft({}, { dailyLossCap: "100" }, { realizedLoss: "40", openExposure: "60" }).trade;
+    // Checked in the kill zone; it is Dead Pool now, where any recheck blocks: the recheck waits for both.
+    expect(lockBlockedReason(blocked, blockingCheckOf(open), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Editing the draft won't clear this reason. Today's losses and open risk fill your daily loss limit: recheck risk once Dead Pool ends at 18:00 UTC−5 and an open position closes, or on the next trading day.",
+    );
+    expect(lockBlockedReason(blocked, blockingCheckOf(open), EVENING)).toBe(
+      "Locking opens once a check approves this revision. Editing the draft won't clear this reason. Today's losses and open risk fill your daily loss limit: recheck risk once an open position closes, or on the next trading day.",
+    );
+    expect(headerActions(pageState(open)).primary?.kind).toBe("RECHECK_RISK");
+    // Dead Pool: the recheck once it ends at 18:00, or now once it has ended (the reason has lapsed: nothing to wait for).
+    const deadPool = block(["DEAD_POOL"]);
+    expect(lockBlockedReason(blocked, deadPool, DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Editing the draft won't clear this reason. Recheck risk once Dead Pool ends at 18:00 UTC−5.",
+    );
+    expect(lockBlockedReason(blocked, deadPool, EVENING)).toBe("Locking opens once a check approves this revision. Dead Pool has ended: recheck risk now.");
+    // With a reason an edit clears, the edit comes first and the wait says when to recheck.
+    expect(lockBlockedReason(blocked, block(["RISK_LIMIT", "DEAD_POOL"]), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Edit the draft for the reason an edit clears. Recheck risk once Dead Pool ends at 18:00 UTC−5.",
+    );
+    expect(lockBlockedReason(blocked, block(["RISK_LIMIT", "MIN_RR", "MAX_TRADES"]), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Edit the draft for the reasons an edit clears. The daily trade limit is used up for today: recheck risk on the next trading day.",
+    );
+    expect(lockBlockedReason(blocked, block(["RISK_LIMIT"]), DEAD_POOL_NOW)).toBe("Locking opens once a check approves this revision. Edit the draft to resolve the reason above, then check again.");
+  });
+
+  it("leads with Confirm account values when only today's values are missing", () => {
+    const { trade } = engineDraft({}, {}, {}, { observationDay: "2026-10-22" });
+    expect(trade.draft?.latestCheck?.explained.blocking.map(issue => issue.code)).toEqual(["STALE_EQUITY"]);
+    expect(lockBlockedReason(blocked, blockingCheckOf(trade), EVENING)).toBe(
+      "Locking opens once a check approves this revision. Editing the draft won't clear this reason. Confirm today's account values, then recheck risk.",
+    );
+    // During Dead Pool the recheck after confirming would block on it: it waits for 18:00.
+    expect(lockBlockedReason(blocked, blockingCheckOf(trade), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Editing the draft won't clear this reason. Confirm today's account values, then recheck risk once Dead Pool ends at 18:00 UTC−5.",
+    );
+    const actions = headerActions(pageState(trade));
+    expect(actions.primary).toEqual({ kind: "CONFIRM_VALUES", label: "Confirm account values" });
+    expect(actions.secondary.map(action => action.label)).toEqual(["Edit draft"]);
+    expect(nextStepHint(trade, EVENING, STRATEGY_TIME)).toEqual({
+      tone: "danger", text: "Blocked: Confirm today's account balance before locking (last recorded Oct 22). Confirm today's account values, then recheck risk.",
+    });
+    expect(lockBlockedReason(blocked, block(["STALE_EQUITY", "DEAD_POOL"]), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Editing the draft won't clear these reasons. Confirm today's account values, then recheck risk once Dead Pool ends at 18:00 UTC−5.",
+    );
+  });
+
+  it("leads with Recheck risk once today's account values have been confirmed since the check, not with a second confirmation", () => {
+    const { trade } = engineDraft({}, {}, {}, { observationDay: "2026-10-22" });
+    const usage = { slotsUsed: 0, maxDailyTrades: 2, riskUsed: "0", dailyRiskCap: null, dailyLossCap: null };
+    // The account workspace's latest values: still from Oct 22, or confirmed for today (Oct 23) after the check.
+    const before = blockingNow(lockSummary(trade, { ...usage, valuesDay: "2026-10-22" }), EVENING);
+    const after = blockingNow(lockSummary(trade, { ...usage, valuesDay: "2026-10-23" }), EVENING);
+    expect(before).toEqual({});
+    expect(after).toEqual({ valuesConfirmedToday: true });
+    expect(blockingNow(null, EVENING)).toEqual({});
+    expect(headerActions(pageState(trade, before)).primary?.kind).toBe("CONFIRM_VALUES");
+    const actions = headerActions(pageState(trade, after));
+    expect(actions.primary).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
+    expect(actions.secondary.map(action => action.label)).toEqual(["Edit draft"]);
+    expect(nextStepHint(trade, EVENING, STRATEGY_TIME, after)).toEqual({
+      tone: "danger",
+      text: "Blocked: Confirm today's account balance before locking (last recorded Oct 22). Today's account values have been confirmed since the check: recheck risk now.",
+    });
+    expect(lockBlockedReason(blocked, blockingCheckOf(trade, after), EVENING)).toBe(
+      "Locking opens once a check approves this revision. Today's account values have been confirmed since the check: recheck risk now.",
+    );
+    // During Dead Pool the recheck still waits for its end.
+    expect(lockBlockedReason(blocked, blockingCheckOf(trade, after), DEAD_POOL_NOW)).toBe(
+      "Locking opens once a check approves this revision. Today's account values have been confirmed since the check: recheck risk once Dead Pool ends at 18:00 UTC−5.",
+    );
+    // The recheck the page leads with approves: the engine on today's values.
+    const { report } = engineCheck({}, {}, {}, { observationDay: "2026-10-23" });
+    expect(report.decision).toBe("APPROVED");
+    // A used-up day still waits for tomorrow, whatever the values.
+    const both = block(["STALE_EQUITY", "MAX_TRADES"], undefined, { findings: [{ code: "STALE_EQUITY", valuesConfirmed: true }, { code: "MAX_TRADES" }] });
+    expect(lockBlockedReason(blocked, both, EVENING)).toBe(
+      "Locking opens once a check approves this revision. Editing the draft won't clear these reasons. The daily trade limit is used up for today: recheck risk on the next trading day.",
+    );
+  });
+
+  it("waits for the next trading day when today's losses alone fill the daily loss limit, whatever is still open", () => {
+    // $100 lost today against a $100 limit, with $60 still open: closing that position, even at break-even, frees nothing.
+    const { trade, ctx } = engineDraft({}, { dailyLossCap: "100" }, { realizedLoss: "100", openExposure: "60" });
+    expect(trade.draft?.latestCheck?.explained.blocking.map(issue => issue.code)).toEqual(["DAILY_LOSS_LIMIT"]);
+    const sentence = "The daily loss limit is used up for today: recheck risk on the next trading day.";
+    expect(lockBlockedReason(blocked, blockingCheckOf(trade), EVENING)).toBe(`Locking opens once a check approves this revision. Editing the draft won't clear this reason. ${sentence}`);
+    expect(nextStepHint(trade, EVENING, STRATEGY_TIME)?.text).toMatch(new RegExp(`${sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+    expect(headerActions(pageState(trade)).primary?.kind).toBe("RECHECK_RISK");
+    // The engine agrees: with the position closed at break-even (no open risk), the same plan is still blocked.
+    expect(evaluateRisk({ ...previewProposal, narrative: "x", contractConfirmed: true, news: "CLEAR" }, { ...ctx, usage: usageFixture({ ...ctx.usage, openExposure: "0" }) }).issues
+      .filter(issue => issue.severity === "BLOCK").map(issue => issue.code)).toEqual(["DAILY_LOSS_LIMIT"]);
+  });
+
+  it("names how many more reasons stop the plan after the first, in the header", () => {
+    const { trade } = engineDraft({ riskPercent: "1" }, { dailyRiskCap: "70" }, { plannedRisk: "50", plannedSlots: 1 });
+    const reasons = trade.draft?.latestCheck?.explained.blocking ?? [];
+    expect(reasons.map(issue => issue.code)).toEqual(["RISK_LIMIT", "DAILY_RISK_LIMIT"]);
+    expect(nextStepHint(trade, DEAD_POOL_NOW, STRATEGY_TIME)).toEqual({ tone: "danger", text: `Blocked: ${reasons[0].detail} (+1 more)` });
+    // An older report without amounts: an edit is taken to help, and the reason count still shows.
+    expect(blockingFindingsOf(["RISK_LIMIT", "DAILY_RISK_LIMIT"], null)).toEqual([{ code: "RISK_LIMIT" }, { code: "DAILY_RISK_LIMIT" }]);
   });
 });
 
@@ -736,9 +1014,39 @@ describe("execution and outcome (§3.5, §8.5)", () => {
       instrument: null, close: { riskBasisSource: "USER_REPORTED" },
     }), NOW, STRATEGY_TIME);
     expect(facts.map(fact => [fact.label, fact.value])).toEqual([
-      ["Instrument", "EURUSD · Long"], ["Model", null], ["Entry", "23476.1"], ["Entry time", "13:05"], ["Size", null], ["Stop", null], ["Risk at stop", null],
+      ["Instrument", "EURUSD · Long"], ["Model", null], ["Entry", "23476.1"], ["Entry time", "13:05"], ["Size", null], ["Initial stop", null], ["Risk at stop", null],
     ]);
     expect(facts[0].hint).toBe("No contract values");
+  });
+
+  it("leads with the stop the journal moved it to while live, and keeps the recorded stop as the initial stop (§3.6)", () => {
+    const DE40 = { ...EURUSD, symbol: "DE40", currency: "EUR", tickSize: "0.1", quantityUnit: "contracts", quantityStep: "0.01" };
+    const stopChange = (id: string, price: string, recordedAt: string, timing: Timing) => record(id, "JOURNAL", recordedAt, timing, { journalKind: "STOP_CHANGE", details: { price } });
+    const timeline = [
+      // A stop journaled before the entry (an older row) and one after the close never describe the open position.
+      stopChange("journal:early", "23400.5", "2026-10-23T18:06:00Z", "BEFORE_ENTRY"),
+      stopChange("journal:moved", "23426.5", "2026-10-23T18:30:00Z", "WHILE_LIVE"),
+      stopChange("journal:newest", "23432.5", "2026-10-23T18:45:00Z", "WHILE_LIVE"),
+      stopChange("journal:after", "23440", "2026-10-23T18:50:00Z", "AFTER_CLOSE"),
+      record("journal:note", "JOURNAL", "2026-10-23T18:55:00Z", "WHILE_LIVE", { journalKind: "NOTE", details: { price: "1" } }),
+    ];
+    const live = ledger({
+      ...LIVE_FIRST, symbol: "DE40", currency: "EUR", entry_price: "23454.5", quantity: "1.85", initial_stop: "23426.5", initial_risk: "51.8", entry_model: "OB_FIRST_TOUCH",
+    });
+    expect(liveStopMove(timeline)).toEqual({ price: "23432.5", recordedAt: "2026-10-23T18:45:00Z" });
+    const facts = positionFacts(detail(live, { instrument: DE40, timeline }), NOW, STRATEGY_TIME);
+    expect(facts.map(fact => [fact.label, fact.value, fact.hint ?? null]).slice(4)).toEqual([
+      ["Size", "1.85 contracts", null], ["Stop", "23432.5", "Moved 13:45"], ["Initial stop", "23426.5", null], ["Risk at stop", "€51.80", null],
+    ]);
+    // A stop moved to the entry says so, as Today's live card does.
+    const breakEven = [...timeline, stopChange("journal:be", "23454.5", "2026-10-23T18:58:00Z", "WHILE_LIVE")];
+    expect(positionFacts(detail(live, { instrument: DE40, timeline: breakEven }), NOW, STRATEGY_TIME).find(fact => fact.label === "Stop"))
+      .toEqual({ label: "Stop", value: "23454.5", hint: "At entry · moved 13:58" });
+    // Without a move, and once the position is closed, only the initial stop is stated.
+    expect(positionFacts(detail(live, { instrument: DE40, timeline: timeline.filter(item => item.timing !== "WHILE_LIVE") }), NOW, STRATEGY_TIME).map(fact => fact.label))
+      .not.toContain("Stop");
+    const closed = ledger({ ...LIVE_FIRST, symbol: "DE40", initial_stop: "23426.5", exited_at: "2026-10-23T18:59:00Z", net_pnl: "-20", outcome: "LOSS", lifecycle: "CLOSED" });
+    expect(positionFacts(detail(closed, { instrument: DE40, timeline }), NOW, STRATEGY_TIME).map(fact => fact.label)).not.toContain("Stop");
   });
 
   it("says which entry details were added after the position was recorded, and when (§3.5)", () => {
@@ -754,7 +1062,7 @@ describe("execution and outcome (§3.5, §8.5)", () => {
     });
     const facts = positionFacts(trade, NOW, STRATEGY_TIME, records);
     expect(facts.map(fact => [fact.label, fact.hint ?? null])).toEqual([
-      ["Instrument", "Contract added 13:30"], ["Model", null], ["Entry", null], ["Entry time", null], ["Size", "Added 13:20"], ["Stop", "Added 13:20"],
+      ["Instrument", "Contract added 13:30"], ["Model", null], ["Entry", null], ["Entry time", null], ["Size", "Added 13:20"], ["Initial stop", "Added 13:20"],
       ["Risk at stop", "Risk amount you recorded · added 13:20"],
     ]);
     expect(positionRecordedLine(records, NOW, STRATEGY_TIME)).toBe("Recorded 13:10, with the position already open. Details marked “Added” were completed later.");
@@ -1029,8 +1337,11 @@ describe("trade extras loader", () => {
     const extras = await loadTradeExtras(detail(ledger()));
     expect(extras.strategy?.context).toBe("The strategy and the risk plan this draft is checked against today.");
     expect(extras.strategy?.card.subtitle).toBe("Risk Plan V1.1 · fixed UTC−5");
-    expect(extras.lockUsage).toEqual({ slotsUsed: 2, maxDailyTrades: 2, riskUsed: "937.92", dailyRiskCap: "2000", dailyLossCap: null });
+    expect(extras.lockUsage).toEqual({ slotsUsed: 2, maxDailyTrades: 2, riskUsed: "937.92", dailyRiskCap: "2000", dailyLossCap: null, valuesDay: null });
     expect(extras.instruments).toEqual([]);
+    // The day of the account's latest values goes with it, so a stale-values block can tell they were confirmed since.
+    m.workspace = { ...workspace, observation: { id: uuid(40), tradingDay: "2026-10-23" } };
+    expect((await loadTradeExtras(detail(ledger()))).lockUsage?.valuesDay).toBe("2026-10-23");
   });
 
   it("offers a live-first position without a contract the account's contract of the same symbol", async () => {
@@ -1056,8 +1367,24 @@ describe("trade extras loader", () => {
   it("degrades to empty extras on a failed read, logging a fixed event only", async () => {
     m.workspaceError = new Error("db down");
     const extras = await loadTradeExtras(detail(ledger()));
-    expect(extras).toEqual({ strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [] });
+    expect(extras).toEqual({ strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null });
     expect(m.failures).toEqual(["data_read_failed"]);
+  });
+
+  it("says when a draft's contract was superseded by a newer version of its symbol, as Edit Draft judges it", async () => {
+    // The workspace lists the latest version of each symbol (the pickers' list); the draft's EURUSD is uuid(3).
+    const withEurusd = (id: string) => ({ ...workspace, instruments: [...workspace.instruments, { id, symbol: "EURUSD", tickSize: "0.00001", quantityUnit: "lots" }] });
+    m.workspace = withEurusd(uuid(32));
+    expect((await loadTradeExtras(detail(ledger()))).contractUpdated).toEqual({ symbol: "EURUSD" });
+    m.workspace = withEurusd(uuid(3).toUpperCase());
+    expect((await loadTradeExtras(detail(ledger()))).contractUpdated).toBeNull();
+    // No current contract of the symbol: nothing to move to.
+    m.workspace = workspace;
+    expect((await loadTradeExtras(detail(ledger()))).contractUpdated).toBeNull();
+    // Only drafts: a locked plan keeps the contract it was locked with.
+    m.workspace = withEurusd(uuid(32));
+    m.rows = { strategy_versions: { id: uuid(11), version: "ICT V1.0", rules: {} }, risk_plan_versions: { id: uuid(12), version: "Risk Plan V1.0" } };
+    expect((await loadTradeExtras(detail(ledger({ ...LOCKED, lifecycle: "LOCKED" })))).contractUpdated).toBeNull();
   });
 
   it("reads which entry details each record of a live-first position set, oldest first", async () => {

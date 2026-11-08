@@ -17,8 +17,9 @@ const NON_TENANT_TABLES = new Set(["evaluator_versions"]);
 const INVOKER_FUNCTIONS = new Set(["trading_os_schema"]);
 // 0004: trusted-server RPCs that predate the p_user_id convention used to recognise service-only functions.
 const SERVICE_ONLY_WITHOUT_USER_ARGUMENT = new Set(["start_setup_evaluation", "finish_setup_evaluation"]);
-// §10.4: direct service-role inserts the legacy server code still performs after the 0019 DML revoke.
-const SERVICE_ROLE_INSERTS = new Set(["setup_screenshots", "setup_evaluation_passes", "evaluator_versions"]);
+// §10.4: direct service-role inserts the legacy setup evaluator still performs after the 0019 DML revoke. V2 registers
+// no legacy screenshots, so setup_screenshots keeps no insert grant.
+const SERVICE_ROLE_INSERTS = new Set(["setup_evaluation_passes", "evaluator_versions"]);
 // The TRUNCATE guard and the service_role DML revoke arrive with the erasure migration (§4, §10.4).
 const ERASURE_MIGRATION_PRESENT = migrationFiles().some((name) => name.startsWith("0019_"));
 // Under Supabase default privileges (modelled by the harness) two V1 leftovers stay granted until 0019's grant

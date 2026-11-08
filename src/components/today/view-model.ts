@@ -4,10 +4,20 @@ import { TRADE_TARGETS } from "@/components/trade/reveal";
 import { ACCOUNT_TYPE_LABELS } from "@/domain/account-metrics";
 import type { DailyReason, DailyStatus } from "@/domain/daily-status";
 import {
-  formatMoney, formatMoneyAgainst, formatMoneyExact, formatPercent, formatPrice, formatQuantity, formatR, formatSignedMoney, plural, stripZeros,
+  formatMoney,
+  formatMoneyAgainst,
+  formatMoneyExact,
+  formatMoneyUp,
+  formatPercent,
+  formatPrice,
+  formatQuantity,
+  formatR,
+  formatSignedMoney,
+  plural,
+  stripZeros,
 } from "@/domain/format";
 import type { LedgerTrade } from "@/domain/ledger";
-import { dayResult } from "@/domain/performance";
+import { dayResult, isClosed } from "@/domain/performance";
 import type { Instrument } from "@/domain/risk";
 import {
   compareInstants, displayDay, formatDateTime, formatDay, formatRelative, formatTime, type Instant, strategyDay, type TimeDisplay, zoneLabel,
@@ -62,6 +72,14 @@ export const RISK_PLAN_MISSING_COPY = "This account has no risk plan yet. Create
 function signTone(value: string): ValueTone {
   const number = new D(value);
   return number.isZero() ? "neutral" : number.isNegative() ? "neg" : "pos";
+}
+
+/**
+ * Money at risk (a plan's risk at the stop, a position's initial risk), rounded up to the cent as the trade page, the
+ * plan preview and the engine's sentences show it (§6.6): the same plan never reads as risking less here.
+ */
+function riskMoney(value: string, currency: string): string {
+  return formatMoneyUp(value, currency);
 }
 
 function pillTone(tone: TradeTone): PillTone {
@@ -167,20 +185,37 @@ function resultStat(trades: readonly LedgerTrade[], day: string, label = "Today'
   };
 }
 
+/**
+ * Losses shown beside the daily loss limit: money rounded half up to the cent, as the day's result, the All Accounts
+ * summary and the account dashboard show the same losses, unless that rounding would put the figure on the other side
+ * of the limit (§6.6). Only then does it round toward its own side, with the decimals that keep it there
+ * (`formatMoneyAgainst`): a loss just under the limit never reads as reaching it, one that reaches it never reads as below.
+ */
+function besideLimit(value: Decimal.Value, cap: string | null, currency: string): string {
+  const amount = new D(value);
+  const text = formatMoney(amount.toFixed(), currency);
+  if (cap === null) return text;
+  const reaches = amount.gte(cap);
+  // `formatMoney` rounds half away from zero (Intl "halfExpand"), as ROUND_HALF_UP does.
+  if (amount.toDecimalPlaces(2, D.ROUND_HALF_UP).gte(cap) === reaches) return text;
+  return formatMoneyAgainst(amount.toFixed(), cap, currency, "min", reaches);
+}
+
 function lossesView(entry: TodayAccountStatus, losing: number): LossesView {
   const { losses, account, workspace } = entry;
   const currency = account.currency;
   const known = new D(losses.realized).plus(losses.external);
   const external = new D(losses.external);
   const cap = workspace.riskPlan?.dailyLossCap ?? null;
+  const againstLimit = (value: Decimal.Value) => besideLimit(value, cap, currency);
   return {
-    realized: formatMoney(losses.realized, currency),
-    combined: formatMoney(known.toFixed(), currency),
+    realized: againstLimit(losses.realized),
+    combined: againstLimit(known),
     external: external.gt(0) ? `+ ${formatMoney(losses.external, currency)} external` : null,
     externalAmount: losses.external,
     detail: losing === 0 ? "No losing trades closed" : plural(losing, "losing trade"),
     counted: losses.legacyReported !== null && new D(losses.total).gt(known)
-      ? `Counted toward the limit: ${formatMoney(losses.total, currency)}, from an earlier manual entry.`
+      ? `Counted toward the limit: ${againstLimit(losses.total)}, from an earlier manual entry.`
       : null,
     limit: cap === null ? "No daily loss limit" : `Daily loss limit ${formatMoneyExact(cap, currency)}`,
     externalSummary: `External realized losses today: ${formatMoney(losses.external, currency)}`,
@@ -292,21 +327,36 @@ function statusView(entry: TodayAccountStatus, closedRows: readonly TradeListRow
   };
 }
 
-/** All Accounts: today's result over every account (R across accounts is labelled; money stays per currency). */
+/**
+ * The trades `result` counts (closed, with the exit on the strategy day: `dayResult`'s own rule) on accounts without a
+ * status row. In All Accounts the status rows are the active accounts, so these are the trades an archived account
+ * closed today: an archived account still finishes the trades it holds (docs/V2_ARCHITECTURE.md §3.2).
+ */
+function closedWithoutStatusRow(data: TodayData): TradeListRow[] {
+  const withRow = new Set(data.accounts.map(entry => entry.account.id));
+  return data.closedToday.filter(row => !withRow.has(row.trade.account_id) && isClosed(row.trade) && strategyDay(row.trade.exited_at as string) === data.day);
+}
+
+/**
+ * All Accounts: today's result over every trade closed today in the context (R across accounts is labelled; money stays
+ * per currency) and the realized + external losses of the same accounts, per currency (never converted), from their
+ * daily usage (`TodayData.losses`, which includes an archived account that closed a trade today). Trades an archived
+ * account closed today count in both, and the detail line says how many, since only active accounts have a row below.
+ */
 function summaryView(data: TodayData): DaySummaryView {
   const result = data.result;
   const withoutR = result.closed - result.rTrades;
+  const outside = closedWithoutStatusRow(data);
+  const archivedAccounts = new Set(outside.map(row => row.trade.account_id)).size;
+  const archivedNote = outside.length > 0 ? ` · ${outside.length} on ${archivedAccounts > 1 ? "archived accounts" : "an archived account"}` : "";
   const detail = result.closed === 0
     ? "No trades closed today"
-    : `${plural(result.closed, "trade")} closed today${withoutR > 0 ? ` · ${withoutR} without R` : ""}`;
-  const losses = data.losses.length
-    ? data.losses.map(entry => formatMoney(new D(entry.realized).plus(entry.external).toFixed(), entry.currency)).join(" · ")
-    : "—";
+    : `${plural(result.closed, "trade")} closed today${withoutR > 0 ? ` · ${withoutR} without R` : ""}${archivedNote}`;
   return {
     r: result.netR === null ? null : { text: formatR(result.netR), tone: signTone(result.netR) },
     money: result.money.map(total => ({ text: formatSignedMoney(total.netPnl, total.currency), tone: signTone(total.netPnl) })),
     detail,
-    losses,
+    losses: data.losses.length ? data.losses.map(entry => formatMoney(new D(entry.realized).plus(entry.external).toFixed(), entry.currency)).join(" · ") : "—",
   };
 }
 
@@ -371,7 +421,7 @@ function stopFact(trade: LedgerTrade, move: StopMove | null, tick: string | null
 function riskFact(trade: LedgerTrade, currency: string): LiveFactView {
   if (trade.initial_risk === null) return { label: "Initial risk", value: RISK_NOT_RECORDED, tone: "warning", hints: [] };
   const planned = trade.origin === "PLANNED" && trade.requested_risk_percent !== null ? ` · ${formatPercent(trade.requested_risk_percent)} planned` : "";
-  return { label: "Initial risk", value: formatMoney(trade.initial_risk, currency), tone: "default", hints: [`1R${planned}`] };
+  return { label: "Initial risk", value: riskMoney(trade.initial_risk, currency), tone: "default", hints: [`1R${planned}`] };
 }
 
 function liveView(card: LiveTradeCard, instrument: Instrument | null, management: LiveManagement | null, format: Formatter, requestKey: string): LiveTradeView {
@@ -424,7 +474,7 @@ function priceParts(trade: LedgerTrade, instrument: Instrument | null): string[]
   if (trade.planned_stop !== null) parts.push(`Stop ${formatPrice(trade.planned_stop, tick)}`);
   if (trade.planned_target !== null) parts.push(`Target ${formatPrice(trade.planned_target, tick)}`);
   if (trade.requested_risk_percent !== null) {
-    const money = trade.planned_risk !== null ? ` (${formatMoney(trade.planned_risk, trade.currency)})` : "";
+    const money = trade.planned_risk !== null ? ` (${riskMoney(trade.planned_risk, trade.currency)})` : "";
     parts.push(`Risk ${formatPercent(trade.requested_risk_percent)}${money}`);
   }
   return parts;
@@ -462,6 +512,9 @@ function planAction(row: TradeListRow): PlanActionView | null {
       return { kind: "link", label: next.label, href: tradeTarget(row.href, TRADE_TARGETS.recordEntry), variant: "primary" };
     case "EDIT_DRAFT":
       return { kind: "link", label: next.label, href: `${row.href}/edit`, variant: "secondary" };
+    case "CONFIRM_VALUES":
+      // Today's account values are confirmed on the account's Manage screen, as from the trade page.
+      return { kind: "link", label: next.label, href: manageHref(row.account.id, "account-values"), variant: "secondary" };
     default:
       return { kind: "link", label: "Open", href: row.href, variant: "secondary" };
   }
@@ -490,12 +543,16 @@ function planActions(group: PlanGroup, row: TradeListRow, day: string): PlanActi
   // A block found on an earlier day says nothing certain about today (trade slots, risk used, session, account values
   // and the risk plan in effect can all differ): the shared trade state makes the free check its next action, like a
   // stale approval's "Recheck needed" (`deriveTradeState`, the trade page, Journal and palette agree). Edit draft stays
-  // beside it for a reason the trader already knows to change. A draft of an archived account gets neither: the
-  // database refuses its checks and revisions, and its state offers nothing but Discard on the trade page.
-  if (group === "blocked" && row.state.nextAction?.kind === "RECHECK_RISK") {
+  // beside it for a reason the trader already knows to change. A draft blocked today only by what no edit clears
+  // (`withBlockingFindings`) leads the same way with the step that does, as its trade page does: the recheck once the
+  // session, the day or the open positions change, or confirming today's account values. A draft of an archived account
+  // gets none of these: the database refuses its checks and revisions, and its state offers nothing but Discard.
+  const next = row.state.nextAction?.kind;
+  if (group === "blocked" && (next === "RECHECK_RISK" || next === "CONFIRM_VALUES")) {
+    const main = planAction(row);
     return [
       ...(row.state.editable.plan ? [{ kind: "link", label: "Edit draft", href: `${row.href}/edit`, variant: "ghost" } as const] : []),
-      { kind: "check", label: "Recheck risk", tradeId: row.id },
+      ...(main ? [main] : []),
     ];
   }
   if (group === "locked" && lockedBefore(trade, day)) {

@@ -2,21 +2,24 @@ import "server-only";
 import Decimal from "decimal.js";
 import { z } from "zod";
 import type { LedgerTrade, Lifecycle } from "@/domain/ledger";
-import { type DayResult, dayResult } from "@/domain/performance";
+import { type DayResult, dayResult, isClosed } from "@/domain/performance";
+import type { DailyUsage } from "@/domain/risk";
 import { nextBoundary, type Session, type SessionBoundary, strategyClock } from "@/domain/session";
-import { addDays, compareInstants, strategyDayLabel } from "@/domain/time-display";
+import { compareInstants, strategyDay, strategyDayLabel } from "@/domain/time-display";
 import type { JournalKind } from "@/domain/timeline";
 import { type AccountContext, type ContextAccount, currentSession, type Db, getAccountContext } from "./account-context";
 import { loadLedgerRows } from "./performance-data";
 import { decorateTrades, inBatches, ledgerSelect, parseLedger, type TradeListRow, type TradeScope } from "./trades-data";
-import { type AccountWorkspace, getWorkspace, loadAccountWorkspace } from "./workspace";
+import { type AccountWorkspace, getWorkspace, loadDailyUsage } from "./workspace";
 
 /**
  * Today (docs/V2_ARCHITECTURE.md §14.1): session and next boundary, the trading status of every account in the context
  * (All Accounts: one row per ACTIVE account), live trades with their last journal item, plans waiting (drafts by check
  * state, locked plans waiting for entry), today's closed trades, today's realized result in R and money per currency,
- * and today's losses as the daily loss limit counts them. Everything is computed for the strategy day (fixed UTC−5) of
- * the server time; money is never summed across currencies.
+ * and today's losses as the daily loss limit counts them. Trades are read for the whole context, so in All Accounts the
+ * trades an archived account still holds or closed today are listed and counted too (archiving leaves open positions to
+ * be finished); only the status rows are limited to active accounts. Everything is computed for the strategy day (fixed
+ * UTC−5) of the server time; money is never summed across currencies.
  *
  * Live trades, locked plans and drafts are read by separate queries with their own bounds, so piles of drafts (V1
  * proposals were carried over as drafts and drafts never expire) can never push a live position or a locked plan off
@@ -109,11 +112,15 @@ export interface TodayData {
   /** Every live trade of the context (up to TODAY_LIVE_LIMIT), most recently opened first. */
   live: LiveTradeCard[];
   plans: WaitingPlans;
-  /** Every trade closed today, latest exit first. */
+  /** Every trade closed today in the context (archived accounts' included in All Accounts), latest exit first. */
   closedToday: TradeListRow[];
-  /** Net R of today's exits (R is per-trade risk units) and net P&L per currency. */
+  /** Net R of today's exits (R is per-trade risk units) and net P&L per currency, over `closedToday`. */
   result: DayResult;
-  /** Today's losses per currency across the context's accounts. */
+  /**
+   * Today's losses per currency, as each account's daily usage counts them (realized and external), over the accounts
+   * `result` covers: those of `accounts` (the selected account, or every ACTIVE account), plus in All Accounts every
+   * account without a status row that closed a trade today (an archived account finishing a position it held).
+   */
   losses: TodayLosses[];
   /** Today's plan · notes (V1 daily context) of the selected account; null in All Accounts or when none. */
   dailyContext: { narrative: string; recordedAt: string } | null;
@@ -225,12 +232,29 @@ async function lastJournalItems(db: Db, userId: string, live: readonly LedgerTra
 }
 
 /** One account's losses today, exactly as the engine counts them (spec §6.2). */
+function lossesOfUsage(currency: string, usage: DailyUsage): TodayLosses {
+  return { currency, realized: usage.realizedLoss, external: usage.externalLoss, legacyReported: usage.legacyReportedLoss, total: usage.lossTotal };
+}
+
 function lossesOf(workspace: AccountWorkspace): TodayLosses {
-  const usage = workspace.usage;
-  return {
-    currency: workspace.account.currency, realized: usage.realizedLoss, external: usage.externalLoss, legacyReported: usage.legacyReportedLoss,
-    total: usage.lossTotal,
-  };
+  return lossesOfUsage(workspace.account.currency, workspace.usage);
+}
+
+/**
+ * All Accounts: today's losses of the accounts that have no status row but closed a trade `result` counts (an archived
+ * account finishing a position it held, docs/V2_ARCHITECTURE.md §3.2), from the same daily usage as a row's, so the
+ * summary's losses cover the same accounts as its result, external losses included. Usually there are none, and no
+ * request is made.
+ */
+async function lossesWithoutRow(db: Db, context: AccountContext, rows: ReadonlyMap<string, AccountWorkspace>, closed: readonly LedgerTrade[], day: string): Promise<TodayLosses[]> {
+  if (context.selected.mode !== "all") return [];
+  const accounts = new Map(context.accounts.map(account => [account.id, account] as const));
+  // `dayResult`'s own rule: closed, with the exit on the strategy day.
+  const ids = new Set(closed.filter(trade => !rows.has(trade.account_id) && isClosed(trade) && strategyDay(trade.exited_at as string) === day).map(trade => trade.account_id));
+  return Promise.all([...ids].flatMap(id => {
+    const account = accounts.get(id);
+    return account ? [loadDailyUsage(db, id).then(usage => lossesOfUsage(account.currency, usage))] : [];
+  }));
 }
 
 /** Per-currency sums of account losses (never across currencies), ordered by currency. */
@@ -289,9 +313,10 @@ export async function loadToday(deps: TodayDeps): Promise<TodayData> {
   const closedTrades = [...closed.rows].sort((a, b) => newestFirst({ at: a.exited_at ?? a.created_at, id: a.id }, { at: b.exited_at ?? b.created_at, id: b.id }));
   const workspaces = new Map(deps.workspaces.map(workspace => [workspace.account.id, workspace] as const));
   const groups = [live.trades, locked.trades, drafts.trades, closedTrades];
-  const [rows, journal] = await Promise.all([
+  const [rows, journal, outsideLosses] = await Promise.all([
     decorateTrades({ db, userId, accounts: context.accounts, now, workspaces }, groups.flat()),
     lastJournalItems(db, userId, live.trades),
+    lossesWithoutRow(db, context, workspaces, closedTrades, day),
   ]);
   const [liveRows, lockedRows, draftRows, closedToday] = splitBySizes(rows, groups.map(group => group.length));
 
@@ -320,7 +345,7 @@ export async function loadToday(deps: TodayDeps): Promise<TodayData> {
     plans,
     closedToday,
     result: dayResult(closedTrades, day),
-    losses: lossesByCurrency(accounts.map(status => status.losses)),
+    losses: lossesByCurrency([...accounts.map(status => status.losses), ...outsideLosses]),
     dailyContext: contextRow ? { narrative: contextRow.narrative, recordedAt: contextRow.recorded_at } : null,
     truncated: { live: live.truncated, locked: locked.truncated, drafts: drafts.truncated, closed: closed.truncated },
     empty: liveCards.length === 0 && lockedRows.length === 0 && draftRows.length === 0 && closedToday.length === 0,
@@ -332,49 +357,4 @@ export async function getToday(): Promise<TodayData> {
   const [{ db, user }, context, view] = await Promise.all([currentSession(), getAccountContext(), getWorkspace()]);
   const workspaces = view.mode === "account" ? [view.workspace] : view.workspaces;
   return loadToday({ db, userId: user.id, context, workspaces, now: view.now });
-}
-
-/** Today's status for one explicit account (its own workspace at the current server time). */
-export async function loadAccountToday(db: Db, userId: string, account: ContextAccount, now: string): Promise<TodayAccountStatus> {
-  const workspace = await loadAccountWorkspace(db, userId, account, now);
-  return { account, workspace, losses: lossesOf(workspace) };
-}
-
-// ---------------------------------------------------------------------------------------------------------
-// V1 Today (src/app/today/page.tsx) until the V2 screen replaces it: entries, active plans and today's result of one
-// account from journal_analytics. Unchanged contract; sums are exact.
-// ---------------------------------------------------------------------------------------------------------
-/** @deprecated V1 page only; V2 screens use `getToday()`. */
-export async function loadTodayActivity(accountId: string, day: string) {
-  const { db } = await currentSession();
-  const from = `${day}T05:00:00Z`;
-  const to = `${addDays(day, 1)}T05:00:00Z`;
-  const [entries, active] = await Promise.all([
-    db.from("journal_analytics").select("id", { count: "exact", head: true }).eq("account_id", accountId).gte("entered_at", from).lt("entered_at", to),
-    db.from("journal_analytics").select("id,instrument,direction,status,execution_id,locked_at").eq("account_id", accountId).in("status", ["LOCKED", "TAKEN"])
-      .order("execution_id", { ascending: false, nullsFirst: false }).order("locked_at", { ascending: false }).order("id", { ascending: false }).limit(6),
-  ]);
-  if (entries.error || active.error) throw new Error("Unable to load today’s activity. Please try again.");
-  let sum = new M(0);
-  let after: string | undefined;
-  let closed = 0;
-  for (;;) {
-    let query = db.from("journal_analytics").select("id,realized_r").eq("account_id", accountId).eq("status", "CLOSED").gte("exited_at", from).lt("exited_at", to).order("id").limit(500);
-    if (after) query = query.gt("id", after);
-    const result = await query;
-    if (result.error) throw new Error("Unable to load today’s results.");
-    const rows = z.array(z.object({ id: z.uuid(), realized_r: z.string() })).parse(result.data);
-    for (const row of rows) sum = sum.plus(row.realized_r);
-    closed += rows.length;
-    if (rows.length < 500) break;
-    after = rows[rows.length - 1].id;
-  }
-  return {
-    taken: entries.count ?? 0,
-    closed,
-    result: sum.toFixed(),
-    active: z.array(z.object({
-      id: z.uuid(), instrument: z.string(), direction: z.string(), status: z.enum(["LOCKED", "TAKEN"]), execution_id: z.uuid().nullable(), locked_at: z.string(),
-    })).parse(active.data),
-  };
 }

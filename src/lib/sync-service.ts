@@ -263,13 +263,6 @@ function toExecution(row: z.infer<typeof executionRow>): ExternalExecution {
   };
 }
 
-async function oneExecution(db: Db, column: "id" | "linked_trade_id", value: string): Promise<ExternalExecution | null> {
-  const { data, error } = await db.from("external_execution_status").select(EXECUTION_COLUMNS).eq(column, value).limit(1);
-  if (error) throw new Error("Platform executions are unavailable.");
-  const [row] = z.array(executionRow).parse(data);
-  return row === undefined ? null : toExecution(row);
-}
-
 export const UNMATCHED_LIMIT = 100;
 /** Default page of `listLinkedExecutions`. */
 export const LINKED_LIMIT = 100;
@@ -309,15 +302,6 @@ export function listUnmatchedExecutions(db: Db, options: ExecutionListOptions = 
  */
 export function listLinkedExecutions(db: Db, options: ExecutionListOptions = {}): Promise<ExternalExecution[]> {
   return listExecutions(db, true, options, LINKED_LIMIT);
-}
-
-export function loadExecution(db: Db, executionId: string): Promise<ExternalExecution | null> {
-  return oneExecution(db, "id", executionId);
-}
-
-/** The platform execution currently linked to a trade, if any. */
-export function linkedExecution(db: Db, tradeId: string): Promise<ExternalExecution | null> {
-  return oneExecution(db, "linked_trade_id", tradeId);
 }
 
 // ---------------------------------------------------------------------------------------------------------

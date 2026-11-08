@@ -11,19 +11,25 @@ import { AiHistoryList } from "./ai-history-list";
 import { AiSettingsLink } from "./ai-settings-link";
 import { estimateModel } from "./estimate";
 import { NO_PLAN_RECORDED } from "./model";
-import { latestCompleted, TradeTimelineReviewCard } from "./operation-cards";
+import { type AiResultEntry, latestCompleted, TradeReviewCard } from "./operation-cards";
 import { availabilityReason, displayPreference, optional } from "./panel-data";
 
 /**
  * AI review of a trade (docs/V2_ARCHITECTURE.md §2.4, §11.1, §11.4): "Review this trade · ≈ €0.02" once the trade is
- * closed (any origin), the latest timeline-aware review as a concise card, and every review in the history, including
- * reviews made with the earlier V1 format. Loads its own data with the user's session; nothing runs on page load.
+ * closed (any origin), the latest review as a concise card in the format it was written in (a review made with the
+ * earlier V1 format shows its dimension chips and lessons), and every review in the history, each of which opens in
+ * full. Loads its own data with the user's session; nothing runs on page load.
  */
 
 export interface TradeReviewAiPanelProps {
   tradeId: string;
   /** The trade's trading account (AI settings and budgets are per account). */
   accountId: string;
+  /**
+   * The account is archived: it can't be selected as a context (§9.2) and its AI settings change only after a restore,
+   * so AI off or a reached limit points to Manage account.
+   */
+  accountArchived?: boolean;
   /** Closed (or reviewed) trades can be reviewed; open trades only show their history. */
   closed: boolean;
   /** Live-first and imported trades: the review states that no pre-trade plan exists. */
@@ -41,12 +47,22 @@ interface ViewProps extends TradeReviewAiPanelProps {
   requestKey: string;
 }
 
-function TradeReviewAiPanelView({ tradeId, accountId, closed, noPlan, developerMode, panel, history, timeDisplay, requestKey }: ViewProps) {
+/**
+ * Every review of the trade, newest first, each with its card: the full trade history (V1 and timeline-aware reviews)
+ * when it loaded, else the review panel's own page of timeline reviews. A timeline review keeps the panel's card, whose
+ * screenshot chips are named after the trade's evidence.
+ */
+export function tradeReviewEntries(panel: Pick<TradeTimelineReviewPanel, "history">, history: TradeAiHistory | null, noPlan: boolean): (AiResultEntry & { noPlan: boolean })[] {
+  if (history === null || history.error !== null) return panel.history.map(entry => ({ ...entry, card: entry.card ?? null, noPlan }));
+  const panelCards = new Map(panel.history.map(entry => [entry.technical.requestId, entry.card] as const));
+  return history.reviews.map(row => ({ ...row, card: panelCards.get(row.technical.requestId) ?? row.card ?? null, noPlan }));
+}
+
+function TradeReviewAiPanelView({ tradeId, accountId, accountArchived, closed, noPlan, developerMode, panel, history, timeDisplay, requestKey }: ViewProps) {
   const headingId = useId();
-  // Every review of the trade (V1 and timeline-aware); the panel's own page of timeline reviews when that list failed.
   const complete = history !== null && history.error === null;
-  const rows = complete ? history.reviews : panel.history;
-  const latest = latestCompleted(panel.history);
+  const rows = tradeReviewEntries(panel, history, noPlan);
+  const latest = latestCompleted(rows);
   if (!closed && rows.length === 0) return null;
   const available = !panel.error && panel.availability.status === "ENABLED";
   const needsSettings = closed && (panel.availability.status === "ACCOUNT_OFF" || panel.availability.status === "BUDGET_REACHED");
@@ -66,7 +82,7 @@ function TradeReviewAiPanelView({ tradeId, accountId, closed, noPlan, developerM
               requestKey,
               estimate: estimateModel(panel.estimate),
               available,
-              unavailableReason: panel.error ? REVIEW_UNAVAILABLE : availabilityReason(panel.availability),
+              unavailableReason: panel.error ? REVIEW_UNAVAILABLE : availabilityReason({ ...panel.availability, accountArchived }),
               secondary: true,
             },
           ]}
@@ -76,8 +92,8 @@ function TradeReviewAiPanelView({ tradeId, accountId, closed, noPlan, developerM
       ) : (
         <p className="t-meta">Close the trade to request an AI review.</p>
       )}
-      {needsSettings && <AiSettingsLink accountId={accountId} />}
-      {latest && <TradeTimelineReviewCard entry={latest} noPlan={noPlan} developerMode={developerMode} timeDisplay={timeDisplay} headingLevel={4} />}
+      {needsSettings && <AiSettingsLink accountId={accountId} archived={accountArchived} />}
+      {latest && <TradeReviewCard entry={latest} noPlan={noPlan} developerMode={developerMode} timeDisplay={timeDisplay} headingLevel={4} />}
       <div className="flex flex-col gap-2">
         <h4 className="text-[0.8125rem] font-semibold text-text">History</h4>
         {/* Only planned trades can have reviews in the earlier format, which the fallback list does not include. */}
@@ -91,7 +107,7 @@ function TradeReviewAiPanelView({ tradeId, accountId, closed, noPlan, developerM
 export async function TradeReviewAiPanel(props: TradeReviewAiPanelProps) {
   let loaded: [TradeTimelineReviewPanel, TradeAiHistory | null];
   try {
-    loaded = await Promise.all([loadTradeTimelineReviewPanel(props.tradeId), optional(loadTradeAiHistory(props.tradeId))]);
+    loaded = await Promise.all([loadTradeTimelineReviewPanel(props.tradeId), optional(loadTradeAiHistory(props.tradeId, { cards: true }))]);
   } catch (error) {
     unstable_rethrow(error);
     return (

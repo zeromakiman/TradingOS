@@ -27,7 +27,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ requireUser: async () => ({ db: m.db, user: { id: "10000000-0000-4000-8000-000000000001" } }) }));
 import { tradeTimelineReviewContext } from "@/ai/trade-timeline-review-context";
 import {
-  type AiAccounting, type AiRequestRow, historyRow, interpretationCard, loadAccountAiHistory, loadTradeAiHistory, resolveCardSources, timelineAiAnalyses, weekLabel,
+  type AiAccounting, type AiRequestRow, historyRow, interpretationCard, loadAccounting, loadTradeAiHistory, resolveCardSources, timelineAiAnalyses, weekLabel,
 } from "@/lib/ai-history";
 
 interface Fake { tables: Record<string, Row[]>; errors: Set<string> }
@@ -78,6 +78,9 @@ const timelineOutput = {
 };
 
 beforeEach(() => {
+  // Loaders read the clock (in-progress rows, budget months): pinned after every stored deadline.
+  vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+  vi.setSystemTime(new Date("2026-09-24T12:00:00Z"));
   fake = { tables: {}, errors: new Set() };
   m.db = fakeDb(fake);
 });
@@ -99,20 +102,77 @@ describe("historyRow", () => {
     expect(done.headline).toBe(tradeReviewOutput.planAdherence.interpretation);
     expect(historyRow("REVIEW_TRADE", base(), null, { holds: [], usage: [] }, now)).toMatchObject({ status: "IN_PROGRESS", label: "Trade Review · In progress · 08:00", technical: { errorCode: null } });
     expect(historyRow("REVIEW_TRADE", base(), null, { holds: [], usage: [] }, new Date("2026-09-01T13:11:00Z"))).toMatchObject({
-      status: "FAILED", failureReason: "The request did not finish in time.", accountingNote: "No reservation is recorded for this attempt.", technical: { errorCode: "TIMED_OUT" },
+      status: "FAILED", failureReason: "The request did not finish in time.", accountingNote: "Nothing was charged for this attempt.", technical: { errorCode: "TIMED_OUT" },
     });
   });
 
   it("explains failures and accounting in plain words while technical details carry codes and amounts", () => {
     const row = historyRow("REVIEW_TRADE", base(), { status: "FAILED", interpretation: null, error_code: "ACCOUNTING_UNCERTAIN", reservation_id: ids.reservation, created_at: "2026-09-01T13:02:00+00:00" }, accounting, now);
     expect(row).toMatchObject({
-      status: "FAILED", statusLabel: "Failed", failureReason: expect.stringMatching(/could not be confirmed/), accountingNote: expect.stringMatching(/uncertain/i),
-      technical: { requestId: request(1), operation: "REVIEW_TRADE", operationVersion: "REVIEW_TRADE_MINI_V1", contract: "REVIEW_TRADE_V1", provider: "openai", model: "gpt-5.4-mini", errorCode: "ACCOUNTING_UNCERTAIN", reservationId: ids.reservation, reservedMicros: 59400, chargedMicros: 59400, disposition: "UNCERTAIN" },
+      status: "FAILED", statusLabel: "Failed", failureReason: "The AI provider's usage could not be confirmed.",
+      accountingNote: "The amount held for this attempt stays until an accounting review confirms the cost or releases it; nothing beyond it was charged.",
+      technical: { requestId: request(1), operation: "REVIEW_TRADE", operationVersion: "REVIEW_TRADE_MINI_V1", contract: "REVIEW_TRADE_V1", provider: "openai", model: "gpt-5.4-mini", errorCode: "ACCOUNTING_UNCERTAIN", reservationId: ids.reservation, reservedMicros: 59400, chargedMicros: 59400, disposition: "UNCERTAIN", accountingReview: null },
     });
     expect(historyRow("REVIEW_TRADE", base(), { status: "FAILED", interpretation: null, error_code: "SOMETHING_NEW", reservation_id: null, created_at: "2026-09-01T13:02:00+00:00" }, { holds: [], usage: [] }, now).failureReason).toBe("The request did not complete.");
     const { technical, ...visible } = row;
     expect(technical.requestId).toBe(request(1));
     expect(JSON.stringify(visible)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-|REVIEW_TRADE_V1|openai|UNCERTAIN"|59400/);
+  });
+
+  it("states the outcome of an accounting review of an unconfirmed cost, while the stored UNCERTAIN record stays as it was", () => {
+    const result = { status: "FAILED" as const, interpretation: null, error_code: "ACCOUNTING_UNCERTAIN", reservation_id: ids.reservation, created_at: "2026-09-01T13:02:00+00:00" };
+    const reviewed = (decision: "NO_PROVIDER_USAGE_CONFIRMED" | "USAGE_CONFIRMED", reconciled: number, released: number, additional: number, reservation = ids.reservation) =>
+      historyRow("REVIEW_TRADE", base(), result, {
+        ...accounting,
+        reviews: [{ reservation_id: reservation, decision, reconciled_micros: reconciled, released_micros: released, additional_micros: additional, created_at: "2026-09-03T10:00:00+00:00" }],
+      }, now);
+    const released = reviewed("NO_PROVIDER_USAGE_CONFIRMED", 0, 59400, 0);
+    expect(released).toMatchObject({
+      failureReason: "The AI provider's usage could not be confirmed.",
+      accountingNote: "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released.",
+      technical: {
+        disposition: "UNCERTAIN", chargedMicros: 59400,
+        accountingReview: { decision: "NO_PROVIDER_USAGE_CONFIRMED", reconciledMicros: 0, releasedMicros: 59400, additionalMicros: 0, reviewedAt: "2026-09-03T10:00:00+00:00" },
+      },
+    });
+    // Whole cents, rounded up like the budget: 21,000 µ€ is €0.03.
+    expect(reviewed("USAGE_CONFIRMED", 21000, 38400, 0).accountingNote).toBe("Reviewed: the confirmed cost of €0.03 is recorded, and the rest of the held amount was released.");
+    expect(reviewed("USAGE_CONFIRMED", 59400, 0, 0).accountingNote).toBe("Reviewed: the confirmed cost of €0.06 is recorded.");
+    // A cost above the hold states no separately rounded difference: 10,600 µ€ (€0.0106) would read as "€0.02 more".
+    // The exact amounts stay in Technical details.
+    const above = reviewed("USAGE_CONFIRMED", 70000, 0, 10600);
+    expect(above.accountingNote).toBe("Reviewed: the confirmed cost of €0.07 is recorded. It was more than the amount held for this attempt, and all of it counts toward the AI budget.");
+    expect(above.accountingNote?.match(/€\d+\.\d+/g)).toEqual(["€0.07"]);
+    expect(above.technical.accountingReview).toMatchObject({ reconciledMicros: 70000, additionalMicros: 10600 });
+    // A review of another hold changes nothing here.
+    expect(reviewed("NO_PROVIDER_USAGE_CONFIRMED", 0, 59400, 0, "80000000-0000-4000-8000-000000000009")).toMatchObject({
+      accountingNote: "The amount held for this attempt stays until an accounting review confirms the cost or releases it; nothing beyond it was charged.", technical: { accountingReview: null },
+    });
+    for (const row of [released, reviewed("USAGE_CONFIRMED", 21000, 38400, 0)]) expect(row.accountingNote).not.toMatch(/reserv|UNCERTAIN|USAGE_CONFIRMED/);
+  });
+
+  it("words a hold without a usage record by its budget month: nothing can review it, the monthly reset releases it", () => {
+    // AI_ACCOUNTING_PERSISTENCE_FAILED: the usage record could not be written, so only the hold exists.
+    const held: AiAccounting = { holds: [{ id: ids.reservation, operation_id: request(1), reserved_micros: 59400, period: "2026-09-01" }], usage: [] };
+    const result = { status: "FAILED" as const, interpretation: null, error_code: "AI_ACCOUNTING_PERSISTENCE_FAILED", reservation_id: ids.reservation, created_at: "2026-09-01T13:02:00+00:00" };
+    const during = historyRow("REVIEW_TRADE", base(), result, held, new Date("2026-09-20T12:00:00Z"));
+    expect(during).toMatchObject({
+      failureReason: "The cost of this request could not be recorded.",
+      accountingNote: "The amount held for this attempt counts toward the AI budget of September 2026 until it resets on Oct 1; nothing beyond it was charged.",
+      technical: { holdPeriod: "2026-09-01", holdExpired: false, disposition: null },
+    });
+    // The budget month ends at 00:00 fixed UTC−5: 04:59 UTC on Oct 1 is still September.
+    expect(historyRow("REVIEW_TRADE", base(), result, held, new Date("2026-10-01T04:59:00Z")).technical.holdExpired).toBe(false);
+    const after = historyRow("REVIEW_TRADE", base(), result, held, new Date("2026-10-01T05:00:00Z"));
+    expect(after).toMatchObject({
+      accountingNote: "The amount held for this attempt counted toward the AI budget of September 2026 only and was released when it reset on Oct 1; nothing beyond it was charged.",
+      technical: { holdExpired: true },
+    });
+    // No promise of a review that cannot happen (private.resolve_ai_uncertainty resolves usage records only), and no
+    // "reservation" wording in the default view.
+    for (const row of [during, after]) expect(`${row.failureReason} ${row.accountingNote}`).not.toMatch(/review|reserv/i);
+    // A hold that has a usage record never counts as released by the reset.
+    expect(historyRow("REVIEW_TRADE", base(), result, { ...held, usage: [{ reservation_id: ids.reservation, charged_micros: 59400, disposition: "UNCERTAIN" }] }, new Date("2026-11-02T12:00:00Z")).technical.holdExpired).toBe(false);
   });
 
   it("parses each row by its stored contract and degrades unknown or malformed results to a failed-style row", () => {
@@ -221,6 +281,21 @@ describe("loadTradeAiHistory", () => {
     expect(JSON.stringify(visible)).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/);
   });
 
+  it("resolves the card of every completed review, V1 included, only when asked; the compact read needs no facts", async () => {
+    seed();
+    // The compact read (trade timeline) selects no facts: rows without them still load.
+    const compact = await loadTradeAiHistory(ids.trade);
+    expect(compact.error).toBeNull();
+    expect(compact.reviews.map(row => row.card)).toEqual([undefined, undefined]);
+    for (const row of [...fake.tables.trade_ai_reviews, ...fake.tables.trade_timeline_reviews]) row.facts = {};
+    const full = await loadTradeAiHistory(ids.trade, { cards: true });
+    expect(full.error).toBeNull();
+    expect(full.reviews.map(row => [row.operation, row.card?.headlineTitle])).toEqual([["REVIEW_TRADE_TIMELINE", "Trade review"], ["REVIEW_TRADE", "Plan adherence"]]);
+    // The V1 review keeps its own shape: six dimension chips and its lessons.
+    expect(full.reviews[1].card?.chips).toHaveLength(6);
+    expect(full.reviews[1].card?.full.map(section => section.title)).toContain("Lessons");
+  });
+
   it("throws for a trade of another user and degrades when AI history cannot be read", async () => {
     seed();
     await expect(loadTradeAiHistory("a0000000-0000-4000-8000-000000000009")).rejects.toThrow(/Trade unavailable/);
@@ -229,42 +304,60 @@ describe("loadTradeAiHistory", () => {
   });
 });
 
-describe("loadAccountAiHistory", () => {
+describe("loadAccounting", () => {
+  // Every live AI history (the trade page, the pre-trade and periodic panels, Review → History) reads its holds,
+  // usage records and accounting reviews here, then words them with historyRow.
+  const recent: AiRequestRow = { id: request(2), operation: operation("RECENT_TRADES_ANALYSIS"), created_at: "2026-09-08T12:00:00+00:00", deadline_at: "2026-09-08T12:10:00+00:00" };
+  const result = { status: "FAILED" as const, interpretation: null, error_code: "INPUT_LIMIT_EXCEEDED", reservation_id: ids.reservation, created_at: "2026-09-08T12:01:00+00:00" };
+  const load = (requestIds: readonly string[] = [request(2)]) => loadAccounting(m.db as Parameters<typeof loadAccounting>[0], ids.user, requestIds);
   function seed() {
     fake.tables = {
-      accounts: [{ id: ids.account, user_id: ids.user }],
-      weekly_ai_reviews: [requestRow(1, "WEEKLY_REVIEW", "2026-09-07T12:00:00+00:00", { account_id: ids.account, week_start: "2026-08-31" })],
-      weekly_ai_review_results: [completed(1, weeklyOutput, "2026-09-07T12:01:00+00:00")],
-      recent_ai_analyses: [requestRow(2, "RECENT_TRADES_ANALYSIS", "2026-09-08T12:00:00+00:00", { account_id: ids.account, requested_sample: 20, actual_sample: 12 })],
-      recent_ai_analysis_results: [failed(2, "INPUT_LIMIT_EXCEEDED", "2026-09-08T12:01:00+00:00", "review_id", ids.reservation)],
-      monthly_ai_reviews: [requestRow(3, "MONTHLY_REVIEW", "2026-09-02T12:00:00+00:00", { account_id: ids.account, month_start: "2026-08-01" })],
-      monthly_ai_review_results: [completed(3, monthlyOutput, "2026-09-02T12:01:00+00:00")],
-      ai_request_reservations: [{ id: ids.reservation, operation_id: request(2), user_id: ids.user, reserved_micros: 67320 }],
+      ai_request_reservations: [
+        { id: ids.reservation, operation_id: request(2), user_id: ids.user, reserved_micros: 67320 },
+        // Never read: another user's hold (RLS, and the explicit owner filter).
+        { id: "80000000-0000-4000-8000-000000000009", operation_id: request(2), user_id: "10000000-0000-4000-8000-000000000009", reserved_micros: 1 },
+      ],
       ai_usage_records: [{ reservation_id: ids.reservation, user_id: ids.user, charged_micros: 67320, disposition: "UNCERTAIN" }],
     };
   }
 
-  it("lists weekly, recent and monthly reviews newest first with their scope in words", async () => {
+  it("reads nothing without requests and only the owner's holds", async () => {
     seed();
-    const history = await loadAccountAiHistory(ids.account);
-    expect(history.rows.map(row => [row.operation, row.status, row.scopeLabel])).toEqual([
-      ["RECENT_TRADES_ANALYSIS", "FAILED", "Last 12 trades (20 requested)"],
-      ["WEEKLY_REVIEW", "COMPLETED", "Week of Aug 31–Sep 6"],
-      ["MONTHLY_REVIEW", "COMPLETED", "August 2026"],
-    ]);
-    expect(history.rows[0]).toMatchObject({ failureReason: "The request was larger than the reviewed limit.", accountingNote: expect.stringMatching(/uncertain/i), technical: { reservedMicros: 67320, disposition: "UNCERTAIN" } });
-    expect(history.rows[1].scope).toEqual({ kind: "WEEK", weekStart: "2026-08-31" });
+    expect(await load([])).toEqual({ holds: [], usage: [], reviews: [] });
+    expect((await load()).holds.map(hold => hold.id)).toEqual([ids.reservation]);
+    fake.errors.add("ai_usage_records");
+    await expect(load()).rejects.toThrow(/^AI accounting unavailable$/);
   });
 
-  it("filters by operation, limits the rows, refuses foreign accounts and degrades on read errors", async () => {
+  it("reads the owner's terminal accounting review of an unconfirmed cost and says what it settled", async () => {
     seed();
-    expect((await loadAccountAiHistory(ids.account, { operations: ["MONTHLY_REVIEW"] })).rows.map(row => row.operation)).toEqual(["MONTHLY_REVIEW"]);
-    expect((await loadAccountAiHistory(ids.account, { limit: 1 })).rows.map(row => row.operation)).toEqual(["RECENT_TRADES_ANALYSIS"]);
-    await expect(loadAccountAiHistory("20000000-0000-4000-8000-000000000009")).rejects.toThrow(/Account unavailable/);
-    fake.errors.add("monthly_ai_reviews");
-    expect(await loadAccountAiHistory(ids.account)).toEqual({ rows: [], error: expect.stringMatching(/unaffected/) });
+    fake.tables.ai_uncertainty_resolutions = [
+      // Keeping the cost unconfirmed is no outcome: the hold stays.
+      { reservation_id: ids.reservation, user_id: ids.user, decision: "KEEP_UNCERTAIN", reconciled_micros: 67320, released_micros: 0, additional_micros: 0, created_at: "2026-09-09T10:00:00+00:00" },
+      // Never read: another user's row (RLS, and the explicit owner filter).
+      { reservation_id: ids.reservation, user_id: "10000000-0000-4000-8000-000000000009", decision: "USAGE_CONFIRMED", reconciled_micros: 1, released_micros: 67319, additional_micros: 0, created_at: "2026-09-09T11:00:00+00:00" },
+    ];
+    const kept = await load();
+    expect(kept.reviews).toEqual([]);
+    expect(historyRow("RECENT_TRADES_ANALYSIS", recent, result, kept)).toMatchObject({
+      failureReason: "The request was larger than the reviewed limit.", accountingNote: "The amount held for this attempt stays until an accounting review confirms the cost or releases it; nothing beyond it was charged.",
+      technical: { reservedMicros: 67320, disposition: "UNCERTAIN", accountingReview: null },
+    });
+    fake.tables.ai_uncertainty_resolutions.push({
+      reservation_id: ids.reservation, user_id: ids.user, decision: "NO_PROVIDER_USAGE_CONFIRMED", reconciled_micros: 0, released_micros: 67320, additional_micros: 0, created_at: "2026-09-10T10:00:00+00:00",
+    });
+    expect(historyRow("RECENT_TRADES_ANALYSIS", recent, result, await load())).toMatchObject({
+      failureReason: "The request was larger than the reviewed limit.",
+      accountingNote: "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released.",
+      technical: { disposition: "UNCERTAIN", chargedMicros: 67320, accountingReview: { decision: "NO_PROVIDER_USAGE_CONFIRMED", reconciledMicros: 0, releasedMicros: 67320 } },
+    });
+    // The review ledger fails like every other accounting read; each history turns that into its own message.
+    fake.errors.add("ai_uncertainty_resolutions");
+    await expect(load()).rejects.toThrow(/^AI accounting unavailable$/);
   });
+});
 
+describe("weekLabel", () => {
   it("labels weeks within and across months", () => {
     expect(weekLabel("2026-10-05")).toBe("Week of Oct 5–11");
     expect(weekLabel("2026-09-28")).toBe("Week of Sep 28–Oct 4");

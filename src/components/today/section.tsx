@@ -73,3 +73,18 @@ export const VALUE_TONE_CLASS: Readonly<Record<ValueTone, string>> = {
 export function Value({ value, className }: { value: ValueText; className?: string }) {
   return <span className={cx("num", VALUE_TONE_CLASS[value.tone], className)}>{value.text}</span>;
 }
+
+/**
+ * A trading account's name among other facts of a line. Names run up to 100 characters, so the name never gets wider
+ * than its line: a long one ends in an ellipsis (the whole name stays in the text for screen readers, and in the
+ * tooltip). A separator after the name (`tail`, such as " ·") sits in the same box, so a cut name never leaves it alone
+ * at the start of the next line.
+ */
+export function AccountName({ name, tail, className }: { name: string; tail?: string; className?: string }) {
+  return (
+    <span className={cx("inline-block max-w-full truncate align-top", className)} title={name}>
+      {name}
+      {tail}
+    </span>
+  );
+}

@@ -69,6 +69,11 @@ export default async function accounts(run) {
     await press(main(page).getByRole("link", { name: "Personal 12K", exact: true }).first(), { tap });
     await arrive(page, url => url.pathname === `/accounts/${ids.personal}`);
     await page.getByRole("heading", { level: 1, name: "Personal 12K" }).waitFor();
+    // Opening an active account from the list makes it the context, so the header names the account on screen (§9.2).
+    const opened = await until(async () => /Personal 12K/.test(await selectorText(page)), { timeout: 20_000 });
+    s.check(opened, "opening the account from the list makes it the context: the header names it", await selectorText(page));
+    const actions = await main(page).getByRole("link", { name: /^(Plan Trade|Record Live Trade) on Personal 12K$/ }).evaluateAll(links => links.map(link => link.getAttribute("href")));
+    s.check(actions.length === 2 && actions.every(href => href?.endsWith(`?account=${ids.personal}`)), "its Plan Trade and Record Live Trade are on this account, once each", actions.join(" | "));
     const values = await textOf(region(page, "Account values"));
     s.check(/€/.test(values) && !/\$/.test(values), "the account's values are in its own currency (EUR)", values.slice(0, 120));
     s.check(/Balance from trades/.test(values) && /Starting balance \+ realized P&L/.test(values), "'Balance from trades' is explained, never called equity");
@@ -78,7 +83,9 @@ export default async function accounts(run) {
   });
 
   await run.step("switch-context", "Switch the context with the header selector; the selected account stays visible", async s => {
-    await goto(page, "/journal");
+    // From All Accounts: opening Personal 12K's dashboard above already made it the context.
+    await goto(page, "/journal?account=all");
+    s.check(/All Accounts/.test(await selectorText(page)), "starts in All Accounts", await selectorText(page));
     await press(selector(page), { tap });
     const menu = page.getByRole("menu");
     await menu.waitFor({ state: "visible" });
@@ -143,6 +150,11 @@ export default async function accounts(run) {
   await run.step("new-account-dashboard", "The new account's dashboard opens in its currency and the account is listed", async s => {
     await page.getByRole("heading", { level: 1, name: NEW_ACCOUNT }).waitFor();
     s.check(/GBP/.test(await textOf(main(page))), "the new account's dashboard opens in GBP");
+    const context = await until(async () => new RegExp(NEW_ACCOUNT).test(await selectorText(page)), { timeout: 20_000 });
+    s.check(context, "and as the context: the header names the new account", await selectorText(page));
+    // No closed trade yet: one explanation in place of the charts, and the page offers each way to start once.
+    const starts = await main(page).getByRole("link", { name: /^(Plan Trade|Record Live Trade)\b/i }).evaluateAll(links => links.map(link => `${link.getAttribute("aria-label")} -> ${link.getAttribute("href")}`));
+    s.check(starts.length === 2 && starts.every(start => start.endsWith(`?account=${created}`)), "Plan Trade and Record Live Trade appear once each in the page, on the new account", starts.join(" | "));
     await goto(page, "/accounts?account=all");
     const listed = await activeAccountNames(page, run.mobile);
     s.check(listed.includes(NEW_ACCOUNT), "it is listed with the active accounts", listed.join(" | "));

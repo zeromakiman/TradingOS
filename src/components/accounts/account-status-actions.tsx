@@ -8,8 +8,9 @@ import { idleState } from "@/app/actions/state";
 import { Button, IconButton } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { prefetchFor } from "@/components/ui/links";
 import { useOptionalToast } from "@/components/ui/toast";
-import { ACTIVE_ACCOUNTS_HEADING, ARCHIVE_COPY, manageHref, RESTORE_COPY } from "./copy";
+import { ACTIVE_ACCOUNTS_HEADING, ARCHIVE_COPY, accountDashboardHref, manageHref, RESTORE_COPY } from "./copy";
 import { restoreFocusAfterDialog } from "./focus";
 
 /** Archive / Restore with confirmation (spec §14.7, §14.9). The account and its history are never deleted. */
@@ -99,6 +100,7 @@ export function AccountRowMenu({ accountId, name, status }: { accountId: string;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const changed = useRef(false);
   const archiving = status === "ACTIVE";
+  const dashboardHref = accountDashboardHref({ id: accountId, status });
   const onOpenChange = (open: boolean) => {
     setDialogOpen(open);
     if (open) {
@@ -116,7 +118,7 @@ export function AccountRowMenu({ accountId, name, status }: { accountId: string;
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem asChild>
-            <Link href={`/accounts/${accountId}`}>
+            <Link href={dashboardHref} prefetch={prefetchFor(dashboardHref, undefined)}>
               <LayoutDashboard aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate">Open dashboard</span>
             </Link>

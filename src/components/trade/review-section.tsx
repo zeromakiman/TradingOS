@@ -6,13 +6,14 @@ import type { TradeDetail } from "@/lib/trades-data";
 import { lessonsOf, lessonTiming, type ReviewMode, tagsSummary, whenLabel } from "./model";
 import { AddLessonButton, MarkReviewedButton } from "./review-controls";
 import { SubSection, WorkspaceSection } from "./section";
-import { TagsForm } from "./tags-form";
+import { TagsDraftScope, TagsForm } from "./tags-form";
 
 /**
  * Review section (docs/V2_ARCHITECTURE.md §2.2, §2.5, §3.8, §14.4). A closed trade: tags (grade, liquidity, MSS
  * timeframe, custom tags), lessons (journal entries of the Lesson kind), Mark reviewed / Reopen review and the AI
- * review card with its history. A skipped or cancelled plan keeps tags and lessons; an open trade shows its tags in
- * words with the editor collapsed. Server component; the controls are client components.
+ * review card with its history. Tags and Mark reviewed share one `TagsDraftScope`: with unsaved tag changes the button
+ * reads "Save tags and mark reviewed" and saves them first. A skipped or cancelled plan keeps tags and lessons; an open
+ * trade shows its tags in words with the editor collapsed. Server component; the controls are client components.
  */
 
 export interface ReviewSectionProps {
@@ -91,11 +92,13 @@ export function ReviewSection({ detail, mode, now, display, keys, ai }: ReviewSe
     : "What you learned from a plan you didn't take.";
   return (
     <WorkspaceSection id="review" title={TITLES[mode]} meta={meta}>
-      <TagsForm tradeId={detail.tradeId} initial={{ grade: detail.tags.grade, liquidity: detail.tags.liquidity, mss: detail.tags.mss, tags: detail.tags.tags }} source={detail.tags.source} />
-      <div className="border-t border-border pt-5">
-        <Lessons detail={detail} now={now} display={display} />
-      </div>
-      {mode === "review" && !reviewed && <ReviewStatus detail={detail} keys={keys} />}
+      <TagsDraftScope>
+        <TagsForm tradeId={detail.tradeId} initial={{ grade: detail.tags.grade, liquidity: detail.tags.liquidity, mss: detail.tags.mss, tags: detail.tags.tags }} source={detail.tags.source} />
+        <div className="border-t border-border pt-5">
+          <Lessons detail={detail} now={now} display={display} />
+        </div>
+        {mode === "review" && !reviewed && <ReviewStatus detail={detail} keys={keys} />}
+      </TagsDraftScope>
       {mode === "review" && ai && <div className="border-t border-border pt-5 empty:hidden">{ai}</div>}
     </WorkspaceSection>
   );

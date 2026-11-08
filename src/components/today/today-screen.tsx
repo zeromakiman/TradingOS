@@ -24,7 +24,8 @@ function Header({ view }: { view: TodayView }) {
       title={TODAY_TITLE}
       description={
         <>
-          <span className="font-medium text-1">{view.context.label}</span> · {view.context.detail}
+          {/* An account name of up to 100 characters wraps, even one without spaces, instead of widening the page. */}
+          <span className="font-medium break-words text-1">{view.context.label}</span> · {view.context.detail}
           {/* The day is always the UTC−5 strategy day; say so when times are shown in another zone. */}
           {view.display.mode !== "strategy" && <span> · {view.zoneNote}</span>}
         </>

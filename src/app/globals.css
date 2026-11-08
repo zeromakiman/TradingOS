@@ -32,6 +32,9 @@
 @theme {
   /* Only design tokens exist as colours; the default palette would invite ad-hoc hues. */
   --color-*: initial;
+  /* `text-on-scrim`: text on the fixed dark scrim laid over a screenshot. The scrim is the same in both themes, so its
+     text is too (theme colours such as `text-1` turn near-black on it in the light theme). */
+  --color-on-scrim: #ffffff;
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --radius-control: 6px;
@@ -2311,7 +2314,9 @@
   .app-topbar {
     position: sticky;
     top: 0;
-    z-index: 30;
+    /* Shell chrome, like the tab bar: above every sticky layer inside a page (z-index 30 at most, such as the docked
+       journal composer, which scrolls past the top bar on phones), below overlays (50 and up). */
+    z-index: 40;
     display: flex;
     align-items: center;
     gap: 0.5rem;

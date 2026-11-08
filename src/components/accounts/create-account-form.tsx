@@ -10,13 +10,14 @@ import { DecimalInput } from "@/components/ui/decimal-input";
 import { Field } from "@/components/ui/field";
 import { Input, Select } from "@/components/ui/input";
 import { ActionFeedback } from "./action-feedback";
-import { ACCOUNT_CURRENCIES, ACCOUNT_TYPE_HINTS, ACCOUNT_TYPES, accountTypeLabel, PLATFORM_HINT, PLATFORMS, platformLabel } from "./copy";
+import { ACCOUNT_CURRENCIES, ACCOUNT_TYPE_HINTS, ACCOUNT_TYPES, accountDashboardHref, accountTypeLabel, PLATFORM_HINT, PLATFORMS, platformLabel } from "./copy";
 import { type FieldRule, MONEY_COPY } from "./form-checks";
 import { fieldError, useAccountAction } from "./use-account-action";
 
 /**
  * Create a trading account (docs/V2_ARCHITECTURE.md §3.2, §14.12). Used by /accounts/new and by the Today onboarding
- * card, so it takes no props: on /accounts/new a created account opens its dashboard; anywhere else the page refreshes
+ * card, so it takes no props: on /accounts/new a created account opens its dashboard as the trading-account context
+ * (the header then names it); anywhere else the page refreshes
  * (the action revalidates the whole app, so onboarding gives way to the normal screen).
  *
  * The request key is created on the first submission and kept until one succeeds, so a retry after a dropped
@@ -53,7 +54,8 @@ export function CreateAccountForm() {
   const { state, pending, run, feedbackKey } = useAccountAction<{ accountId: string }>(createTradingAccount, result => {
     requestKey.current = null;
     const accountId = result.data?.accountId;
-    if (pathname?.startsWith("/accounts") && accountId) router.push(`/accounts/${accountId}`);
+    // The new account's dashboard makes it the context, so the header names the account on screen (§9.2).
+    if (pathname?.startsWith("/accounts") && accountId) router.push(accountDashboardHref({ id: accountId, status: "ACTIVE" }));
     else router.refresh();
   });
 

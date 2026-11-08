@@ -1,5 +1,9 @@
 # Deterministic slice acceptance
 
+> Historical V1 record. The V1 Analyze page and `pnpm test:live` (`scripts/verify-live.mjs`, which calls V1 RPCs that
+> migration 0019 revokes) no longer work on V2. The V2 browser acceptance is `scripts/local-stack/acceptance/`
+> ([scripts/local-stack/README.md](../scripts/local-stack/README.md)).
+
 Connected Supabase and local production-app acceptance completed on 2026-09-05. See PERSISTENCE_INTEGRATION_REVIEW.md and LIVE_VERIFICATION.json for exact evidence. This is not a hosted Vercel deployment claim.
 
 ## Short manual check

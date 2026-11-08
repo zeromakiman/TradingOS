@@ -136,7 +136,8 @@ export function MockSyncControls({ rows }: { rows: readonly MockSyncRow[] }) {
     <ul className="flex flex-col divide-y divide-border">
       {rows.map(row => (
         <li key={row.accountId} className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 md:flex-row md:items-start md:justify-between md:gap-6">
-          <div className="min-w-0">
+          {/* An account name of up to 100 characters, maybe without spaces, breaks instead of widening the list. */}
+          <div className="min-w-0 wrap-anywhere">
             <p className="font-medium text-text">{row.accountName}</p>
             <p className="t-meta">{row.status}</p>
           </div>

@@ -34,7 +34,7 @@ vi.mock("@/lib/performance-data", async importOriginal => ({
 }));
 
 import EdgeLoading from "@/app/(app)/edge/loading";
-import { exportHref } from "@/app/edge/export/contract";
+import { exportHref, parseExportRequest } from "@/app/edge/export/contract";
 import EdgePage from "@/app/(app)/edge/page";
 import { binSign, Histogram } from "@/components/charts/bar-chart";
 import { keepPartsTogether } from "@/components/edge/breakdowns";
@@ -49,7 +49,9 @@ import {
 } from "@/components/edge/model";
 import { edgeHref, withParams } from "@/components/edge/params";
 import { dayView, PerformanceCalendar, PHONE_DAY_LIMIT } from "@/components/edge/performance-calendar";
-import { accountFilterChip, activeFilterCount, edgeAccountHistoryHref, edgeFilters, filterQuery, parseEdgeQuery, presetBounds } from "@/components/edge/query";
+import {
+  accountFilterChip, activeFilterCount, edgeAccountHistoryHref, edgeFilters, filterQuery, linkFilterChips, parseEdgeQuery, presetBounds, unappliedNotice,
+} from "@/components/edge/query";
 import { formatR, formatSignedMoney } from "@/domain/format";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
 import { EARLY_SAMPLE_NOTE } from "@/domain/performance";
@@ -201,6 +203,93 @@ describe("EDGE URL state (§14.6)", () => {
     // All Accounts: the file of the page first, then one per account with trades on the page.
     expect(exportLinks({ context: ALL, query, rows: dataset() }).map(link => link.label)).toEqual(["All Accounts", "FTMO 100K", "Personal 12K"]);
     expect(exportLinks({ context: ONE, query, rows: dataset() })).toHaveLength(1);
+  });
+
+  it("reads a V1 EDGE link with its V1 meanings (§1.2): exit-day bounds, this month, versions, entry weekday and result", () => {
+    // V1 `from`/`to` were exit days: the custom range of the V1 page, never dropped for "All time".
+    expect(parseEdgeQuery({ account: FTMO, from: "2026-09-01", to: "2026-09-30" }, NOW)).toEqual({
+      range: "custom", closedFrom: "2026-09-01", closedTo: "2026-09-30", calendar: "NET_R", invalid: [],
+    });
+    // An inverted V1 range is read the way it was meant, like EDGE's own custom range.
+    expect(parseEdgeQuery({ from: "2026-09-30", to: "2026-09-01" }, NOW)).toMatchObject({ range: "custom", closedFrom: "2026-09-01", closedTo: "2026-09-30" });
+    // `period=month` is This month; `outcome` is the result.
+    expect(parseEdgeQuery({ period: "month", outcome: "LOSS" }, NOW)).toEqual({
+      range: "month", closedFrom: "2026-10-01", closedTo: "2026-10-23", result: "LOSS", calendar: "NET_R", invalid: [],
+    });
+    // `strategy` and `risk` name versions (the Journal's `risk` is a risk percent); ASIAN_RANGE is Asia.
+    const versions = parseEdgeQuery({ strategy: STRATEGY_A.toUpperCase(), risk: RISK_A, weekday: "tuesday", session: "ASIAN_RANGE" }, NOW);
+    expect(edgeFilters(versions)).toEqual({ session: "ASIA", weekday: "Tuesday", strategyVersionId: STRATEGY_A, riskPlanVersionId: RISK_A });
+    expect(activeFilterCount(versions)).toBe(4);
+    expect(filterQuery(versions)).toBe(`session=ASIA&weekday=Tuesday&strategy=${STRATEGY_A}&riskPlan=${RISK_A}`);
+    // Every filter narrows: V1 bounds intersect the link's own range.
+    expect(parseEdgeQuery({ range: "30d", from: "2026-10-10" }, NOW)).toMatchObject({ range: "custom", closedFrom: "2026-10-10", closedTo: "2026-10-23" });
+    expect(parseEdgeQuery({ range: "month", period: "month" }, NOW)).toMatchObject({ range: "month", invalid: [] });
+    // A V1 range that excludes every day of the link's own range contradicts it: named and ignored, never silently.
+    expect(parseEdgeQuery({ range: "last-month", period: "month" }, NOW)).toMatchObject({ range: "last-month", closedFrom: "2026-09-01", closedTo: "2026-09-30", invalid: ["period"] });
+    // Unreadable V1 values are named; a result EDGE cannot have (open trades) too.
+    expect(parseEdgeQuery({ from: "2026-13-01", period: "week", risk: "0.5", outcome: "OPEN", weekday: "Funday", strategy: "ICT V1.0" }, NOW).invalid)
+      .toEqual(["from", "period", "weekday", "strategy", "risk", "outcome"]);
+    expect(parseEdgeQuery({ result: "open" }, NOW)).toMatchObject({ invalid: ["result"] });
+    expect(parseEdgeQuery({ result: "open" }, NOW).result).toBeUndefined();
+  });
+
+  it("keeps V1's last-30-trades window and its no-entry-time session aside and says so, instead of dropping them silently", () => {
+    const query = parseEdgeQuery({ period: "last30", session: "OTHER", model: "OTE" }, NOW);
+    expect(query).toEqual({ range: "all", model: "OTE", calendar: "NET_R", lastClosed: 30, withoutEntryTime: true, invalid: [] });
+    expect(edgeFilters(query)).toEqual({ model: "OTE" });
+    expect(unappliedNotice(query)).toBe(
+      "This link's “last 30 completed trades” window and “no recorded entry time” session aren't available in EDGE: the statistics include every closed trade that matches the other filters.",
+    );
+    expect(unappliedNotice(parseEdgeQuery({ period: "last30" }, NOW))).toBe(
+      "This link's “last 30 completed trades” window isn't available in EDGE: the statistics include every closed trade that matches the other filters.",
+    );
+    expect(unappliedNotice(parseEdgeQuery({ session: "other" }, NOW))).toBe(
+      "This link's “no recorded entry time” session isn't available in EDGE: the statistics include trades of every session.",
+    );
+    expect(unappliedNotice(parseEdgeQuery({ range: "30d" }, NOW))).toBeNull();
+    // The page's own links never carry them: what the page counts is what they open.
+    expect(filterQuery(query)).toBe("model=OTE");
+  });
+
+  it("selects the same trades on the page and in the CSV of one V1 link (one parser)", () => {
+    const links = [
+      `account=${FTMO}&from=2026-09-01&to=2026-09-30`,
+      "period=month&outcome=LOSS",
+      `weekday=Tuesday&strategy=${STRATEGY_A}&risk=${RISK_A}&model=OTE&instrument=eurusd&session=ASIAN_RANGE`,
+      `range=30d&from=2026-10-10&riskPlan=${RISK_B}&result=win`,
+      `from=2026-09-01&closedFrom=2026-10-01&to=2026-10-06&accountFilter=${PERSONAL}`,
+    ];
+    for (const link of links) {
+      const params = new URLSearchParams(link);
+      expect(parseExportRequest(params, NOW)).toEqual({
+        ok: true,
+        request: { scope: params.has("account") ? { mode: "account", accountId: FTMO } : { mode: "context" }, filters: edgeFilters(parseEdgeQuery(params, NOW)), withoutEntryTime: false, last: null },
+      });
+    }
+    // The page's links name what the file holds in V2 words: the round trip keeps every filter.
+    const page = parseEdgeQuery(new URLSearchParams(links[2]), NOW);
+    expect(parseExportRequest(new URLSearchParams(exportHref(page, FTMO).split("?")[1]), NOW)).toMatchObject({ ok: true, request: { filters: edgeFilters(page) } });
+    // Only the file applies V1's last 30 trades and its no-entry-time session; the page says it does not.
+    expect(parseExportRequest(new URLSearchParams("period=last30&session=OTHER"), NOW)).toEqual({
+      ok: true, request: { scope: { mode: "context" }, filters: {}, withoutEntryTime: true, last: 30 },
+    });
+    // Unreadable values are refused by name; a contradictory V1 range too (the page names and ignores it).
+    expect(parseExportRequest(new URLSearchParams("range=last-month&period=month"), NOW)).toEqual({ ok: false, error: "Some filters in this export link couldn't be read: period." });
+  });
+
+  it("shows a link's filters without a control as chips in words, each removing only itself", () => {
+    const query = parseEdgeQuery({ weekday: "friday", strategy: STRATEGY_A, risk: RISK_A, outcome: "breakeven", model: "OTE", view: "pnl", month: "2026-09" }, NOW);
+    expect(linkFilterChips(query, { strategy: "ICT V1.0", riskPlan: "Risk Plan V1.0" })).toEqual([
+      { key: "weekday", label: "Entry weekday: Friday", removeHref: `/edge?model=OTE&strategy=${STRATEGY_A}&riskPlan=${RISK_A}&result=breakeven&view=pnl` },
+      { key: "strategy", label: "Strategy: ICT V1.0", removeHref: `/edge?model=OTE&weekday=Friday&riskPlan=${RISK_A}&result=breakeven&view=pnl` },
+      { key: "risk-plan", label: "Risk Plan V1.0", removeHref: `/edge?model=OTE&weekday=Friday&strategy=${STRATEGY_A}&result=breakeven&view=pnl` },
+      { key: "result", label: "Result: Break-even", removeHref: `/edge?model=OTE&weekday=Friday&strategy=${STRATEGY_A}&riskPlan=${RISK_A}&view=pnl` },
+    ]);
+    // Without a trade that names a version, the chip says so in words, never with the id.
+    expect(linkFilterChips(query, { strategy: null, riskPlan: null }).map(chip => chip.label)).toEqual([
+      "Entry weekday: Friday", "Strategy: selected version", "Risk plan: selected version", "Result: Break-even",
+    ]);
+    expect(linkFilterChips(parseEdgeQuery({ model: "OTE" }, NOW), { strategy: null, riskPlan: null })).toEqual([]);
   });
 });
 
@@ -396,6 +485,39 @@ describe("EDGE presentation model", () => {
     expect(oct14?.href).toBe("/journal?closedFrom=2026-10-14&closedTo=2026-10-14&state=closed%2Creviewed");
     expect(daily.money.map(entry => entry.currency)).toEqual(["EUR", "USD"]);
     expect(daily.money[0].data.find(point => point.key === "2026-10-14")?.valueLabel).toBe(formatSignedMoney("-30", "EUR"));
+  });
+
+  it("keeps every figure and link of a currency's daily net P&L bar in that currency (§9.3, §13.6)", () => {
+    // Sep 2: a EUR trade at -1.03R and a USD trade at +1.29R. Oct 8: a EUR trade without a recorded risk and a USD trade
+    // at +4.17R. Oct 14: USD only.
+    const rows = [
+      closed("2026-09-02", "-1.03", { account_id: PERSONAL, currency: "EUR", net_pnl: "-62.4" }),
+      closed("2026-09-02", "1.29", { net_pnl: "645" }),
+      closed("2026-10-08", null, { account_id: PERSONAL, currency: "EUR", net_pnl: "-50.26", origin: "LIVE_FIRST" }),
+      closed("2026-10-08", "4.17", { net_pnl: "2089.25" }),
+      closed("2026-10-14", "-1", { net_pnl: "-500" }),
+    ];
+    const data = edgeData(rows);
+    if (!data.view) throw new Error("expected a view");
+    const daily = dailyData(data.view, data.rows);
+    const bar = (currency: string, day: string) => daily.money.find(entry => entry.currency === currency)?.data.find(point => point.key === day);
+    const dayLink = (day: string, currency?: string) => `/journal?${currency ? `currency=${currency}&` : ""}closedFrom=${day}&closedTo=${day}&state=closed%2Creviewed`;
+    // A bar counts, prices and links only its own currency's trades: the EUR trade without risk never borrows USD R.
+    expect(bar("EUR", "2026-10-08")).toMatchObject({ valueLabel: "-€50.26", detail: "1 trade · 1 without risk", href: dayLink("2026-10-08", "EUR") });
+    expect(bar("USD", "2026-10-08")).toMatchObject({ valueLabel: "+$2,089.25", detail: "1 trade · +4.17R", href: dayLink("2026-10-08", "USD") });
+    expect(bar("EUR", "2026-09-02")).toMatchObject({ detail: "1 trade · -1.03R", href: dayLink("2026-09-02", "EUR") });
+    expect(bar("USD", "2026-09-02")).toMatchObject({ detail: "1 trade · +1.29R", href: dayLink("2026-09-02", "USD") });
+    expect(bar("USD", "2026-10-14")).toMatchObject({ detail: "1 trade · -1.00R", href: dayLink("2026-10-14", "USD") });
+    // The Net R bar of a day still covers all its trades, with every currency's money, and opens all of them.
+    expect(daily.r.find(point => point.key === "2026-09-02")).toMatchObject({ valueLabel: "+0.26R", href: dayLink("2026-09-02") });
+    expect(daily.r.find(point => point.key === "2026-09-02")?.detail).toBe(`2 trades · ${formatSignedMoney("-62.4", "EUR")} · ${formatSignedMoney("645", "USD")}`);
+    // Every trade in one currency (one account): the currency adds nothing, so the bar opens the day itself.
+    const single = edgeData(rows.filter(row => row.currency === "USD"), {}, ONE);
+    if (!single.view) throw new Error("expected a view");
+    const usd = dailyData(single.view, single.rows);
+    expect(usd.money.map(entry => entry.currency)).toEqual(["USD"]);
+    expect(usd.money[0].data.map(point => point.href)).toEqual(usd.r.map(point => point.href));
+    expect(usd.money[0].data.every(point => !(point.href ?? "").includes("currency="))).toBe(true);
   });
 
   it("gives every breakdown group its N, the trades its N leaves out and its evidence label, and draws Planned vs Live-first only with ten trades per origin", () => {
@@ -694,6 +816,41 @@ describe("EDGE page (rendered)", () => {
     const html = await renderPage({});
     expect(visibleText(html)).toContain("Create your first trading account");
     expect(html).toContain('href="/accounts/new"');
+  });
+
+  it("applies a V1 bookmark's filters, shows them as chips, keeps them in every link and says which V1 option it cannot apply", async () => {
+    m.context = ONE;
+    // What the read returns for those filters: FTMO's Monday wins of ICT V1.0 between Oct 1 and Oct 16 (Oct 5 and Oct 12).
+    m.load.mockImplementation(async () => ({
+      rows: dataset().filter(row => row.account_id === FTMO && ["2026-10-05", "2026-10-12"].some(day => row.exited_at?.startsWith(day))), truncated: false,
+    }));
+    const html = await renderPage({ account: FTMO, from: "2026-10-01", to: "2026-10-16", outcome: "WIN", strategy: STRATEGY_A, weekday: "Monday", period: "last30" });
+    // The statistics are read with the V1 filters (exit days, result, strategy version, entry weekday).
+    expect(m.load).toHaveBeenCalledWith(expect.anything(), expect.any(String), { mode: "account", accountId: FTMO }, {
+      closedFrom: "2026-10-01", closedTo: "2026-10-16", weekday: "Monday", strategyVersionId: STRATEGY_A, result: "WIN",
+    }, { closedOnly: true });
+    const text = visibleText(html);
+    expect(text).toContain("Custom range · Oct 1 – Oct 16");
+    for (const chip of ["Entry weekday: Monday", "Strategy: ICT V1.0", "Result: Win"]) {
+      expect(text).toContain(chip);
+      expect(html).toContain(`aria-label="Remove filter: ${chip}"`);
+    }
+    expect(text).toContain("This link's “last 30 completed trades” window isn't available in EDGE: the statistics include every closed trade that matches the other filters.");
+    expect(text).not.toContain("couldn't be read");
+    expect(text).not.toMatch(UUID);
+    expect(text).toContain("Reset filters");
+    // A chip removes its own filter only.
+    const remove = /<a[^>]*aria-label="Remove filter: Result: Win"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(remove).toContain(`href="/edge?range=custom&amp;closedFrom=2026-10-01&amp;closedTo=2026-10-16&amp;weekday=Monday&amp;strategy=${STRATEGY_A}"`);
+    // Every drill-down keeps all of them, so the Journal lists the trades the page counts.
+    const journal = [...html.matchAll(/href="(\/journal\?[^"]*)"/g)].map(match => new URL(match[1].replace(/&amp;/g, "&"), "http://edge.test").searchParams);
+    expect(journal.length).toBeGreaterThan(3);
+    expect(journal.filter(params => params.get("result") !== "win" || params.get("weekday") !== "Monday" || params.get("strategy") !== STRATEGY_A).map(String)).toEqual([]);
+    expect(text).toContain("Closed trades 2");
+    // So do the CSV and the calendar's month links (the page's filters in V2 words; the V1 window is not claimed).
+    const data = await loadEdge({ from: "2026-10-01", to: "2026-10-16", outcome: "WIN", strategy: STRATEGY_A, weekday: "Monday", period: "last30" });
+    expect(exportLinks(data)[0].href).toBe(`/edge/export?account=${FTMO}&closedFrom=2026-10-01&closedTo=2026-10-16&result=win&weekday=Monday&strategy=${STRATEGY_A}`);
+    expect(calendarModel(data, filterQuery(data.query))?.baseQuery).toBe(`range=custom&closedFrom=2026-10-01&closedTo=2026-10-16&weekday=Monday&strategy=${STRATEGY_A}&result=win`);
   });
 
   it("says when a link's filters could not be read and when results are incomplete", async () => {

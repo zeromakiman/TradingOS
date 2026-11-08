@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { previewContext, previewProposal, usageFixture } from "@/domain/fixtures";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
+import { type DailyUsage, evaluateRisk, type RiskContext } from "@/domain/risk";
 import {
-  ARCHIVED_DRAFT_LABEL, blockedOnEarlierDay, deriveDraftCheck, deriveLifecycle, deriveTradeState, LOCKED_PLAN_NOTE, NO_PLAN_BANNER, planEndedAt,
-  type TradeStateOptions,
+  ARCHIVED_DRAFT_LABEL, type BlockingFinding, blockedOnEarlierDay, blockingFindingsOf, blockRemedy, deriveDraftCheck, deriveLifecycle, deriveTradeState,
+  LOCKED_PLAN_NOTE, NO_PLAN_BANNER, planEndedAt, reasonWithCount, type TradeStateOptions, withBlockingFindings,
 } from "@/domain/trade-state";
 
 function ledger(changes: Partial<LedgerTrade> = {}): LedgerTrade {
@@ -311,5 +313,100 @@ describe("trades of an archived account (spec §3.2, §9, §14.9)", () => {
   it("is off by default", () => {
     expect(deriveTradeState(checked("APPROVED"), options)).toMatchObject({ label: "Ready to lock", canDuplicate: true });
     expect(deriveTradeState(checked("APPROVED"), { ...options, accountArchived: false }).nextAction?.kind).toBe("LOCK_PLAN");
+  });
+});
+
+describe("what clears a block found today (spec §2.4, §6.3, §10)", () => {
+  // The real engine (report 1.2) on the preview account: equity 10,000, 0.5% → a $50 budget, EURUSD 0.25 lots × 200 ticks.
+  const engine = (plan: Partial<RiskContext["plan"]>, usage: Partial<DailyUsage> = {}, proposal: Record<string, unknown> = {}, changes: Partial<RiskContext> = {}) => {
+    const ctx: RiskContext = { ...previewContext, ...changes, plan: { ...previewContext.plan, ...plan }, usage: usageFixture(usage) };
+    return evaluateRisk({ ...previewProposal, narrative: "Fixture.", contractConfirmed: true, news: "CLEAR", ...proposal }, ctx);
+  };
+  const blockingCodes = (report: ReturnType<typeof engine>) => report.issues.filter(issue => issue.severity === "BLOCK").map(issue => issue.code);
+  const findings = (report: ReturnType<typeof engine>) => blockingFindingsOf(blockingCodes(report), report);
+  const blockedToday = ledger({ latest_check_decision: "BLOCKED", latest_check_at: "2026-09-04T13:30:00Z" });
+  const reason = "Daily trade limit reached: 2 of 2 trades already used today (2 planned, 0 recorded live).";
+
+  it("names how many more reasons the check found after the first", () => {
+    expect(reasonWithCount([{ detail: "First." }])).toBe("First.");
+    expect(reasonWithCount([{ detail: "First." }, { detail: "Second." }, { detail: "Third." }])).toBe("First. (+2 more)");
+    expect(reasonWithCount([])).toBeUndefined();
+  });
+
+  it("reads the room each daily cap had left from the stored report, exactly as the engine compared it", () => {
+    const risk = engine({ dailyRiskCap: "70.5" }, { plannedRisk: "50.125", plannedSlots: 1 });
+    expect(blockingCodes(risk)).toEqual(["DAILY_RISK_LIMIT"]);
+    expect(findings(risk)).toEqual([{ code: "DAILY_RISK_LIMIT", room: "20.375" }]);
+    const loss = engine({ dailyLossCap: "100" }, { realizedLoss: "30", openExposure: "30.5" });
+    expect(findings(loss)).toEqual([{ code: "DAILY_LOSS_LIMIT", room: "39.5", openRisk: "30.5" }]);
+    // An older report carries no amounts: an edit is then taken to help.
+    expect(blockingFindingsOf(["DAILY_RISK_LIMIT", "MAX_TRADES"], null)).toEqual([{ code: "DAILY_RISK_LIMIT" }, { code: "MAX_TRADES" }]);
+  });
+
+  it("clears a daily cap with room left by an edit, and waits for the next day once nothing is left", () => {
+    const remedies = (list: BlockingFinding[]) => list.map(blockRemedy);
+    expect(remedies(findings(engine({ dailyRiskCap: "70" }, { plannedRisk: "50", plannedSlots: 1 })))).toEqual(["EDIT"]);
+    expect(remedies(findings(engine({ dailyRiskCap: "50" }, { plannedRisk: "50", plannedSlots: 1 })))).toEqual(["DAY"]);
+    expect(remedies(findings(engine({ dailyLossCap: "100" }, { realizedLoss: "60" })))).toEqual(["EDIT"]);
+    expect(remedies(findings(engine({ dailyLossCap: "100" }, { realizedLoss: "100" })))).toEqual(["DAY"]);
+    // Open risk fills the limit: closing a position frees room.
+    expect(remedies(findings(engine({ dailyLossCap: "100" }, { realizedLoss: "40", openExposure: "60" })))).toEqual(["OPEN_RISK"]);
+    // Losses alone reach the limit: closing the open position frees nothing, even at break-even, so only tomorrow helps.
+    expect(remedies(findings(engine({ dailyLossCap: "100" }, { realizedLoss: "100", openExposure: "60" })))).toEqual(["DAY"]);
+    expect(remedies(findings(engine({ dailyLossCap: "100" }, { realizedLoss: "120", openExposure: "60" })))).toEqual(["DAY"]);
+    expect(blockRemedy({ code: "DAILY_LOSS_LIMIT", room: "-59.99", openRisk: "60" })).toBe("OPEN_RISK");
+    expect(blockRemedy({ code: "DAILY_LOSS_LIMIT", room: "-60", openRisk: "60" })).toBe("DAY");
+    expect(blockRemedy({ code: "DAILY_LOSS_LIMIT", room: "-60", openRisk: null })).toBe("DAY");
+    // A duplicate differs once its values change; the trade limit, Dead Pool and stale values never depend on the draft.
+    expect(remedies(findings(engine({}, {}, {}, { duplicate: true })))).toEqual(["EDIT"]);
+    expect(remedies(findings(engine({}, { plannedSlots: 2 })))).toEqual(["DAY"]);
+    expect(remedies(findings(engine({}, {}, {}, { now: "2026-09-04T18:00:00Z" })))).toEqual(["SESSION"]);
+    expect(remedies(findings(engine({}, {}, {}, { observationDay: "2026-09-03" })))).toEqual(["ACCOUNT_VALUES"]);
+    expect(remedies(findings(engine({}, {}, { riskPercent: "1" })))).toEqual(["EDIT"]);
+  });
+
+  it("needs only the recheck for stale values once today's values have been confirmed since the check", () => {
+    const stale = engine({}, {}, {}, { observationDay: "2026-09-03" });
+    expect(blockingFindingsOf(blockingCodes(stale), stale, { valuesConfirmedToday: true })).toEqual([{ code: "STALE_EQUITY", valuesConfirmed: true }]);
+    expect(blockingFindingsOf(["STALE_EQUITY"], null, { valuesConfirmedToday: true }).map(blockRemedy)).toEqual(["RECHECK"]);
+    // Values not from today yet, or unknown: confirming them is still the step.
+    expect(blockingFindingsOf(blockingCodes(stale), stale, { valuesConfirmedToday: false }).map(blockRemedy)).toEqual(["ACCOUNT_VALUES"]);
+    expect(blockingFindingsOf(blockingCodes(stale), stale).map(blockRemedy)).toEqual(["ACCOUNT_VALUES"]);
+    // Only the stale-values reason is affected.
+    const tradeLimit = engine({}, { plannedSlots: 2 });
+    expect(blockingFindingsOf(blockingCodes(tradeLimit), tradeLimit, { valuesConfirmedToday: true })).toEqual([{ code: "MAX_TRADES" }]);
+  });
+
+  it("leads with the step that clears the block when no edit can, Edit draft beside it", () => {
+    const state = deriveTradeState(blockedToday, { ...ai, checkCurrent: false, blockingReason: reason });
+    expect(state.nextAction).toEqual({ kind: "EDIT_DRAFT", label: "Edit draft", detail: reason });
+    const edit = { kind: "EDIT_DRAFT", label: "Edit draft", detail: reason };
+    const others = state.secondaryActions;
+    expect(withBlockingFindings(state, [{ code: "MAX_TRADES" }])).toMatchObject({ label: "Blocked", nextAction: { kind: "RECHECK_RISK", label: "Recheck risk" }, secondaryActions: [edit, ...others] });
+    expect(withBlockingFindings(state, [{ code: "DEAD_POOL" }]).nextAction?.kind).toBe("RECHECK_RISK");
+    expect(withBlockingFindings(state, [{ code: "DAILY_LOSS_LIMIT", room: "0", openRisk: "60" }]).nextAction?.kind).toBe("RECHECK_RISK");
+    expect(withBlockingFindings(state, [{ code: "STALE_EQUITY" }]).nextAction).toEqual({ kind: "CONFIRM_VALUES", label: "Confirm account values" });
+    expect(withBlockingFindings(state, [{ code: "STALE_EQUITY" }, { code: "DEAD_POOL" }]).nextAction?.kind).toBe("CONFIRM_VALUES");
+    // Confirmed values don't open a day whose limits are used up.
+    expect(withBlockingFindings(state, [{ code: "STALE_EQUITY" }, { code: "MAX_TRADES" }]).nextAction?.kind).toBe("RECHECK_RISK");
+    // Values confirmed since the check: the recheck is the step, never a second confirmation.
+    expect(withBlockingFindings(state, [{ code: "STALE_EQUITY", valuesConfirmed: true }])).toMatchObject({ nextAction: { kind: "RECHECK_RISK" }, secondaryActions: [edit, ...others] });
+    expect(withBlockingFindings(state, [{ code: "STALE_EQUITY", valuesConfirmed: true }, { code: "DEAD_POOL" }]).nextAction?.kind).toBe("RECHECK_RISK");
+    // Losses alone fill the loss limit: the open position can't free room, and the recheck waits for tomorrow.
+    expect(withBlockingFindings(state, [{ code: "DAILY_LOSS_LIMIT", room: "-60", openRisk: "60" }]).nextAction?.kind).toBe("RECHECK_RISK");
+    // One reason an edit clears keeps Edit draft first, whatever else blocks.
+    for (const list of [[{ code: "DUPLICATE" }], [{ code: "DAILY_RISK_LIMIT", room: "20" }], [{ code: "DAILY_RISK_LIMIT" }], [{ code: "RISK_LIMIT" }, { code: "MAX_TRADES" }]]) {
+      expect(withBlockingFindings(state, list)).toBe(state);
+    }
+    expect(withBlockingFindings(state, [])).toBe(state);
+  });
+
+  it("leaves every other state alone: a block from an earlier day, an archived account's draft, an approval", () => {
+    const earlier = deriveTradeState(ledger({ latest_check_decision: "BLOCKED", latest_check_at: "2026-09-03T13:30:00Z" }), { ...options, checkCurrent: false });
+    expect(withBlockingFindings(earlier, [{ code: "MAX_TRADES" }])).toBe(earlier);
+    const frozen = deriveTradeState(blockedToday, { ...options, checkCurrent: false, accountArchived: true });
+    expect(withBlockingFindings(frozen, [{ code: "STALE_EQUITY" }])).toBe(frozen);
+    const ready = deriveTradeState(checked("APPROVED"), options);
+    expect(withBlockingFindings(ready, [{ code: "MAX_TRADES" }])).toBe(ready);
   });
 });

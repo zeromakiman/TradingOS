@@ -4,13 +4,17 @@ export interface CitationSource {id:string;kind:string;path:string;description?:
 const record=z.record(z.string(),z.unknown());
 const identity=z.object({id:z.uuid()});
 const event=z.object({id:z.uuid(),event_type:z.string()});
-const journal=z.object({id:z.uuid()});
+/** A V2 periodic journal entry: a row whose first column is its id (`PERIODIC_JOURNAL_COLUMNS`), or an object with its id. */
+const journal=z.union([z.tuple([z.uuid()],z.unknown()),z.object({id:z.uuid()})]);
+const journalId=(entry:z.infer<typeof journal>)=>Array.isArray(entry)?entry[0]:entry.id;
 const trade=z.object({tradeId:z.uuid(),events:z.array(event).optional()});
-const tradeV2=z.object({tradeId:z.uuid(),tradeRecordId:z.uuid(),events:z.array(event),journal:z.array(journal)});
+/** A V2 periodic trade lists events and journal entries only when it has them. */
+const tradeV2=z.object({tradeId:z.uuid(),tradeRecordId:z.uuid(),events:z.array(event).default([]),journal:z.array(journal).default([])});
 /**
  * Facts versions each operation accepts. Stored V1 periodic facts keep their V1 manifest (with per-source descriptions
- * and a sourceRefs list); new periodic requests send the compact V2 facts, whose manifest describes each kind once and
- * whose allowed ids are the manifest ids (the response schema enumerates them). Pre-trade V2 facts differ from V1 only
+ * and a sourceRefs list); new periodic requests send the compact V2 facts, which carry no manifest: their allowed ids
+ * are derived from the facts by `operationSourceManifest` and enumerated once, in the response schema, and the
+ * instructions say what each kind of id names (`periodicCitationInstructions`). Pre-trade V2 facts differ from V1 only
  * by the strategy's written prompt, which is not a citation source: both share one manifest.
  */
 const versions={
@@ -73,7 +77,7 @@ export function operationSourceManifest(operation:CitationOperation,context:unkn
    for(const [key,prefix,kind] of [["strategyVersions","strategy","STRATEGY"],["riskVersions","risk","RISK_VERSION"]])z.array(identity).parse(f[key]).forEach((v,i)=>{push(`${prefix}:${v.id}`,kind,`${key}[${i}]`,"");});
    detailed.forEach((t,i)=>{
     t.events.forEach((e,j)=>{push(`event:${e.id}`,e.event_type==="NOTE_ADDED"?"NOTE":"EVENT",`trades[${i}].events[${j}]`,"");});
-    t.journal.forEach((e,j)=>{push(`journal:${e.id}`,"JOURNAL",`trades[${i}].journal[${j}]`,"");});
+    t.journal.forEach((e,j)=>{push(`journal:${journalId(e)}`,"JOURNAL",`trades[${i}].journal[${j}]`,"");});
    });
   }else if(!summary){
    rows.forEach((t,i)=>{sources.push({id:`trade:${t.tradeId}`,kind:"TRADE",path:`trades[${i}]`,description:"Included closed trade's supplied plan, execution and deterministic facts"});});
@@ -85,18 +89,29 @@ export function operationSourceManifest(operation:CitationOperation,context:unkn
  if(v2)return {version:"AI_CITATIONS_V2",operation,scope,kinds:Object.fromEntries([...new Set(sources.map(s=>s.kind))].map(kind=>[kind,PERIODIC_SOURCE_KINDS[kind as keyof typeof PERIODIC_SOURCE_KINDS]])),sources};
  return {version:"AI_CITATIONS_V1",operation,scope,sources};
 }
-/** V1 facts carry the manifest and the sourceRefs list; V2 periodic facts carry the manifest only (its ids are the allowed ids). */
+/** V1 facts carry the manifest and the sourceRefs list; V2 periodic facts carry neither (`verifiedPeriodicFactsV2`). */
 export function withOperationSources<T extends object>(operation:CitationOperation,facts:T){
  const sourceManifest=operationSourceManifest(operation,facts);return {...facts,sourceManifest,sourceRefs:sourceManifest.sources.map(s=>s.id)};
 }
-export function withPeriodicSourcesV2<T extends object>(operation:Extract<CitationOperation,"WEEKLY_REVIEW"|"RECENT_TRADES_ANALYSIS"|"MONTHLY_REVIEW">,facts:T){
- if(!isV2PeriodicFacts(facts))throw new Error("Compact citation manifests are for V2 periodic facts");
- return {...facts,sourceManifest:operationSourceManifest(operation,facts)};
+/**
+ * V2 periodic facts as they are stored and sent: no manifest and no sourceRefs list, because the allowed ids follow
+ * from the facts themselves and the response schema enumerates them. Their manifest is derived here once, so facts
+ * whose ids are malformed or not unique are refused before anything is written.
+ */
+export function verifiedPeriodicFactsV2<T extends object>(operation:Extract<CitationOperation,"WEEKLY_REVIEW"|"RECENT_TRADES_ANALYSIS"|"MONTHLY_REVIEW">,facts:T):T{
+ if(!isV2PeriodicFacts(facts)||Object.hasOwn(facts,"sourceManifest")||Object.hasOwn(facts,"sourceRefs"))throw new Error("Compact citation sources are for V2 periodic facts without a stored manifest");
+ operationSourceManifest(operation,facts);
+ return facts;
 }
+/**
+ * The allowed citation ids of stored or new facts. V1 facts must carry exactly the manifest and sourceRefs derived from
+ * them. V2 periodic facts carry no sourceRefs; a manifest stored with earlier V2 facts must still match exactly.
+ */
 export function operationAllowedSources(operation:CitationOperation,context:unknown){
  const facts=record.parse(context),expected=operationSourceManifest(operation,facts),ids=expected.sources.map(s=>s.id);
  const v2=isV2PeriodicFacts(facts);
- if(stable(facts.sourceManifest)!==stable(expected)||(v2?Object.hasOwn(facts,"sourceRefs"):stable(facts.sourceRefs)!==stable(ids)))throw new Error("Citation manifest does not match supplied facts");
+ const manifestMatches=v2&&!Object.hasOwn(facts,"sourceManifest")?true:stable(facts.sourceManifest)===stable(expected);
+ if(!manifestMatches||(v2?Object.hasOwn(facts,"sourceRefs"):stable(facts.sourceRefs)!==stable(ids)))throw new Error("Citation manifest does not match supplied facts");
  return ids;
 }
 export function citationInstructions(ids:readonly string[]){return "\nCANONICAL CITATIONS: Only the exact allowed IDs below may appear in sourceRefs. The sourceManifest maps each ID to supplied facts. Collection names (including selectedEvidence, events, trades), JSON property names, data paths, headings and invented IDs are forbidden unless explicitly listed as canonical IDs. Cite event:<id> only for an included event/note and evidence:<id> only for explicitly selected evidence. Never cite absent screenshots/events or trades outside this snapshot. Explain missing evidence using an available proposal, thesis, strategy, sample or trade source. A citation does not make an unverified assertion a fact.\nAllowed source IDs for this request (exact strings only): "+JSON.stringify(ids);}
@@ -119,12 +134,51 @@ export function citationSchema(schema:object,ids:readonly string[]){
  result.$defs={...defs,canonicalCitation:branches.length===1?branches[0]:{anyOf:branches}};return result;
 }
 /**
- * Citation rules of V2 periodic facts. The allowed ids are the manifest ids and the response schema enumerates them
- * exactly (as in the timeline-aware trade review), so the prompt does not repeat the list.
+ * A periodic response schema with its one observation object defined once (`$defs.observation`) and referenced by every
+ * section, instead of repeated in each: the same constraints in fewer tokens, which count toward the input limit.
+ * Every section must use the identical observation schema; anything else is refused.
  */
-export const PERIODIC_CITATION_INSTRUCTIONS="\nCANONICAL CITATIONS: sourceRefs may contain only canonical ids of sourceManifest.sources; the response schema enumerates them exactly. Cite trade:<tradeRecordId> for an included trade, journal:<id> for an included journal entry, event:<id> for an included event, strategy:<id> and risk:<id> for the supplied versions, and the fixed ids for the period, the sample and the deterministic metrics. Collection names, JSON property names, data paths, headings and invented ids are forbidden. Never cite records outside this snapshot. Journal entries and events with timing AFTER_CLOSE are hindsight: never cite them as evidence of what was planned or known before entry. A citation does not make an unverified assertion a fact.";
+export function sharedObservationSchema(schema:object){
+ const result=structuredClone(schema) as Record<string,unknown>;
+ const properties=result.properties as Record<string,Record<string,unknown>>|undefined;
+ if(!properties||typeof properties!=="object")throw new Error("Invalid periodic response schema");
+ const defs=(result.$defs??{}) as Record<string,unknown>;if(Object.hasOwn(defs,"observation"))throw new Error("Reserved observation definition");
+ let observation:unknown=null;
+ const shared=(node:unknown)=>{
+  if(!node||typeof node!=="object"||!Object.hasOwn(node,"properties"))throw new Error("Periodic sections must be observations");
+  if(observation===null)observation=node;else if(stable(node)!==stable(observation))throw new Error("Periodic sections must share one observation schema");
+  return {$ref:"#/$defs/observation"};
+ };
+ for(const [name,property] of Object.entries(properties))properties[name]=property.type==="array"?{...property,items:shared(property.items)}:shared(property);
+ if(observation===null)throw new Error("Missing observation schema");
+ result.$defs={...defs,observation};
+ return result;
+}
+/** What each kind of canonical id of V2 periodic facts names, in the order the instructions list them. */
+const PERIODIC_ID_FORMS:readonly (readonly [form:string,matches:(id:string)=>boolean,meaning:string])[]=[
+ ["trade:<tradeRecordId>",id=>id.startsWith("trade:"),"an included closed planned trade: its locked plan, compact Risk Engine result and execution"],
+ ["journal:<id>",id=>id.startsWith("journal:"),"a journal entry of an included trade (the id in the first column of its row)"],
+ ["event:<id>",id=>id.startsWith("event:"),"a recorded event of an included trade; a NOTE_ADDED event is a note"],
+ ["strategy:<id>",id=>id.startsWith("strategy:"),"a supplied strategy version"],
+ ["risk:<id>",id=>id.startsWith("risk:"),"a supplied risk version"],
+ ["period",id=>id==="period","the selected period and its fixed UTC-5 boundaries"],
+ ["sample",id=>id==="sample","the exact sample size and its deterministic limitations"],
+ ["edge",id=>id==="edge","the existing deterministic EDGE metrics of this sample"],
+ ["models",id=>id==="models","the existing deterministic breakdown of the month by entry model"],
+ ["sessions",id=>id==="sessions","the existing deterministic breakdown of the month by session"],
+];
+/**
+ * Citation rules of V2 periodic facts. The allowed ids follow from the facts and the response schema enumerates them
+ * exactly (as in the timeline-aware trade review), so neither the facts nor the prompt repeat the list: the prompt
+ * says once what each kind of id present names.
+ */
+export function periodicCitationInstructions(ids:readonly string[]){
+ const forms=PERIODIC_ID_FORMS.filter(([,matches])=>ids.some(matches)).map(([form,,meaning])=>`${form} is ${meaning}`);
+ const records=ids.some(id=>id.startsWith("journal:")||id.startsWith("event:"));
+ return `\nCANONICAL CITATIONS: sourceRefs may contain only canonical ids; the response schema enumerates every allowed id exactly. ${forms.join("; ")}. Collection names, JSON property names, data paths, headings and invented ids are forbidden. Never cite records outside this snapshot.${records?" Journal entries and events with timing AFTER_CLOSE are hindsight: never cite them as evidence of what was planned or known before entry.":""} A citation does not make an unverified assertion a fact.`;
+}
 export function canonicalOperationContract(operation:CitationOperation,context:unknown,contract:{name:string;instructions:string;schema:object}){
  const ids=operationAllowedSources(operation,context);
- if(isV2PeriodicFacts(context))return {...contract,version:`${operation}_CITATIONS_V3`,instructions:contract.instructions+PERIODIC_CITATION_INSTRUCTIONS,schema:citationSchema(contract.schema,ids)};
+ if(isV2PeriodicFacts(context))return {...contract,version:`${operation}_CITATIONS_V3`,instructions:contract.instructions+periodicCitationInstructions(ids),schema:citationSchema(sharedObservationSchema(contract.schema),ids)};
  return {...contract,version:operation+"_CITATIONS_V2",instructions:contract.instructions+citationInstructions(ids),schema:citationSchema(contract.schema,ids)};
 }

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { crc32 as nodeCrc32 } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { crc32, createZip, readZip, ZipError, zipPathSegment } from "@/lib/zip";
+import { crc32, createZip, readZip, ZipError } from "@/lib/zip";
 
 // docs/V2_ARCHITECTURE.md §10.5: the browser builds "Download my data (.zip)" with src/lib/zip.ts (store method,
 // CRC-32, UTF-8 names). Golden bytes below are derived by hand from PKWARE APPNOTE 6.3 §4.3.7, §4.3.12, §4.3.16.
@@ -110,27 +110,6 @@ describe("createZip", () => {
 
   it("rejects duplicate names", () => {
     expect(() => createZip([{ name: "a.json", data: "1" }, { name: "a.json", data: "2" }])).toThrow(/Duplicate/);
-  });
-});
-
-describe("zipPathSegment", () => {
-  it.each([
-    ["EURUSD long · Oct 14", "EURUSD long · Oct 14"],
-    ["../../etc/passwd", "_.._etc_passwd"],
-    ["con:fig*?\"<>|.png", "con_fig______.png"],
-    ["line\nbreak\u0007.png", "line_break_.png"],
-    ["  trailing dots... ", "trailing dots"],
-    ["...", "_"],
-    ["", "_"],
-  ])("turns %j into %j", (input, expected) => {
-    expect(zipPathSegment(input)).toBe(expected);
-  });
-
-  it("keeps at most 120 characters without splitting a surrogate pair", () => {
-    const segment = zipPathSegment("😀".repeat(200));
-    expect([...segment]).toHaveLength(120);
-    expect(segment).toBe("😀".repeat(120));
-    expect(() => createZip([{ name: `${segment}/${zipPathSegment("a/b")}`, data: "" }])).not.toThrow();
   });
 });
 

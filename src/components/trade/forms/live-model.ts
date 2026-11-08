@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { formatMoneyExact, stripZeros } from "@/domain/format";
+import { formatMoneyUp, stripZeros } from "@/domain/format";
 import type { Instrument } from "@/domain/risk";
 import { strategyClock } from "@/domain/session";
 import { compareInstants, isInstant } from "@/domain/time-display";
@@ -196,7 +196,7 @@ export function derivedLiveRisk(draft: LiveDraft, instrument: Instrument | null)
   if (!alignedTo(entry, instrument.tickSize) || !alignedTo(stop, instrument.tickSize) || !alignedTo(quantity, instrument.quantityStep)) return null;
   if (draft.direction === "LONG" ? !new D(stop).lt(entry) : !new D(stop).gt(entry)) return null;
   const risk = new D(entry).minus(stop).abs().div(instrument.tickSize).times(instrument.tickValue).times(quantity);
-  return formatMoneyExact(risk.toDecimalPlaces(2, Decimal.ROUND_CEIL).toFixed(), instrument.currency);
+  return formatMoneyUp(risk, instrument.currency);
 }
 
 /** FormData of recordLiveTrade from validated fields and the request key. */

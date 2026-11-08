@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { buttonClasses } from "@/components/ui/button";
 import { CLOSED_EMPTY_DESCRIPTION, CLOSED_EMPTY_TITLE, CLOSED_TITLE, NO_R_COPY } from "./copy";
-import { InlineEmpty, TodaySection, Value } from "./section";
+import { AccountName, InlineEmpty, TodaySection, Value } from "./section";
 import type { ClosedTradeView } from "./types";
 
 /**
@@ -24,8 +24,12 @@ function ClosedRow({ trade, showAccount }: { trade: ClosedTradeView; showAccount
             {trade.origin.tooltip && <span className="sr-only">: {trade.origin.tooltip}</span>}
           </Badge>
         </p>
-        <p className="t-meta truncate num">
-          {showAccount && <span>{trade.accountName} · </span>}
+        <p className="t-meta num">
+          {showAccount && (
+            <>
+              <AccountName name={trade.accountName} tail=" ·" />{" "}
+            </>
+          )}
           {trade.exit}
         </p>
       </div>

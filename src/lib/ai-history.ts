@@ -3,7 +3,7 @@ import { z } from "zod";
 import { requireUser } from "./supabase/server";
 import { analyzeSetupOutput } from "@/ai/analyze-setup-contract";
 import { biasChallengeOutput } from "@/ai/bias-challenge-contract";
-import { aiFailureAccountingMessage } from "@/ai/failure-accounting-message";
+import { aiMonth } from "@/ai/budget";
 import { monthlyReviewOutput } from "@/ai/monthly-review-contract";
 import { recentTradesOutput } from "@/ai/recent-trades-contract";
 import { TIMELINE_REVIEW_REJECTIONS, tradeTimelineReviewOutput } from "@/ai/trade-timeline-review-contract";
@@ -14,8 +14,9 @@ import {
   resolveSourceChip, type SourceChip, staleRevisionLabel, summarizeAnalyzeSetup, summarizeBiasChallenge, summarizeMonthlyReview,
   summarizeRecentTrades, summarizeTradeReview, summarizeTradeTimelineReview, summarizeWeeklyReview,
 } from "@/domain/ai-summary";
-import { addDays, compareInstants, formatDay, formatMonth, STRATEGY_TIME, type TimeDisplay } from "@/domain/time-display";
+import { addDays, compareInstants, formatDay, STRATEGY_TIME, type TimeDisplay } from "@/domain/time-display";
 import type { TimelineAiAnalysis } from "@/domain/timeline";
+import { type AccountingReviewModel, failureAccountingText } from "@/components/ai/model";
 
 /**
  * Compact, UI-ready AI history (spec §11.1). Every result is parsed by the contract version stored with its request;
@@ -28,6 +29,15 @@ export type UserDb = Awaited<ReturnType<typeof requireUser>>["db"];
 export type AiHistoryOperation =
   | "ANALYZE_SETUP" | "CHALLENGE_BIAS" | "REVIEW_TRADE" | "REVIEW_TRADE_TIMELINE" | "WEEKLY_REVIEW" | "RECENT_TRADES_ANALYSIS" | "MONTHLY_REVIEW";
 export type AiHistoryStatus = "COMPLETED" | "FAILED" | "IN_PROGRESS";
+
+/**
+ * The terminal accounting review of an UNCERTAIN usage record (`ai_uncertainty_resolutions`, migration 0014;
+ * docs/AI_ACCOUNTING_RESOLUTION.md). The original usage record keeps its UNCERTAIN snapshot; this is the decision
+ * that followed it, and the one the budget applies. `reconciledMicros` is 0 when no provider usage was confirmed.
+ */
+export interface AiAccountingReview extends AccountingReviewModel {
+  reviewedAt: string;
+}
 
 export interface AiHistoryTechnical {
   requestId: string;
@@ -44,6 +54,15 @@ export interface AiHistoryTechnical {
   inputTokens: number | null;
   outputTokens: number | null;
   responseId: string | null;
+  /** Budget month the held amount counts toward (`YYYY-MM-01`, fixed UTC−5); null without a hold or when unknown. */
+  holdPeriod?: string | null;
+  /**
+   * A hold without a usage record whose budget month has ended. Nothing can review such a hold (the operator procedure
+   * resolves UNCERTAIN usage records only), so the monthly reset is what released it.
+   */
+  holdExpired?: boolean;
+  /** The terminal accounting review of an UNCERTAIN cost; null while none exists. */
+  accountingReview?: AiAccountingReview | null;
 }
 
 export interface AiHistoryRow {
@@ -59,7 +78,7 @@ export interface AiHistoryRow {
   headline: string | null;
   /** Human reason for a failed row; null otherwise. */
   failureReason: string | null;
-  /** Accounting outcome in plain words for failed rows. */
+  /** Accounting outcome in plain words for failed rows (`failureAccountingText` of `technical`, as every screen shows it). */
   accountingNote: string | null;
   technical: AiHistoryTechnical;
 }
@@ -92,7 +111,8 @@ export interface ResolvedAiCard extends Omit<AiSummaryCard, "headline" | "sectio
   sections: ResolvedCardSection[];
   full: ResolvedCardSection[];
 }
-export interface ResolvedCardSection { id: string; title: string; items: { text: string; sources: SourceChip[] }[] }
+/** A resolved summary section; `note` is the deterministic caveat Trading OS shows with it (never AI text), when it has one. */
+export interface ResolvedCardSection { id: string; title: string; note?: string; items: { text: string; sources: SourceChip[] }[] }
 
 // ---------------------------------------------------------------------------------------------
 // Parsing by stored contract version
@@ -126,10 +146,15 @@ export function interpretationCard(contract: string | null, interpretation: unkn
   return contract !== null && Object.hasOwn(CARD_PARSERS, contract) ? CARD_PARSERS[contract](interpretation) : null;
 }
 
+/**
+ * What went wrong, in words. The accounting outcome (held, reviewed, released) is said separately, from the stored
+ * accounting (`failureAccountingText` in src/components/ai/model.ts), because it can change after the attempt: an
+ * accounting review settles an unconfirmed cost, and the monthly reset releases a hold that has no usage record.
+ */
 const FAILURE_COPY: Readonly<Record<string, string>> = Object.freeze({
   ...TIMELINE_REVIEW_REJECTIONS,
-  ACCOUNTING_UNCERTAIN: "The provider's usage could not be confirmed, so the reserved amount stays held for review.",
-  AI_ACCOUNTING_PERSISTENCE_FAILED: "The usage record could not be saved, so the reserved amount stays held for review.",
+  ACCOUNTING_UNCERTAIN: "The AI provider's usage could not be confirmed.",
+  AI_ACCOUNTING_PERSISTENCE_FAILED: "The cost of this request could not be recorded.",
   AI_BUDGET_OR_PERMISSION_CHANGED: "AI was switched off or the budget changed before the request was sent.",
   PROPOSAL_OR_EVIDENCE_CHANGED: "The draft or its screenshots changed before the request was sent.",
   TRADE_OR_EVIDENCE_CHANGED: "The trade or its screenshots changed before the request was sent.",
@@ -162,10 +187,16 @@ const operationColumn = z.object({
 }).loose();
 export const aiRequestRow = z.object({ id: z.uuid(), operation: operationColumn, created_at: z.string(), deadline_at: z.string() });
 const resultRow = z.object({ status: z.enum(["COMPLETED", "FAILED"]), interpretation: z.unknown(), error_code: z.string().nullable(), reservation_id: z.uuid().nullable(), created_at: z.string() });
-const holdRow = z.object({ id: z.uuid(), operation_id: z.uuid(), reserved_micros: z.number() });
+const holdRow = z.object({ id: z.uuid(), operation_id: z.uuid(), reserved_micros: z.number(), period: z.string().nullable().optional() });
 const usageRow = z.object({
   reservation_id: z.uuid(), charged_micros: z.number(), disposition: z.string(),
   input_tokens: z.number().nullable().optional(), output_tokens: z.number().nullable().optional(), response_id: z.string().nullable().optional(),
+});
+/** Decisions that end an accounting review; KEEP_UNCERTAIN leaves the hold in place (docs/AI_ACCOUNTING_RESOLUTION.md). */
+const TERMINAL_REVIEWS = ["NO_PROVIDER_USAGE_CONFIRMED", "USAGE_CONFIRMED"] as const;
+const reviewRow = z.object({
+  reservation_id: z.uuid(), decision: z.enum(TERMINAL_REVIEWS), reconciled_micros: z.number(), released_micros: z.number(), additional_micros: z.number(),
+  created_at: z.string(),
 });
 export type AiRequestRow = z.infer<typeof aiRequestRow>;
 export type AiResultRow = z.infer<typeof resultRow>;
@@ -173,6 +204,8 @@ export type AiResultRow = z.infer<typeof resultRow>;
 export interface AiAccounting {
   holds: readonly z.infer<typeof holdRow>[];
   usage: readonly z.infer<typeof usageRow>[];
+  /** Terminal accounting reviews of the UNCERTAIN usage records among `usage`; none when absent. */
+  reviews?: readonly z.infer<typeof reviewRow>[];
 }
 
 /** One history row from a request, its optional result and the reservation/usage linked to the request id. */
@@ -181,6 +214,8 @@ export function historyRow(operation: AiHistoryOperation, request: AiRequestRow,
   const hold = accounting.holds.find(row => row.operation_id === request.id) ?? null;
   const reservationId = result?.reservation_id ?? hold?.id ?? null;
   const usage = reservationId ? accounting.usage.find(row => row.reservation_id === reservationId) ?? null : null;
+  const review = usage?.disposition === "UNCERTAIN" ? accounting.reviews?.find(row => row.reservation_id === usage.reservation_id) ?? null : null;
+  const holdPeriod = hold?.period ? hold.period.slice(0, 10) : null;
   const card = result?.status === "COMPLETED" ? interpretationCard(contract, result.interpretation) : null;
   const status: AiHistoryStatus = result === null
     ? (Date.parse(request.deadline_at) > now.getTime() ? "IN_PROGRESS" : "FAILED")
@@ -192,6 +227,21 @@ export function historyRow(operation: AiHistoryOperation, request: AiRequestRow,
   } catch {
     label = `${aiOperationLabel(operation)} · ${aiStatusLabel(status)}`;
   }
+  const technical: AiHistoryTechnical = {
+    requestId: request.id, operation, operationVersion: request.operation.version ?? null, contract, provider: request.operation.provider ?? null,
+    model: request.operation.model ?? null, errorCode, reservationId, reservedMicros: hold?.reserved_micros ?? null,
+    chargedMicros: usage?.charged_micros ?? null, disposition: usage?.disposition ?? null,
+    inputTokens: usage?.input_tokens ?? null, outputTokens: usage?.output_tokens ?? null, responseId: usage?.response_id ?? null,
+    holdPeriod,
+    // The budget counts a hold without a usage record in its own month only (private.ai_budget_snapshot, 0014).
+    holdExpired: hold !== null && usage === null && holdPeriod !== null && holdPeriod < aiMonth(now).period,
+    accountingReview: review
+      ? {
+        decision: review.decision, reconciledMicros: review.reconciled_micros, releasedMicros: review.released_micros, additionalMicros: review.additional_micros,
+        reviewedAt: review.created_at,
+      }
+      : null,
+  };
   return {
     operation,
     operationLabel: aiOperationLabel(operation),
@@ -202,13 +252,8 @@ export function historyRow(operation: AiHistoryOperation, request: AiRequestRow,
     label,
     headline: card?.headline.text ?? null,
     failureReason: status === "FAILED" ? aiFailureReason(errorCode) : null,
-    accountingNote: status === "FAILED" ? aiFailureAccountingMessage(hold ? { usage } : null) : null,
-    technical: {
-      requestId: request.id, operation, operationVersion: request.operation.version ?? null, contract, provider: request.operation.provider ?? null,
-      model: request.operation.model ?? null, errorCode, reservationId, reservedMicros: hold?.reserved_micros ?? null,
-      chargedMicros: usage?.charged_micros ?? null, disposition: usage?.disposition ?? null,
-      inputTokens: usage?.input_tokens ?? null, outputTokens: usage?.output_tokens ?? null, responseId: usage?.response_id ?? null,
-    },
+    accountingNote: status === "FAILED" ? failureAccountingText(technical) : null,
+    technical,
   };
 }
 
@@ -222,7 +267,8 @@ const isRecord = (value: unknown): value is Json => typeof value === "object" &&
 export function resolveCardSources(card: AiSummaryCard, facts: unknown, manifest: unknown, evidenceIndex: EvidenceIndex = {}, display: TimeDisplay = STRATEGY_TIME): ResolvedAiCard {
   const chip = (ref: string): SourceChip => resolveSourceChip(ref, facts, manifest, evidenceIndex, display);
   const sections = (list: AiSummaryCard["sections"]): ResolvedCardSection[] => list.map(section => ({
-    id: section.id, title: section.title, items: section.items.map(item => ({ text: item.text, sources: item.sourceRefs.map(chip) })),
+    id: section.id, title: section.title, ...(section.note === undefined ? {} : { note: section.note }),
+    items: section.items.map(item => ({ text: item.text, sources: item.sourceRefs.map(chip) })),
   }));
   return { ...card, headline: { text: card.headline.text, sources: card.headline.sourceRefs.map(chip) }, sections: sections(card.sections), full: sections(card.full) };
 }
@@ -265,17 +311,28 @@ export async function loadResults(db: UserDb, table: string, resultKey: string, 
   return new Map(keyed.map(row => [String(row[resultKey]), resultRow.parse(row)] as const));
 }
 
-/** Reservations held for the given request ids and their usage records (owner-scoped). */
+/**
+ * Reservations held for the given request ids, their usage records and the terminal accounting reviews of the
+ * UNCERTAIN ones (owner-scoped: RLS plus an explicit owner filter on every read). The stored UNCERTAIN record is an
+ * immutable incident snapshot; the review is what the budget applies afterwards (private.ai_budget_snapshot, 0014).
+ */
 export async function loadAccounting(db: UserDb, userId: string, requestIds: readonly string[]): Promise<AiAccounting> {
-  if (!requestIds.length) return { holds: [], usage: [] };
-  const reservations = await db.from("ai_request_reservations").select("id,operation_id,reserved_micros").eq("user_id", userId).in("operation_id", [...requestIds]);
+  if (!requestIds.length) return { holds: [], usage: [], reviews: [] };
+  const reservations = await db.from("ai_request_reservations").select("id,operation_id,reserved_micros,period").eq("user_id", userId).in("operation_id", [...requestIds]);
   if (reservations.error) throw new Error("AI accounting unavailable");
   const holds = z.array(holdRow).parse(reservations.data);
-  const usage = holds.length
+  const usageResult = holds.length
     ? await db.from("ai_usage_records").select("reservation_id,charged_micros,disposition,input_tokens,output_tokens,response_id").eq("user_id", userId).in("reservation_id", holds.map(row => row.id))
     : EMPTY;
-  if (usage.error) throw new Error("AI accounting unavailable");
-  return { holds, usage: z.array(usageRow).parse(usage.data) };
+  if (usageResult.error) throw new Error("AI accounting unavailable");
+  const usage = z.array(usageRow).parse(usageResult.data);
+  const uncertain = usage.filter(row => row.disposition === "UNCERTAIN").map(row => row.reservation_id);
+  const reviews = uncertain.length
+    ? await db.from("ai_uncertainty_resolutions").select("reservation_id,decision,reconciled_micros,released_micros,additional_micros,created_at")
+      .eq("user_id", userId).in("reservation_id", uncertain).in("decision", [...TERMINAL_REVIEWS])
+    : EMPTY;
+  if (reviews.error) throw new Error("AI accounting unavailable");
+  return { holds, usage, reviews: z.array(reviewRow).parse(reviews.data ?? []) };
 }
 
 function newestFirst(a: AiHistoryRow, b: AiHistoryRow): number {
@@ -292,17 +349,29 @@ export interface PreTradeRevisionHistory extends RevisionMarker {
   rows: PreTradeHistoryRow[];
 }
 
+/** A trade review; with `loadTradeAiHistory(id, { cards: true })` a completed one carries its resolved card. */
+export interface TradeReviewHistoryRow extends AiHistoryRow {
+  card?: ResolvedAiCard | null;
+}
+
 export interface TradeAiHistory {
   latestRevision: number | null;
   /** Analyze Setup / Challenge My Bias, grouped by draft revision, newest revision first. */
   preTrade: PreTradeRevisionHistory[];
   /** Trade reviews (V1 and timeline-aware), newest first. */
-  reviews: AiHistoryRow[];
+  reviews: TradeReviewHistoryRow[];
   error: string | null;
 }
 
-/** Per-trade AI history with the user's session. Throws when the trade is not the caller's; AI data errors degrade. */
-export async function loadTradeAiHistory(tradeId: string): Promise<TradeAiHistory> {
+/** A trade review request; `facts` is read only with `cards` (it is absent from the compact read). */
+const reviewRequestRow = aiRequestRow.extend({ facts: z.unknown().optional() });
+
+/**
+ * Per-trade AI history with the user's session. Throws when the trade is not the caller's; AI data errors degrade.
+ * `cards` also reads the facts stored with each trade review and resolves the card of every completed one (V1 reviews
+ * included), so any of them can be opened in full; the trade timeline only needs the compact rows.
+ */
+export async function loadTradeAiHistory(tradeId: string, options: { cards?: boolean } = {}): Promise<TradeAiHistory> {
   const { db, user } = await requireUser();
   const owned = await db.from("trades").select("id").eq("id", z.uuid().parse(tradeId)).eq("user_id", user.id).maybeSingle();
   if (owned.error || !owned.data) throw new Error("Trade unavailable");
@@ -317,17 +386,18 @@ export async function loadTradeAiHistory(tradeId: string): Promise<TradeAiHistor
     const planId = link.data ? z.object({ plan_id: z.uuid() }).parse(link.data).plan_id : null;
     const proposalIds = revisionRows.map(row => row.proposal_id);
     const select = "id,operation,created_at,deadline_at";
+    const reviewSelect = options.cards ? `${select},facts` : select;
     const [challenges, legacyReviews, timelineReviews] = await Promise.all([
       proposalIds.length
         ? db.from("bias_challenges").select(`${select},proposal_id`).in("proposal_id", proposalIds).eq("user_id", user.id).order("created_at", { ascending: false }).limit(HISTORY_LIMIT)
         : EMPTY,
-      planId ? db.from("trade_ai_reviews").select(select).eq("plan_id", planId).eq("user_id", user.id).order("created_at", { ascending: false }).limit(HISTORY_LIMIT) : EMPTY,
-      db.from("trade_timeline_reviews").select(select).eq("trade_id", id).eq("user_id", user.id).order("created_at", { ascending: false }).limit(HISTORY_LIMIT),
+      planId ? db.from("trade_ai_reviews").select(reviewSelect).eq("plan_id", planId).eq("user_id", user.id).order("created_at", { ascending: false }).limit(HISTORY_LIMIT) : EMPTY,
+      db.from("trade_timeline_reviews").select(reviewSelect).eq("trade_id", id).eq("user_id", user.id).order("created_at", { ascending: false }).limit(HISTORY_LIMIT),
     ]);
     if (challenges.error || legacyReviews.error || timelineReviews.error) throw new Error("AI history unavailable");
     const challengeRows = z.array(aiRequestRow.extend({ proposal_id: z.uuid() })).parse(challenges.data);
-    const legacyRows = z.array(aiRequestRow).parse(legacyReviews.data);
-    const timelineRows = z.array(aiRequestRow).parse(timelineReviews.data);
+    const legacyRows = z.array(reviewRequestRow).parse(legacyReviews.data);
+    const timelineRows = z.array(reviewRequestRow).parse(timelineReviews.data);
     const [challengeResults, legacyResults, timelineResults, accounting] = await Promise.all([
       loadResults(db, "bias_challenge_results", "challenge_id", challengeRows),
       loadResults(db, "trade_ai_review_results", "review_id", legacyRows),
@@ -346,9 +416,13 @@ export async function loadTradeAiHistory(tradeId: string): Promise<TradeAiHistor
       ...revisionMarker(number, latestRevision ?? number),
       rows: preTradeRows.filter(row => row.revision.number === number).sort(newestFirst),
     }));
+    const review = (operation: "REVIEW_TRADE" | "REVIEW_TRADE_TIMELINE", request: z.infer<typeof reviewRequestRow>, result: AiResultRow | null): TradeReviewHistoryRow => {
+      const row = historyRow(operation, request, result, accounting);
+      return options.cards ? { ...row, card: resolvedCard(row, result?.interpretation, request.facts) } : row;
+    };
     const reviews = [
-      ...legacyRows.map(row => historyRow("REVIEW_TRADE", row, legacyResults.get(row.id) ?? null, accounting)),
-      ...timelineRows.map(row => historyRow("REVIEW_TRADE_TIMELINE", row, timelineResults.get(row.id) ?? null, accounting)),
+      ...legacyRows.map(row => review("REVIEW_TRADE", row, legacyResults.get(row.id) ?? null)),
+      ...timelineRows.map(row => review("REVIEW_TRADE_TIMELINE", row, timelineResults.get(row.id) ?? null)),
     ].sort(newestFirst);
     return { latestRevision, preTrade, reviews, error: null };
   } catch {
@@ -357,63 +431,10 @@ export async function loadTradeAiHistory(tradeId: string): Promise<TradeAiHistor
 }
 
 export type PeriodicOperation = "WEEKLY_REVIEW" | "RECENT_TRADES_ANALYSIS" | "MONTHLY_REVIEW";
-const PERIODIC_OPERATIONS: readonly PeriodicOperation[] = ["WEEKLY_REVIEW", "RECENT_TRADES_ANALYSIS", "MONTHLY_REVIEW"];
-
-export interface AccountAiHistory {
-  rows: PeriodicHistoryRow[];
-  error: string | null;
-}
 
 /** `Week of Oct 6–12` (or `Week of Sep 29–Oct 5` across months) for a Monday `YYYY-MM-DD`. */
 export function weekLabel(weekStart: string): string {
   const end = addDays(weekStart, 6);
   const sameMonth = weekStart.slice(0, 7) === end.slice(0, 7);
   return `Week of ${formatDay(weekStart)}–${sameMonth ? Number(end.slice(8, 10)) : formatDay(end)}`;
-}
-
-/** Weekly, recent-trades and monthly AI history of one trading account, newest first. */
-export async function loadAccountAiHistory(accountId: string, options: { operations?: readonly PeriodicOperation[]; limit?: number } = {}): Promise<AccountAiHistory> {
-  const { db, user } = await requireUser();
-  const owned = await db.from("accounts").select("id").eq("id", z.uuid().parse(accountId)).eq("user_id", user.id).maybeSingle();
-  if (owned.error || !owned.data) throw new Error("Account unavailable");
-  const id = z.object({ id: z.uuid() }).parse(owned.data).id;
-  const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? 20)), HISTORY_LIMIT);
-  const wanted = new Set(options.operations ?? PERIODIC_OPERATIONS);
-  try {
-    const select = "id,operation,created_at,deadline_at";
-    const recentFirst = { ascending: false } as const;
-    const [weekly, recent, monthly] = await Promise.all([
-      wanted.has("WEEKLY_REVIEW") ? db.from("weekly_ai_reviews").select(`${select},week_start`).eq("account_id", id).eq("user_id", user.id).order("created_at", recentFirst).limit(limit) : EMPTY,
-      wanted.has("RECENT_TRADES_ANALYSIS") ? db.from("recent_ai_analyses").select(`${select},requested_sample,actual_sample`).eq("account_id", id).eq("user_id", user.id).order("created_at", recentFirst).limit(limit) : EMPTY,
-      wanted.has("MONTHLY_REVIEW") ? db.from("monthly_ai_reviews").select(`${select},month_start`).eq("account_id", id).eq("user_id", user.id).order("created_at", recentFirst).limit(limit) : EMPTY,
-    ]);
-    if (weekly.error || recent.error || monthly.error) throw new Error("AI history unavailable");
-    const weeklyRows = z.array(aiRequestRow.extend({ week_start: z.string() })).parse(weekly.data);
-    const recentRows = z.array(aiRequestRow.extend({ requested_sample: z.number().int(), actual_sample: z.number().int() })).parse(recent.data);
-    const monthlyRows = z.array(aiRequestRow.extend({ month_start: z.string() })).parse(monthly.data);
-    const [weeklyResults, recentResults, monthlyResults, accounting] = await Promise.all([
-      loadResults(db, "weekly_ai_review_results", "review_id", weeklyRows),
-      loadResults(db, "recent_ai_analysis_results", "review_id", recentRows),
-      loadResults(db, "monthly_ai_review_results", "review_id", monthlyRows),
-      loadAccounting(db, user.id, [...weeklyRows, ...recentRows, ...monthlyRows].map(row => row.id)),
-    ]);
-    const rows: PeriodicHistoryRow[] = [
-      ...weeklyRows.map(row => ({
-        ...historyRow("WEEKLY_REVIEW", row, weeklyResults.get(row.id) ?? null, accounting),
-        scope: { kind: "WEEK" as const, weekStart: row.week_start }, scopeLabel: weekLabel(row.week_start),
-      })),
-      ...recentRows.map(row => ({
-        ...historyRow("RECENT_TRADES_ANALYSIS", row, recentResults.get(row.id) ?? null, accounting),
-        scope: { kind: "RECENT" as const, requested: row.requested_sample, actual: row.actual_sample },
-        scopeLabel: row.actual_sample < row.requested_sample ? `Last ${row.actual_sample} trades (${row.requested_sample} requested)` : `Last ${row.actual_sample} trades`,
-      })),
-      ...monthlyRows.map(row => ({
-        ...historyRow("MONTHLY_REVIEW", row, monthlyResults.get(row.id) ?? null, accounting),
-        scope: { kind: "MONTH" as const, month: row.month_start.slice(0, 7) }, scopeLabel: formatMonth(row.month_start.slice(0, 7)),
-      })),
-    ].sort(newestFirst).slice(0, limit);
-    return { rows, error: null };
-  } catch {
-    return { rows: [], error: "AI history is unavailable right now. Trading records are unaffected." };
-  }
 }

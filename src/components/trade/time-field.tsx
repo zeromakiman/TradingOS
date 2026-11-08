@@ -58,7 +58,7 @@ export function TimeField({ id, legend, choice, onChange, display, nowIso, error
         </p>
       ) : (
         <p id={id} className="t-caption">
-          Uses the server's time when you submit.
+          Uses the server's time when it is recorded.
         </p>
       )}
     </div>

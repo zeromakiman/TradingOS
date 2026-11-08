@@ -3,6 +3,7 @@ import { type ComponentType, useId } from "react";
 import { requestMonthlyAiReview, requestRecentTradesAiReview, requestWeeklyAiReview } from "@/app/actions/ai";
 import { plural } from "@/domain/format";
 import type { TimeDisplay } from "@/domain/time-display";
+import { runningRecentSample } from "@/lib/recent-trades-running";
 import { Callout } from "../ui/callout";
 import { SectionHeader } from "../ui/page-header";
 import { AiActionButton, type AiRequestAction } from "./ai-action-button";
@@ -10,7 +11,8 @@ import { AiHistoryList } from "./ai-history-list";
 import { AiSettingsLink } from "./ai-settings-link";
 import { PERIODIC_LIMITATION } from "./model";
 import { latestCompleted, MonthlyReviewCard, type PeriodicCardProps, RecentTradesCard, WeeklyReviewCard } from "./operation-cards";
-import { availabilityReason, displayPreference, loadPeriodicAi, type PeriodicAiData, PeriodError, type PeriodicKind } from "./panel-data";
+import { availabilityReason, displayPreference, loadPeriodicAi, optional, type PeriodicAiData, PeriodError, type PeriodicKind } from "./panel-data";
+import { periodicRunningBlock } from "./periodic";
 
 /**
  * Weekly, recent-trades and monthly AI reviews of one trading account (docs/V2_ARCHITECTURE.md §11.5, §14.10): the
@@ -52,16 +54,33 @@ export function periodicScopeLine(data: Pick<PeriodicAiData, "accountName" | "sc
   return [data.accountName, data.scopeLabel, data.trades === null ? null : plural(data.trades, "trade")].filter(Boolean).join(" · ");
 }
 
-function runBlockedReason(data: PeriodicAiData): string | undefined {
+/**
+ * Why the run button cannot send a request now, or undefined when it can: the scope, an empty period, the account's
+ * AI availability, or a review of this period still running (another request would only be refused). Recent trades:
+ * `runningSample` is the sample of the account's running analysis, which holds every sample's button.
+ */
+function runBlockedReason(data: PeriodicAiData, runningSample: number | null): string | undefined {
   if (data.scopeError) return data.scopeError;
   if (data.trades === 0) return NOTHING_TO_REVIEW[data.kind];
-  return availabilityReason(data.availability);
+  if (data.availability.status !== "ENABLED") return availabilityReason(data.availability);
+  const running = runningSample === null ? null : { sample: runningSample, selected: Number(data.payload.sample) };
+  return periodicRunningBlock(data.kind, data.runLabel, data.history, running);
 }
 
-function PeriodicReviewPanelView({ data, developerMode, timeDisplay, requestKey }: { data: PeriodicAiData; developerMode?: boolean; timeDisplay: TimeDisplay; requestKey: string }) {
+interface PanelViewProps {
+  data: PeriodicAiData;
+  /** Recent trades: the sample of the account's analysis still running, if any (`runningRecentSample`). */
+  runningSample: number | null;
+  developerMode?: boolean;
+  timeDisplay: TimeDisplay;
+  requestKey: string;
+}
+
+function PeriodicReviewPanelView({ data, runningSample, developerMode, timeDisplay, requestKey }: PanelViewProps) {
   const headingId = useId();
   const { kind } = data;
-  const available = data.availability.status === "ENABLED" && !data.scopeError && data.trades !== null && data.trades > 0;
+  const blocked = runBlockedReason(data, runningSample);
+  const available = data.trades !== null && data.trades > 0 && blocked === undefined;
   const needsSettings = data.availability.status === "ACCOUNT_OFF" || data.availability.status === "BUDGET_REACHED";
   const latest = latestCompleted(data.history);
   const Card = CARDS[kind];
@@ -78,9 +97,9 @@ function PeriodicReviewPanelView({ data, developerMode, timeDisplay, requestKey 
         requestKey={requestKey}
         estimate={data.estimate}
         available={available}
-        unavailableReason={available ? undefined : runBlockedReason(data)}
+        unavailableReason={available ? undefined : blocked}
       />
-      {needsSettings && <AiSettingsLink accountId={data.accountId} />}
+      {needsSettings && <AiSettingsLink accountId={data.accountId} archived={data.accountArchived} />}
       {latest && <Card entry={latest} storedFacts={latest.storedFacts} scopeLabel={latest.scopeLabel} developerMode={developerMode} timeDisplay={timeDisplay} headingLevel={3} />}
       <div className="flex flex-col gap-2">
         <h3 className="text-[0.8125rem] font-semibold text-text">History</h3>
@@ -93,8 +112,10 @@ function PeriodicReviewPanelView({ data, developerMode, timeDisplay, requestKey 
 
 export async function PeriodicReviewPanel({ kind, accountId, period, developerMode }: PeriodicReviewPanelProps) {
   let data: PeriodicAiData;
+  let runningSample: number | null;
   try {
-    data = await loadPeriodicAi(kind, accountId, period);
+    // An unreadable running state leaves the period's own history to hold the button (the database refuses anyway).
+    [data, runningSample] = await Promise.all([loadPeriodicAi(kind, accountId, period), kind === "recent" ? optional(runningRecentSample(accountId)) : null]);
   } catch (error) {
     unstable_rethrow(error);
     return error instanceof PeriodError ? (
@@ -107,5 +128,5 @@ export async function PeriodicReviewPanel({ kind, accountId, period, developerMo
       </Callout>
     );
   }
-  return <PeriodicReviewPanelView data={data} developerMode={developerMode} timeDisplay={await displayPreference()} requestKey={crypto.randomUUID()} />;
+  return <PeriodicReviewPanelView data={data} runningSample={runningSample} developerMode={developerMode} timeDisplay={await displayPreference()} requestKey={crypto.randomUUID()} />;
 }

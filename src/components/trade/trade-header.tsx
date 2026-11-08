@@ -1,12 +1,14 @@
 import { ChevronLeft, CircleCheck, Info, OctagonAlert, TriangleAlert } from "lucide-react";
 import Link from "next/link";
+import { accountDashboardHref, manageHref } from "@/components/accounts/copy";
 import { withKeys } from "@/components/ai/model";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { cx } from "@/components/ui/cx";
+import { prefetchFor } from "@/components/ui/links";
 import type { TimeDisplay } from "@/domain/time-display";
 import type { TradeDetail } from "@/lib/trades-data";
 import { LiveFor } from "./live-for";
-import { headerActions, headerFacts, type LockSummary, nextStepHint, originBadge, resultSummary, skipSlotNote } from "./model";
+import { blockingNow, headerActions, headerFacts, type LockSummary, nextStepHint, originBadge, pageState, resultSummary, skipSlotNote } from "./model";
 import { TRADE_TITLE_ID } from "./reveal";
 import { type TradeActionContext, TradeHeaderActions } from "./trade-actions";
 
@@ -43,11 +45,14 @@ export function TradeHeader({ detail, now, display, lock, keys, duplicateNotes }
   const { state, account } = detail;
   const origin = originBadge(detail.origin, state);
   const facts = headerFacts(detail, now, display);
-  const hint = nextStepHint(detail, now, display);
+  // What the page knows now about a blocked draft's reasons beyond its check (today's account values).
+  const current = blockingNow(lock, now);
+  const hint = nextStepHint(detail, now, display, current);
   const result = resultSummary(detail);
+  const accountHref = accountDashboardHref(account);
   const context: TradeActionContext = {
     tradeId: detail.tradeId, editHref: `${detail.href}/edit`, expectedRevision: detail.draft?.expectedRevision ?? null, lock, keys, duplicateNotes,
-    skipNote: skipSlotNote(detail, now),
+    skipNote: skipSlotNote(detail, now), confirmValuesHref: manageHref(account.id, "account-values"),
   };
   const HintIcon = hint ? HINT_STYLE[hint.tone].icon : null;
   return (
@@ -81,14 +86,19 @@ export function TradeHeader({ detail, now, display, lock, keys, duplicateNotes }
             </p>
           )}
           <div className="t-meta flex flex-wrap items-center gap-x-3 gap-y-1">
+            {/* Account names run up to 100 characters: the chip shrinks with the header (min-w-0, max-w-full), a long
+                name ends in an ellipsis with the whole name in the tooltip and the link's name, and the currency stays. */}
             <Link
-              href={`/accounts/${account.id}`}
-              className="group inline-flex min-h-10 items-center pointer-coarse:min-h-11"
+              href={accountHref}
+              prefetch={prefetchFor(accountHref, undefined)}
+              className="group inline-flex min-h-10 max-w-full min-w-0 items-center pointer-coarse:min-h-11"
               aria-label={`Trading account ${account.name} (${account.currency})`}
             >
-              <span className="badge gap-1.5 group-hover:border-accent group-hover:text-text">
-                {account.name}{" "}
-                <span className="text-text-3">{account.currency}</span>
+              <span className="badge max-w-full min-w-0 gap-1.5 group-hover:border-accent group-hover:text-text">
+                <span className="truncate" title={account.name}>
+                  {account.name}
+                </span>{" "}
+                <span className="flex-none text-text-3">{account.currency}</span>
               </span>
             </Link>
             {/* A draft's state pill already says it ("Account archived"). */}
@@ -109,7 +119,8 @@ export function TradeHeader({ detail, now, display, lock, keys, duplicateNotes }
             </span>
           </div>
         </div>
-        <TradeHeaderActions model={headerActions(state)} context={context} />
+        {/* A draft blocked today only by what no edit clears leads with the step that does (`pageState`). */}
+        <TradeHeaderActions model={headerActions(pageState(detail, current))} context={context} />
       </div>
       {hint && HintIcon && (
         <p className={cx("flex max-w-3xl items-start gap-2 text-sm leading-5", HINT_STYLE[hint.tone].className)} data-tone={hint.tone}>

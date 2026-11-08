@@ -95,6 +95,11 @@ export interface TradeFilters {
   /** Every tag must be present (effective V2 tags). */
   tags?: string[];
   instrument?: string;
+  /**
+   * The currency of the trade's account (ISO code): one currency's trades, so a money figure drills into exactly the
+   * trades it sums (EDGE's daily net P&L per currency, §9.3: money never mixes currencies).
+   */
+  currency?: string;
   /** Requested risk percent of the plan (exact). */
   riskPercent?: string;
   strategyVersionId?: string;
@@ -136,6 +141,17 @@ const POSITIVE_DECIMAL = /^\d{1,12}(\.\d{1,8})?$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SYMBOL = /^[A-Z0-9][A-Z0-9._/-]{0,19}$/;
 const TAG = /^[a-z0-9][a-z0-9 _-]{0,31}$/;
+const CURRENCY = /^[A-Z]{3}$/;
+
+/**
+ * V1 Journal links (bc5441c, `journalFilters`): `status` named one plan status and `outcome` one result. Both are read
+ * only when their V2 key (`state`, `result`) is absent. A V1 closed trade is closed or reviewed in V2; V1's `page`
+ * (offset paging) and `proposals` (its setup list) have no V2 meaning and are not read.
+ */
+const LEGACY_STATUS: ReadonlyMap<string, readonly Lifecycle[]> = new Map([
+  ["LOCKED", ["LOCKED"]], ["TAKEN", ["LIVE"]], ["CLOSED", ["CLOSED", "REVIEWED"]], ["SKIPPED", ["SKIPPED"]], ["CANCELLED", ["CANCELLED"]],
+]);
+const LEGACY_OUTCOMES = ["WIN", "LOSS", "BREAKEVEN"] as const;
 
 function enumValue<T extends string>(values: readonly T[], raw: string | undefined): T | undefined {
   if (raw === undefined) return undefined;
@@ -173,6 +189,7 @@ export function parseTradeFilters(params: FilterParams): { filters: TradeFilters
     else assign(value);
   };
   pick("result", TRADE_RESULTS, value => { filters.result = value; });
+  if (readOne(params, "result") === undefined) pick("outcome", LEGACY_OUTCOMES, value => { filters.result = value; });
   pick("origin", TRADE_ORIGINS, value => { filters.origin = value; });
   pick("model", ENTRY_MODELS, value => { filters.model = value; });
   pick("session", SESSIONS, value => { filters.session = value; });
@@ -182,6 +199,11 @@ export function parseTradeFilters(params: FilterParams): { filters: TradeFilters
     const parsed = states.map(state => enumValue(LIFECYCLES, state));
     if (parsed.every((state): state is Lifecycle => state !== undefined)) filters.states = [...new Set(parsed)];
     else invalid.push("state");
+  } else {
+    const status = readOne(params, "status");
+    const legacy = status === undefined ? undefined : LEGACY_STATUS.get(status.toUpperCase());
+    if (legacy) filters.states = [...legacy];
+    else if (status !== undefined) invalid.push("status");
   }
   const weekday = readOne(params, "weekday");
   if (weekday !== undefined) {
@@ -207,6 +229,11 @@ export function parseTradeFilters(params: FilterParams): { filters: TradeFilters
   if (instrument !== undefined) {
     if (SYMBOL.test(instrument)) filters.instrument = instrument;
     else invalid.push("instrument");
+  }
+  const currency = readOne(params, "currency")?.toUpperCase();
+  if (currency !== undefined) {
+    if (CURRENCY.test(currency)) filters.currency = currency;
+    else invalid.push("currency");
   }
   const risk = readOne(params, "risk");
   if (risk !== undefined) {
@@ -240,6 +267,7 @@ export function tradeFilterParams(filters: TradeFilters): URLSearchParams {
   const params = new URLSearchParams();
   const set = (key: string, value: string | undefined) => { if (value !== undefined && value !== "") params.set(key, value); };
   set("accountFilter", filters.accountFilter);
+  set("currency", filters.currency);
   set("from", filters.from);
   set("to", filters.to);
   set("closedFrom", filters.closedFrom);
@@ -379,6 +407,7 @@ export function applyLedgerFilters(query: LedgerSelect, scope: TradeScope, filte
   let q = query;
   const reads = filteredScope(scope, filters);
   if (reads.mode === "account") q = q.eq("account_id", reads.accountId);
+  if (filters.currency) q = q.eq("currency", filters.currency);
   if (filters.closedFrom) q = q.gte("exited_at", dayStart(filters.closedFrom));
   if (filters.closedTo) q = q.lt("exited_at", dayEnd(filters.closedTo));
   if (filters.result === "OPEN") q = q.eq("lifecycle", "LIVE");
@@ -962,7 +991,10 @@ const planRow = z.object({
 });
 const eventRow = z.object({ id: z.uuid(), event_type: z.string(), payload: record, occurred_at: instantText, recorded_at: instantText });
 const dispositionRow = z.object({ status: z.enum(["SKIPPED", "CANCELLED"]), reason: z.string(), recorded_at: instantText });
-const decisionRow = z.object({ decision: z.enum(["TAKEN", "SKIPPED"]), recorded_at: instantText });
+const decisionRow = z.object({
+  id: z.uuid(), decision: z.enum(["TAKEN", "SKIPPED"]), event_type: z.enum(["HUMAN_DECISION", "MANUAL_OVERRIDE"]), reason: z.string().nullable(),
+  risk_decision: z.enum(["APPROVED", "BLOCKED"]), ai_decision: z.string(), recorded_at: instantText,
+});
 const factsRow = z.object({
   id: z.uuid(), recorded_at: instantText, source: z.enum(["USER", "IMPORT"]), instrument_version_id: z.uuid().nullable(), symbol: z.string().nullable(),
   direction: z.enum(["LONG", "SHORT"]).nullable(), entry_model: z.enum(ENTRY_MODELS).nullable(), entry_price: decimalText.nullable(),
@@ -1032,6 +1064,11 @@ export interface CheckView {
   /** `Risk Engine · Blocked — …` / `Risk Engine · Approved`. */
   statusLine: string;
   calculations: CheckCalculations | null;
+  /**
+   * The minimum RR the check compared the planned RR with: its report's limits (report 1.2), else the minimum of the
+   * risk plan version it was evaluated with (older reports). Planned RR is shown against it (spec §6.6). Null: unknown.
+   */
+  minRR?: string | null;
 }
 
 export interface DraftView {
@@ -1233,9 +1270,11 @@ function proposalView(raw: Record<string, unknown> | null, instrumentVersionId: 
 function checkView(report: StoredRiskReport, recordedAt: string, revision: number | null, lookup: ExplainLookup): CheckView {
   const explained = explainReport(report, lookup);
   const calc = report.calculations;
+  const minRR = "reportVersion" in report && report.reportVersion === "1.2" ? report.limits.minRR : lookup.riskPlan?.minRR;
   return {
     recordedAt, decision: explained.decision, revision, explained, statusLine: riskStatusLine(report, lookup),
     calculations: calc ? { quantity: stripZeros(calc.quantity), nominalRisk: stripZeros(calc.nominalRisk), plannedRR: stripZeros(calc.plannedRR), budget: stripZeros(calc.budget), stopDistance: stripZeros(calc.stopDistance) } : null,
+    minRR: minRR ? stripZeros(minRR) : null,
   };
 }
 
@@ -1265,10 +1304,13 @@ function storedDecision(result: unknown): "APPROVED" | "BLOCKED" {
   return value.data.decision ?? (value.data.status === "RISK_APPROVED" ? "APPROVED" : "BLOCKED");
 }
 
-/** The trade's latest V1 decision on any of its revisions, in the order trade_ledger.legacy_decision reads them. */
-function latestLegacyDecision(db: Db, userId: string, proposalIds: readonly string[]) {
-  return db.from("setup_human_decisions").select("decision,recorded_at").eq("user_id", userId).in("proposal_id", [...proposalIds])
-    .order("recorded_at", { ascending: false }).order("id", { ascending: false }).limit(1).maybeSingle();
+/**
+ * The trade's V1 decisions on any of its revisions, newest first in the order trade_ledger.legacy_decision reads them:
+ * the first row is the decision the ledger names. The newest `SOURCE_LIMIT` are read.
+ */
+function legacyDecisions(db: Db, userId: string, proposalIds: readonly string[]) {
+  return db.from("setup_human_decisions").select("id,decision,event_type,reason,risk_decision,ai_decision,recorded_at").eq("user_id", userId)
+    .in("proposal_id", [...proposalIds]).order("recorded_at", { ascending: false }).order("id", { ascending: false }).limit(SOURCE_LIMIT);
 }
 
 function titleOf(trade: LedgerTrade): string {
@@ -1324,7 +1366,7 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
   if (trade.plan_id && !planRecord) throw new Error("Locked plan unavailable");
   const proposalIds = revisionRows.map(row => row.proposal_id);
 
-  const [proposals, checks, screenshots, screenshotRemovals, observation, legacyDecision] = await Promise.all([
+  const [proposals, checks, screenshots, screenshotRemovals, observation, decisions] = await Promise.all([
     proposalIds.length ? db.from("setup_proposals").select("id,proposal,created_at,instrument_version_id").eq("user_id", userId).in("id", proposalIds) : EMPTY,
     proposalIds.length
       ? db.from("setup_risk_checks").select("id,proposal_id,risk:risk_evaluations(id,result,recorded_at,risk_plan_version_id,instrument_version_id,strategy_version_id)")
@@ -1336,8 +1378,9 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
       : EMPTY,
     proposalIds.length ? db.from("setup_screenshot_removals").select("screenshot_id,recorded_at").eq("user_id", userId).in("proposal_id", proposalIds) : EMPTY,
     planRecord ? db.from("account_observations").select("equity::text").eq("id", planRecord.account_observation_id).eq("user_id", userId).maybeSingle() : NONE,
-    // When the latest V1 decision (the ledger names it) was recorded: a V1 skip ends the plan at that instant.
-    trade.legacy_decision === "SKIPPED" && proposalIds.length ? latestLegacyDecision(db, userId, proposalIds) : NONE,
+    // V1 decisions (Taken, Skipped, taken despite a block, with the trader's reason) for the timeline; the latest one, which
+    // the ledger names, dates the end when it is a skip. A trade without any V1 decision is never read.
+    trade.legacy_decision !== null && proposalIds.length ? legacyDecisions(db, userId, proposalIds) : EMPTY,
   ]);
   const proposalRows = rows(proposalRow, proposals, "Draft revisions");
   const checkRows = rows(checkRow, checks, "Risk checks");
@@ -1450,9 +1493,10 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
     : null;
   const closeRecord = single(unplannedCloseRow, unplannedClose, "Close");
   const dispositionRecord = single(dispositionRow, disposition, "Disposition");
-  const legacySkip = single(decisionRow, legacyDecision, "Decisions");
+  const decisionRows = rows(decisionRow, decisions, "Decisions");
+  const latestDecision = decisionRows[0] ?? null;
   const endedAt = planEndedAt(trade, {
-    dispositionAt: dispositionRecord?.recorded_at ?? null, legacySkipAt: legacySkip?.decision === "SKIPPED" ? legacySkip.recorded_at : null,
+    dispositionAt: dispositionRecord?.recorded_at ?? null, legacySkipAt: latestDecision?.decision === "SKIPPED" ? latestDecision.recorded_at : null,
   });
   const close: CloseView | null = trade.exited_at !== null
     ? {
@@ -1528,6 +1572,9 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
     revisions: revisionRows.map(row => ({ proposalId: row.proposal_id, revision: row.revision, createdAt: row.created_at })),
     riskChecks: checkRows.map(row => ({ id: row.risk.id, recordedAt: row.risk.recorded_at, decision: storedDecision(row.risk.result), result: row.risk.result, proposalId: row.proposal_id })),
     legacyEvents: eventRows.map(row => ({ id: row.id, eventType: row.event_type, payload: row.payload, occurredAt: row.occurred_at, recordedAt: row.recorded_at })),
+    legacyDecisions: decisionRows.map(row => ({
+      id: row.id, decision: row.decision, eventType: row.event_type, reason: row.reason, riskDecision: row.risk_decision, aiDecision: row.ai_decision, recordedAt: row.recorded_at,
+    })),
     journal: journalRows.map(row => ({ id: row.id, kind: row.kind, body: row.body, details: row.details, phase: row.phase, recordedAt: row.recorded_at })),
     evidence: timelineEvidence,
     tagSets: [
@@ -1543,7 +1590,7 @@ export async function loadTradeDetail(deps: DetailDeps, tradeId: string): Promis
   }, deps.display);
 
   const factRows = rows(factsRow, facts, "Entry details");
-  const truncated = [eventRows, journalRows, checkRows].some(list => list.length >= SOURCE_LIMIT);
+  const truncated = [eventRows, journalRows, checkRows, decisionRows].some(list => list.length >= SOURCE_LIMIT);
   return {
     tradeId: trade.id,
     href: `/trades/${trade.id}`,

@@ -2,7 +2,7 @@
 
 import {
   Ban, ChevronRight, Copy, FileCode2, LockKeyhole, LogIn, LogOut, MessageSquarePlus, MoreHorizontal, NotebookPen, Pencil, RotateCcw, ShieldCheck, SquarePen,
-  Trash2,
+  Trash2, Wallet,
 } from "lucide-react";
 import Link from "next/link";
 import { type MouseEvent, type ReactNode, useRef, useState } from "react";
@@ -37,6 +37,8 @@ export interface TradeActionContext {
   duplicateNotes: readonly string[];
   /** The skip confirmation's note on the trading day the plan counts toward (`skipSlotNote`). */
   skipNote: string;
+  /** Manage → Account values of the trade's account: where "Confirm account values" leads. */
+  confirmValuesHref?: string;
 }
 
 type Variant = "primary" | "secondary" | "ghost";
@@ -95,6 +97,13 @@ export function TradeActionButton({ action, context, variant = "secondary", size
           {action.label}
         </Link>
       );
+    case "CONFIRM_VALUES":
+      return context.confirmValuesHref ? (
+        <Link href={context.confirmValuesHref} className={buttonClasses({ variant, size, className })}>
+          <Wallet aria-hidden="true" />
+          {action.label}
+        </Link>
+      ) : null;
     case "LOCK_PLAN":
       return context.expectedRevision !== null && context.lock ? (
         <LockPlanDialog tradeId={context.tradeId} expectedRevision={context.expectedRevision} summary={context.lock} trigger={button(<LockKeyhole aria-hidden="true" />)} />

@@ -424,12 +424,13 @@ end $$;
 
 -- ---------------------------------------------------------------------------------------------------------
 -- Part 4: provably unsent AI requests release their reservation instead of holding it as UNCERTAIN.
--- A dispatched request first counts its input (no generation, not billed) and is re-authorized immediately before
--- the generation request (dispatch_account_ai_request with p_recheck). That recheck is the generation commit point:
--- it now records the commit once in ai_request_generations. A dispatched request may be released for zero cost
--- (CANCELLED with usage {"generation":"NOT_SENT"}) only while no generation was committed; a plain CANCELLED keeps
--- its 0008 meaning (never dispatched). SETTLED and UNCERTAIN are unchanged. Bodies are the 0008 bodies plus the
--- marked lines.
+-- A dispatched request first counts its input (no generation; whether the count request is billed is not
+-- established) and is re-authorized immediately before the generation request (dispatch_account_ai_request with
+-- p_recheck). That recheck is the generation commit point: it now records the commit once in ai_request_generations.
+-- A dispatched request may be released for zero cost (CANCELLED with usage {"generation":"NOT_SENT"}) only while no
+-- generation was committed; the application's request gate asks for that release only when no provider request,
+-- the input count included, was issued. A plain CANCELLED keeps its 0008 meaning (never dispatched). SETTLED and
+-- UNCERTAIN are unchanged. Bodies are the 0008 bodies plus the marked lines.
 create table public.ai_request_generations (
  reservation_id uuid primary key, user_id uuid not null, account_id uuid not null,
  created_at timestamptz not null default clock_timestamp(),

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { analysisOutput } from "./fixtures/analyze-setup";
 import { challengeOutput, ids, source } from "./fixtures/bias-challenge";
+import { monthlyOutput } from "./fixtures/monthly-review";
 import { output as tradeReviewOutput } from "./fixtures/trade-review";
 import { facts as weeklyFacts, weeklyOutput } from "./fixtures/weekly-review";
 
@@ -23,19 +24,21 @@ import { aiBudgetAmounts, aiBudgetFigures, aiBudgetStatus, type AiBudgetModel, A
 import { AiCard, type AiCardProps } from "@/components/ai/ai-card";
 import { evidenceSelectionSummary } from "@/components/ai/ai-evidence-actions";
 import { AiHistoryList } from "@/components/ai/ai-history-list";
+import { AiSettingsLink } from "@/components/ai/ai-settings-link";
 import { aiEstimate, estimateModel } from "@/components/ai/estimate";
 import { FullAnalysisBody, FullAnalysisSheet } from "@/components/ai/full-analysis-sheet";
 import { chipLabel, failureAccountingText, PRICING_UNAVAILABLE, safeChipHref, type SourceChipModel, sourceChipModel } from "@/components/ai/model";
 import {
-  type AiResultEntry, AnalyzeSetupCard, ChallengeBiasCard, latestCompleted, TradeReviewV1Card, TradeTimelineReviewCard, WeeklyReviewCard,
+  type AiResultEntry, AnalyzeSetupCard, ChallengeBiasCard, historyFullAnalysis, latestCompleted, TradeReviewCard, WeeklyReviewCard,
 } from "@/components/ai/operation-cards";
-import { periodicFactModels, storedPeriodicFacts } from "@/components/ai/periodic";
+import { switchesAccountContext } from "@/components/ui/links";
+import { periodicFactModels, periodicRequestRunning, periodicRunningReason, storedPeriodicFacts } from "@/components/ai/periodic";
 import { SourceChip, SourceChipList } from "@/components/ai/source-chip";
-import { StaleRevisionMarker } from "@/components/ai/stale-revision-marker";
+import { StaleNotice } from "@/components/ai/stale-revision-marker";
 import { EvidenceSelectionProvider } from "@/components/evidence/selection";
 import { ToastProvider } from "@/components/ui/toast";
 import { budgetPresentation, type BudgetSnapshot } from "@/ai/budget";
-import { estimateAiCost } from "@/domain/ai-summary";
+import { CHANGE_EVIDENCE_NOTE, estimateAiCost, staleRevisionLabel, summarizeMonthlyReview } from "@/domain/ai-summary";
 import { type AiAccounting, type AiRequestRow, type AiResultRow, historyRow, resolvedCard, revisionMarker } from "@/lib/ai-history";
 
 // ---------------------------------------------------------------------------------------------
@@ -220,12 +223,14 @@ describe("SourceChip", () => {
   });
 });
 
-describe("StaleRevisionMarker", () => {
-  it("states the analysed and the current revision, and renders nothing for the current one", () => {
-    const html = render(StaleRevisionMarker, { analysisRevision: 2, currentRevision: 3 });
+describe("StaleNotice", () => {
+  it("states the analysed and the current revision, and there is no marker for the current one", () => {
+    const label = staleRevisionLabel(2, 3);
+    if (label === null) throw new Error("an earlier revision has a marker");
+    const html = render(StaleNotice, { text: label });
     expect(visibleText(html)).toBe("Analysis belongs to an earlier draft version. Based on draft revision 2 · current revision is 3");
     expect(html).toContain('data-stale="true"');
-    expect(render(StaleRevisionMarker, { analysisRevision: 3, currentRevision: 3 })).toBe("");
+    expect(staleRevisionLabel(3, 3)).toBeNull();
   });
 });
 
@@ -260,7 +265,7 @@ describe("operation cards", () => {
     expect(challenge).toContain("Why your thesis might be wrong");
     expect(challenge).toContain("Questions to answer");
     const v1 = entry("REVIEW_TRADE", request(3, operation("REVIEW_TRADE", "REVIEW_TRADE_V1"), "2026-09-23T12:10:00Z"), done(tradeReviewOutput, "2026-09-23T12:11:00Z"), tradeReviewOutput, {});
-    const v1Text = visibleText(render(TradeReviewV1Card, { entry: v1 }));
+    const v1Text = visibleText(render(TradeReviewCard, { entry: v1 }));
     expect(v1Text).toContain("Plan adherence · Insufficient evidence");
     expect(v1Text).toContain("Lessons");
     const timeline = {
@@ -271,7 +276,7 @@ describe("operation cards", () => {
       patterns: [], keyLesson: { text: "Record why a target moves.", sourceRefs: ["execution"] }, limitations: ["Only one trade."],
     };
     const reviewed = entry("REVIEW_TRADE_TIMELINE", request(4, operation("REVIEW_TRADE_TIMELINE", "REVIEW_TRADE_TIMELINE_V1"), "2026-09-23T12:20:00Z"), done(timeline, "2026-09-23T12:21:00Z"), timeline, {});
-    const html = render(TradeTimelineReviewCard, { entry: reviewed, noPlan: true });
+    const html = render(TradeReviewCard, { entry: reviewed, noPlan: true });
     const text = visibleText(html);
     expect(text.indexOf("From Trading OS")).toBeLessThan(text.indexOf("AI interpretation · advisory"));
     expect(text).toContain("No pre-trade plan recorded");
@@ -297,6 +302,14 @@ describe("operation cards", () => {
     expect(periodicFactModels({ trades: 0, netR: null }).facts).toEqual([{ label: "Sample", value: "0 trades" }]);
   });
 
+  it("a periodic run waits while a review of its period is still running, and says so in words", () => {
+    expect(periodicRequestRunning([{ status: "COMPLETED" }, { status: "FAILED" }])).toBe(false);
+    expect(periodicRequestRunning([{ status: "COMPLETED" }, { status: "IN_PROGRESS" }])).toBe(true);
+    expect(periodicRunningReason("weekly", "week of Oct 12–18")).toBe("A review of the week of Oct 12–18 is still running. Its result will appear in the history.");
+    expect(periodicRunningReason("recent", "last 20 trades")).toBe("An analysis of the last 20 trades is still running. Its result will appear in the history.");
+    expect(periodicRunningReason("monthly", "September 2026")).toBe("A review of September 2026 is still running. Its result will appear in the history.");
+  });
+
   it("failed entries render the human reason and accounting outcome; latestCompleted skips them", () => {
     const failedRow = historyRow("ANALYZE_SETUP", request(6, operation("ANALYZE_SETUP", "ANALYZE_SETUP_V1"), "2026-09-23T12:28:00Z"), { status: "FAILED", interpretation: null, error_code: "SCREENSHOT_CHANGED", reservation_id: null, created_at: "2026-09-23T12:29:00Z" }, none, NOW);
     const failed: AiResultEntry = { ...failedRow, card: null };
@@ -310,18 +323,49 @@ describe("operation cards", () => {
   });
 
   it("states what a failed attempt cost in plain words for every accounting outcome", () => {
-    const outcomes = [
-      [null, null, "Nothing was charged for this attempt."],
-      [59_400, "SETTLED", "The cost is recorded; unused funds were released."],
-      [59_400, "UNCERTAIN", "The cost could not be confirmed; the held amount stays until it is reviewed."],
-      [59_400, "CANCELLED", "Nothing was charged; the held amount was released."],
-      [59_400, null, "The cost of this attempt is not settled yet; the held amount still counts toward this month's budget."],
-      [59_400, "SOMETHING_NEW", "The cost of this attempt is not settled yet; the held amount still counts toward this month's budget."],
-    ] as const;
-    for (const [reservedMicros, disposition, copy] of outcomes) {
-      expect(failureAccountingText({ reservedMicros, disposition })).toBe(copy);
-      expect(copy).not.toMatch(/reservation|[A-Z]{2,}_/);
+    const review = (decision: "NO_PROVIDER_USAGE_CONFIRMED" | "USAGE_CONFIRMED", reconciledMicros: number, releasedMicros: number, additionalMicros: number) => ({
+      decision, reconciledMicros, releasedMicros, additionalMicros,
+    });
+    const outcomes: [Parameters<typeof failureAccountingText>[0], string][] = [
+      [{ reservedMicros: null, disposition: null }, "Nothing was charged for this attempt."],
+      [{ reservedMicros: 59_400, disposition: "SETTLED" }, "The cost is recorded; unused funds were released."],
+      [{ reservedMicros: 59_400, disposition: "UNCERTAIN" }, "The amount held for this attempt stays until an accounting review confirms the cost or releases it; nothing beyond it was charged."],
+      [{ reservedMicros: 59_400, disposition: "CANCELLED" }, "Nothing was charged; the held amount was released."],
+      // An unconfirmed cost after its accounting review (the stored UNCERTAIN record never changes).
+      [
+        { reservedMicros: 59_400, disposition: "UNCERTAIN", accountingReview: review("NO_PROVIDER_USAGE_CONFIRMED", 0, 59_400, 0) },
+        "Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released.",
+      ],
+      [
+        { reservedMicros: 59_400, disposition: "UNCERTAIN", accountingReview: review("USAGE_CONFIRMED", 21_000, 38_400, 0) },
+        "Reviewed: the confirmed cost of €0.03 is recorded, and the rest of the held amount was released.",
+      ],
+      [{ reservedMicros: 59_400, disposition: "UNCERTAIN", accountingReview: review("USAGE_CONFIRMED", 59_400, 0, 0) }, "Reviewed: the confirmed cost of €0.06 is recorded."],
+      [
+        { reservedMicros: 59_400, disposition: "UNCERTAIN", accountingReview: review("USAGE_CONFIRMED", 70_000, 0, 10_600) },
+        // No separately rounded difference (€0.0106 is not "€0.02 more"); Technical details keep the exact amounts.
+        "Reviewed: the confirmed cost of €0.07 is recorded. It was more than the amount held for this attempt, and all of it counts toward the AI budget.",
+      ],
+      // A hold without a usage record counts toward its own budget month until the reset releases it.
+      [
+        { reservedMicros: 59_400, disposition: null, holdPeriod: "2026-12-01", holdExpired: false },
+        "The amount held for this attempt counts toward the AI budget of December 2026 until it resets on Jan 1; nothing beyond it was charged.",
+      ],
+      [
+        { reservedMicros: 59_400, disposition: null, holdPeriod: "2026-09-01", holdExpired: true },
+        "The amount held for this attempt counted toward the AI budget of September 2026 only and was released when it reset on Oct 1; nothing beyond it was charged.",
+      ],
+      [{ reservedMicros: 59_400, disposition: null }, "The amount held for this attempt counts toward its month's AI budget until that budget resets; nothing beyond it was charged."],
+      [{ reservedMicros: 59_400, disposition: "SOMETHING_NEW" }, "The cost of this attempt is not settled yet; the held amount still counts toward this month's budget."],
+    ];
+    for (const [accounting, copy] of outcomes) {
+      expect(failureAccountingText(accounting)).toBe(copy);
+      expect(copy).not.toMatch(/reserv|[A-Z]{2,}_/);
     }
+    // A review only ever follows an unconfirmed cost: it never rewords another outcome.
+    expect(failureAccountingText({ reservedMicros: 59_400, disposition: "SETTLED", accountingReview: review("NO_PROVIDER_USAGE_CONFIRMED", 0, 59_400, 0) })).toBe(
+      "The cost is recorded; unused funds were released.",
+    );
   });
 });
 
@@ -341,6 +385,21 @@ describe("FullAnalysisSheet", () => {
     expect(technical).toContain("currentThesis");
     // The trigger is server-rendered; the sheet content mounts on open (Radix portal).
     expect(visibleText(render(FullAnalysisSheet, { title: "Setup analysis", sections }))).toBe("View full analysis");
+  });
+
+  // Ported from V1 (tests/ai-failure-accounting-ui.test.ts, "monthly comparison notice preserves historical interpretation…").
+  it("a monthly review's What improved and What degraded carry the comparison caveat from Trading OS, apart from the AI text", () => {
+    const sections = summarizeMonthlyReview(monthlyOutput).full.map(section => ({
+      heading: section.title, note: section.note, items: section.items.map(item => ({ text: item.text, sources: [] })),
+    }));
+    const html = render(FullAnalysisBody, { sections });
+    const text = visibleText(html);
+    expect(text).toContain("Change requires comparable earlier and later evidence");
+    expect(text).toContain("Record completeness alone does not establish improvement or degradation");
+    const notes = [...html.matchAll(/<h3[^>]*>([^<]+)<\/h3><p role="note"[^>]*>([^<]+)<\/p>/g)].map(match => [match[1], match[2]]);
+    expect(notes).toEqual([["What improved", CHANGE_EVIDENCE_NOTE], ["What degraded", CHANGE_EVIDENCE_NOTE]]);
+    // Sections without a caveat render none.
+    expect(render(FullAnalysisBody, { sections: sections.map(({ note: _note, ...section }) => section) })).not.toContain('role="note"');
   });
 });
 
@@ -372,7 +431,7 @@ describe("AiHistoryList", () => {
     const visible = visibleText(html);
     expect(visible).toContain("Weekly Review · Failed · 07:01");
     expect(visible).toContain("The request did not complete.");
-    expect(visible).toContain("The cost could not be confirmed; the held amount stays until it is reviewed.");
+    expect(visible).toContain("The amount held for this attempt stays until an accounting review confirms the cost or releases it; nothing beyond it was charged.");
     expect(visible).not.toMatch(/reservation/i);
     for (const code of ["FAILED", "INVALID_OUTPUT", "HISTORICAL_VERSION", "UNCERTAIN", "59400"]) {
       expect(html).toContain(code);
@@ -403,6 +462,100 @@ describe("AiHistoryList", () => {
     expect(html).toContain("Challenge My Bias");
     expect(visibleText(render(AiHistoryList, { rows: [] }))).toContain("No AI history yet.");
     expect(render(AiHistoryList, { rows: [], emptyText: null })).toBe("");
+  });
+
+  /** `aria-label` → class of every full-analysis trigger in the markup. */
+  const fullTriggers = (html: string) =>
+    [...html.matchAll(/<button\b[^>]*>/g)].flatMap(match => {
+      const label = /aria-label="(View full analysis[^"]*)"/.exec(match[0])?.[1];
+      return label ? [{ label: decode(label), className: /class="([^"]*)"/.exec(match[0])?.[1] ?? "" }] : [];
+    });
+
+  it("opens every completed row in full, earlier results included, each trigger named after its row", () => {
+    const html = render(AiHistoryList, { rows: [{ ...analysisEntry, revision: revisionMarker(1, 2) }, challengeEntry, failedHistorical] });
+    const triggers = fullTriggers(html);
+    expect(triggers.map(trigger => trigger.label)).toEqual([
+      "View full analysis · Analyze Setup · Completed · Sep 23, 07:01",
+      "View full analysis · Challenge My Bias · Completed · Sep 23, 07:06",
+    ]);
+    // A compact text link whose hit area reaches 40px (44px on touch) without making the row taller: 20px of text,
+    // 16px (20px on touch) over the text above and 4px down, short of the Technical details toggle below.
+    for (const { className } of triggers) {
+      expect(className.split(" ")).toEqual(expect.arrayContaining(["btn-link", "after:-top-4", "after:-bottom-1", "pointer-coarse:after:-top-5"]));
+    }
+    expect(visibleText(html).split("View full analysis").length - 1).toBe(2);
+    // Rows a loader gave no card (failed, still running, or a compact read) stay compact.
+    const running = historyRow("ANALYZE_SETUP", request(8, operation("ANALYZE_SETUP", "ANALYZE_SETUP_V1"), "2026-09-23T12:20:00Z"), null, none, NOW);
+    const compact = historyRow("CHALLENGE_BIAS", request(2, operation("CHALLENGE_BIAS", "CHALLENGE_BIAS_V1"), "2026-09-23T12:05:00Z"), done(challengeOutput, "2026-09-23T12:06:00Z"), none, NOW);
+    expect(render(AiHistoryList, { rows: [running, compact, failedHistorical] })).not.toContain("View full analysis");
+  });
+
+  it("opens an earlier result with the deterministic facts its card would show", () => {
+    const stored = { decision: "BLOCKED" as const, text: "Requested risk exceeds maximum · as checked for draft revision 1" };
+    const preTrade = historyFullAnalysis({ ...analysisEntry, revision: revisionMarker(1, 2), riskLine: stored });
+    if (!preTrade) throw new Error("full analysis expected");
+    expect(preTrade).toMatchObject({ title: "Setup analysis", description: "Analyze Setup · Completed · Sep 23, 07:01 · Based on draft revision 1 · current revision is 2", triggerStyle: "link" });
+    const { title: _title, description: _description, triggerLabel: _label, triggerAriaLabel: _aria, triggerStyle: _style, ...body } = preTrade;
+    const text = visibleText(render(FullAnalysisBody, body));
+    // The verdict stored with the request, before the AI text, and every item in full.
+    expect(text.indexOf("Risk Engine · Blocked — Requested risk exceeds maximum · as checked for draft revision 1")).toBeGreaterThan(-1);
+    expect(text.indexOf("Risk Engine · Blocked")).toBeLessThan(text.indexOf("AI interpretation · advisory"));
+    expect(text).toContain("First confluence is recorded on the chart. Second sentence stays in the full analysis.");
+    expect(text).toContain("Fourth confluence.");
+    expect(text).not.toMatch(UUID);
+    const v1 = entry("REVIEW_TRADE", request(3, operation("REVIEW_TRADE", "REVIEW_TRADE_V1"), "2026-09-23T12:10:00Z"), done(tradeReviewOutput, "2026-09-23T12:11:00Z"), tradeReviewOutput, {});
+    expect(historyFullAnalysis({ ...v1, noPlan: true })).toMatchObject({ title: "Trade review", facts: [{ label: "Plan", value: "No pre-trade plan recorded" }] });
+    expect(historyFullAnalysis(v1)?.assessments).toHaveLength(6);
+    const weekly = entry("WEEKLY_REVIEW", request(5, operation("WEEKLY_REVIEW", "WEEKLY_REVIEW_V1"), "2026-09-23T12:25:00Z"), done(weeklyOutput, "2026-09-23T12:26:00Z"), weeklyOutput, weeklyFacts);
+    expect(historyFullAnalysis({ ...weekly, scopeLabel: "Week of Aug 31–Sep 6", storedFacts: weeklyFacts })).toMatchObject({
+      title: "Week of Aug 31–Sep 6", facts: [{ label: "Sample", value: "1 trade" }, { label: "Net R", value: "+3.00R" }],
+    });
+    expect(historyFullAnalysis(failedHistorical)).toBeNull();
+  });
+
+  it("states a reviewed cost in words and lists the review beside the stored usage record in Technical details", () => {
+    const reservation = "80000000-0000-4000-8000-000000000001";
+    const row = historyRow(
+      "WEEKLY_REVIEW",
+      request(9, operation("WEEKLY_REVIEW", "WEEKLY_REVIEW_V1"), "2026-09-23T12:00:00Z"),
+      { status: "FAILED", interpretation: null, error_code: "ACCOUNTING_UNCERTAIN", reservation_id: reservation, created_at: "2026-09-23T12:01:00Z" },
+      {
+        holds: [{ id: reservation, operation_id: "71000000-0000-4000-8000-000000000009", reserved_micros: 59_400, period: "2026-09-01" }],
+        usage: [{ reservation_id: reservation, charged_micros: 59_400, disposition: "UNCERTAIN" }],
+        reviews: [{ reservation_id: reservation, decision: "NO_PROVIDER_USAGE_CONFIRMED", reconciled_micros: 0, released_micros: 59_400, additional_micros: 0, created_at: "2026-09-25T10:00:00Z" }],
+      },
+      NOW,
+    );
+    const html = render(AiHistoryList, { rows: [row] });
+    const visible = visibleText(html);
+    expect(visible).toContain("The AI provider's usage could not be confirmed. Reviewed: the AI provider recorded no usage for this attempt, so nothing was charged and the held amount was released.");
+    expect(visible).not.toMatch(/stays (held|until)|reserv/i);
+    const technical = textOf(detailsBlocks(html).join(""));
+    for (const field of ["Usage disposition UNCERTAIN", "Charged (estimate) 59400 µ€ (€0.0594)", "Accounting review NO_PROVIDER_USAGE_CONFIRMED", "Charged after review 0 µ€ (€0.00)", "Released by review 59400 µ€ (€0.0594)", "Budget month 2026-09-01"]) {
+      expect(technical).toContain(field);
+    }
+  });
+});
+
+describe("AiSettingsLink", () => {
+  const ACCOUNT_ID = "20000000-0000-4000-8000-000000000001";
+
+  it("selects an active account explicitly and is never prefetched; an archived account is never selected", () => {
+    const active = AiSettingsLink({ accountId: ACCOUNT_ID });
+    expect(active.props.href).toBe(`/settings?account=${ACCOUNT_ID}#ai`);
+    expect(switchesAccountContext(active.props.href)).toBe(true);
+    expect(active.props.prefetch).toBe(false);
+    expect(visibleText(render(AiSettingsLink, { accountId: ACCOUNT_ID }))).toBe("Open AI settings");
+    // An archived account can never be the context (§9.2), and Settings → AI shows it read-only until it is restored:
+    // its fix route is Restore in Manage account, which selects nothing.
+    const archived = AiSettingsLink({ accountId: ACCOUNT_ID, archived: true });
+    expect(archived.props.href).toBe(`/accounts/${ACCOUNT_ID}/manage`);
+    expect(switchesAccountContext(archived.props.href)).toBe(false);
+    expect(archived.props.prefetch).toBeUndefined();
+    const markup = render(AiSettingsLink, { accountId: ACCOUNT_ID, archived: true });
+    expect(visibleText(markup)).toBe("Restore in Manage");
+    expect(markup).not.toContain("/settings");
+    expect(markup).toMatch(/class="[^"]*\bmin-h-10\b[^"]*pointer-coarse:min-h-11[^"]*"/);
   });
 });
 
@@ -527,6 +680,23 @@ describe("AiBudgetSummary", () => {
     // Only the Off reason depends on the placement.
     for (const snap of [snapshot(), snapshot({ uncertain: true, heldMicros: 59_400 }), snapshot({ usedMicros: 4_950_000, heldMicros: 60_000 })]) {
       expect(aiBudgetStatus(budget(snap), NOW, { inSettings: true })).toEqual(aiBudgetStatus(budget(snap), NOW));
+    }
+  });
+
+  it("sends an archived account to Manage account first: Settings → AI shows it read-only until it is restored", () => {
+    const off = budget(snapshot({ enabled: false }));
+    const archivedOff = "AI is off for this account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI.";
+    expect(aiBudgetStatus(off, NOW, { archived: true })).toEqual({ label: "Off", tone: "neutral", reason: archivedOff });
+    expect(visibleText(render(AiBudgetSummary, { accountName: "Old Prop 50K", budget: off, now: NOW, archived: true }))).toContain(archivedOff);
+    const reached = budget(snapshot({ usedMicros: 4_950_000, heldMicros: 60_000 }));
+    expect(aiBudgetStatus(reached, NOW).reason).toBe("This month's budget can't cover another AI request. New requests are blocked until it resets or you raise the limit.");
+    expect(aiBudgetStatus(reached, NOW, { archived: true })).toEqual({
+      label: "Limit reached", tone: "warning",
+      reason: "This month's budget can't cover another AI request. New requests are blocked until it resets; the account is archived, so restore it in Manage account to raise the limit.",
+    });
+    // States that no setting fixes read the same for an archived account.
+    for (const snap of [snapshot(), snapshot({ uncertain: true, heldMicros: 59_400 })]) {
+      expect(aiBudgetStatus(budget(snap), NOW, { archived: true })).toEqual(aiBudgetStatus(budget(snap), NOW));
     }
   });
 

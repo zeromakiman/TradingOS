@@ -80,13 +80,39 @@ function hexId(seed: string): string {
 }
 /** An ISO instant as PostgREST returns timestamptz values. */
 const postgres = (at: string) => at.replace(/(?:\.\d+)?Z$/, "+00:00");
+/**
+ * A server-recorded instant as PostgREST returns it: `clock_timestamp()` carries microseconds. The seconds and fraction
+ * are made up within the instant's minute (`seed` varies them), so the instant never moves to another minute.
+ */
+const micro = (at: string, seed: number) => `${at.slice(0, 17)}${String(10 + ((seed * 7) % 40)).padStart(2, "0")}.${String(400_001 + seed * 98_765).slice(-6)}+00:00`;
+
+/** The structured rules of the default strategy (ICT V1.0, migration 0002), as a real snapshot carries them. */
+export const ICT_RULES: Record<string, unknown> = {
+  schema_version: 1, version: "ICT V1.0", utc_offset_minutes: -300, execution_models: ["OB_FIRST_TOUCH", "OTE"], minimum_rr: "3",
+  context: ["Daily bias", "H4 context", "H1 context", "H4/H1 Fair Value Gaps", "Asian Range Liquidity", "Judas manipulation", "PDH", "PDL", "PWH", "PWL", "Kill Zone highs/lows", "internal liquidity", "external liquidity", "equal highs/lows", "previous-day 50%", "market structure", "displacement"],
+  context_timeframes: ["D1", "H4", "H1"], execution_timeframes: ["M15", "M5", "M3"],
+  sessions: { ACTIVE_KILL_ZONE: ["02:00", "12:00"], DEAD_POOL: ["12:00", "18:00"], ASIA: ["18:00", "01:00"], JUDAS: ["01:00", "02:00"] },
+  rules: {
+    OB_FIRST_TOUCH: "M5 Order Block first-touch mitigation after meaningful MSS/displacement. Bullish: bearish reversal candle that caused displacement, open/body down through lower unmitigated wick. Bearish: mirror using bullish reversal candle, open/body up through upper unmitigated wick. Exclude opposite/mitigated wick when appropriate. Entry is FIRST touch/mitigation of proximal edge. No additional confirmation inside OB or after valid first mitigation is required.",
+    OTE: "Valid separate entry model, not strategy drift. Allowed when displacement leg is extended, OB too distant, OB inefficient, or OTE provides a better predefined execution location. Fibonacci thresholds and anchor conventions are not specified in this version.",
+    MSS: "Evaluate meaningful broken structure, displacement quality, candle expansion, contextual importance of broken swing, preceding liquidity, and significance. A trivial crossed line is insufficient. Preserve ambiguity.",
+    LIQUIDITY: "Record liquidity_swept, liquidity_target, liquidity_type, internal_or_external. ARL high/low, PDH/PDL, PWH/PWL, Kill Zone highs/lows, equal highs/lows, internal/external liquidity and prior major swing points. Equal highs/lows are not automatically a final external target.",
+    TARGET: "Target must make contextual sense. ARL extremes, PDH/PDL, PWH/PWL, Kill Zone extremes, external liquidity, previous-day 50%, relevant structural liquidity.",
+    SESSION: "Fixed UTC−5. Dead Pool normally blocks new discretionary trades. Judas is manipulation/fake-move window between Asia and London. Browser timezone never governs strategy sessions.",
+    EVIDENCE: "Observed, user-reported and inferred evidence remain separate. Missing stays missing, uncertainty stays uncertain. Never invent levels, news or win probabilities.",
+    PROCESS: "Written strategy is the source of truth. P&L never overrides process. AI cannot silently change definitions, risk or strategy versions.",
+  },
+  ote_parameters: null, grade_policy: null,
+};
 
 /**
  * The densest realistic sources the periodic bounds must admit: `count` trades with `records` journal entries and events
- * in all, database-shaped (random hex UUIDs, PostgREST timestamps, numerics at the precision `journal_analytics`
- * returns), every thesis longer than its bound and closing with its invalidation, every journal text and note at 5,000
- * characters, partial closes with full-precision details and entries stored before entry but recorded after it.
- * Synthetic zero-padded ids and short timestamps tokenize far more cheaply and would understate a real request.
+ * in all, database-shaped (random hex UUIDs, PostgREST timestamps with the microseconds of server-recorded times,
+ * numerics at the precision `journal_analytics` returns), every thesis longer than its bound and closing with its
+ * invalidation, every journal text and note at 5,000 characters, partial closes with full-precision details and
+ * entries stored before entry but recorded after it. The trades alternate between two strategy versions with the full
+ * ICT rules and two risk versions, so the snapshot defines four versions and every trade names its own. Synthetic
+ * zero-padded ids, short timestamps and a single version would understate a real request.
  */
 export function maximalPeriodicSources(count: number, records: number, start: string, stepMinutes = 60): PeriodicTradeSource[] {
   const perTrade = Math.max(0, Math.ceil((records - count) / count));
@@ -95,27 +121,82 @@ export function maximalPeriodicSources(count: number, records: number, start: st
   for (const source of [...sources].reverse()) while (excess > 0 && source.journal.length) { source.journal.pop(); excess--; }
   for (const source of [...sources].reverse()) while (excess > 0 && source.events.length) { source.events.pop(); excess--; }
   const id = (value: string) => hexId(`maximal:${value}`);
+  const strategies = [0, 1].map(k => ({ id: id(`strategy:${k}`), version: `ICT V1.${k}`, rules: { ...ICT_RULES, version: `ICT V1.${k}` } }));
+  const risks = [0, 1].map(k => ({ id: id(`risk:${k}`), version: `Risk Plan V1.${k}`, daily_risk_cap: "2500.00", daily_loss_cap: "5000.00" }));
   return sources.map((source, i) => {
     const planId = id(source.plan.id);
     const entered = source.trade.entered_at ?? start;
+    const strategy = strategies[i % 2];
+    const risk = { ...source.risk, ...risks[i % 2] };
+    const versions = { strategy_version_id: strategy.id, risk_plan_version_id: risk.id };
     return {
       ...source,
-      plan: { ...source.plan, id: planId, locked_at: postgres(source.plan.locked_at), proposal: { ...source.plan.proposal, narrative: LONG_THESIS } },
+      strategy,
+      risk,
+      plan: { ...source.plan, ...versions, id: planId, locked_at: micro(source.plan.locked_at, i), proposal: { ...source.plan.proposal, narrative: LONG_THESIS } },
       trade: {
-        ...source.trade, id: planId, locked_at: postgres(source.trade.locked_at), entered_at: postgres(entered), exited_at: source.trade.exited_at && postgres(source.trade.exited_at),
+        ...source.trade, ...versions, strategy_version: strategy.version, risk_plan_version: risk.version,
+        id: planId, locked_at: micro(source.trade.locked_at, i), entered_at: postgres(entered), exited_at: source.trade.exited_at && postgres(source.trade.exited_at),
         entry_price: "1.16258", quantity: "4.25000000", planned_quantity: "4.25", exit_price: "1.16649", fees: "25.50",
         net_pnl: `${1636 + i}.25000000000000000000000000000000`, realized_r: `3.0${i % 10}555555555555555555555555555556`,
       },
       tradeRecordId: id(source.tradeRecordId),
       entryRecordedAt: source.entryRecordedAt && postgres(source.entryRecordedAt),
       closeRecordedAt: source.closeRecordedAt && postgres(source.closeRecordedAt),
-      events: source.events.map(event => ({ ...event, id: id(event.id), payload: { note: MAXIMAL_TEXT }, occurred_at: postgres(event.occurred_at), recorded_at: postgres(event.recorded_at) })),
+      events: source.events.map(event => ({ ...event, id: id(event.id), payload: { note: MAXIMAL_TEXT }, occurred_at: postgres(event.occurred_at), recorded_at: micro(event.recorded_at, i) })),
       journal: source.journal.map((entry, j) => ({
         ...entry, id: id(entry.id),
         ...(j % 3 === 1 ? { kind: "PARTIAL_CLOSE" as const, details: { price: "1.10123456", quantity: "0.12345678" } } : {}),
-        ...(j % 3 === 0 ? { phase: "PRE_ENTRY" as const, recordedAt: postgres(minutes(entered, 1)) } : { recordedAt: postgres(entry.recordedAt) }),
+        ...(j % 3 === 0 ? { phase: "PRE_ENTRY" as const, recordedAt: micro(minutes(entered, 1), j) } : { recordedAt: micro(entry.recordedAt, j) }),
       })),
-      tags: source.tags && { ...source.tags, tags: ["london", "liquidity-sweep", "a-plus"], recordedAt: source.tags.recordedAt && postgres(source.tags.recordedAt) },
+      tags: source.tags && { ...source.tags, tags: ["london", "liquidity-sweep", "a-plus"], recordedAt: source.tags.recordedAt && micro(source.tags.recordedAt, i) },
+    };
+  });
+}
+
+/** A thesis of typical length (within the narrative bound) that closes with its invalidation, as the seeded traders write them. */
+export const TYPICAL_THESIS = "London swept the equal lows, then an M5 MSS with clear displacement left a bullish order block. Entry 1.16258 on the first touch of the proximal edge, stop 1.16132 beyond the sweep, target 1.16649 at the Asian range high. EURUSD H1 is bullish and the FVG above the OB is still open. Invalidation: a second touch of the OB before entry or an M5 close through the sweep extreme.";
+/** Journal entries of typical length (55–110 characters) in every timing band, as the seeded traders write them. */
+const TYPICAL_ENTRIES: readonly Pick<PeriodicJournalEntry, "kind" | "phase" | "body" | "details">[] = [
+  { kind: "DECISION", phase: "PRE_ENTRY", body: "Price is a few ticks from the OB — not chasing. Limit sits at the proximal edge.", details: {} },
+  { kind: "NOTE", phase: "LIVE", body: "Clean displacement away from the OB. Holding to the PDH.", details: {} },
+  { kind: "STOP_CHANGE", phase: "LIVE", body: "Stop to break-even after the M5 break of structure.", details: { price: "1.16258" } },
+  { kind: "TARGET_CHANGE", phase: "LIVE", body: "Keeping the original target — no new information, just noting the urge to extend.", details: { price: "1.16649" } },
+  { kind: "LESSON", phase: "POST_TRADE", body: "Exited before the target because momentum stalled under the H1 FVG. Note the reason before closing next time.", details: {} },
+];
+
+/**
+ * Typically journaled closed planned trades, database-shaped like the seeded traders' (random hex UUIDs, PostgREST
+ * timestamps, some recorded to the microsecond, numerics at the precision `journal_analytics` returns): `records` V2
+ * journal entries spread evenly over `count` trades, a thesis of typical length, V2 tags and no V1 events.
+ */
+export function typicalPeriodicSources(count: number, records: number, start: string, stepMinutes = 600): PeriodicTradeSource[] {
+  const id = (value: string) => hexId(`typical:${value}`);
+  return periodicSourcesV2(count, { start, stepMinutes, journal: 0 }).map((source, i) => {
+    const entered = source.trade.entered_at ?? start;
+    const exited = source.trade.exited_at ?? start;
+    const planId = id(source.plan.id);
+    const entries = Math.floor(records / count) + (i < records % count ? 1 : 0);
+    return {
+      ...source,
+      plan: { ...source.plan, id: planId, locked_at: postgres(source.plan.locked_at), proposal: { ...source.plan.proposal, narrative: TYPICAL_THESIS } },
+      trade: {
+        ...source.trade, id: planId, locked_at: postgres(source.trade.locked_at), entered_at: postgres(entered), exited_at: postgres(exited),
+        entry_price: "1.16258", quantity: "4.25000000", planned_quantity: "4.25", exit_price: "1.16649", fees: "25.50",
+        net_pnl: `${1636 + i}.25000000000000000000000000000000`, realized_r: `3.0${i % 10}555555555555555555555555555556`,
+      },
+      tradeRecordId: id(source.tradeRecordId),
+      entryRecordedAt: source.entryRecordedAt && postgres(source.entryRecordedAt),
+      closeRecordedAt: source.closeRecordedAt && postgres(source.closeRecordedAt),
+      events: [],
+      journal: Array.from({ length: entries }, (_, j): PeriodicJournalEntry => {
+        const typical = TYPICAL_ENTRIES[(i + j) % TYPICAL_ENTRIES.length];
+        const recordedAt = typical.phase === "PRE_ENTRY" ? postgres(minutes(entered, -2 - j))
+          : typical.phase === "LIVE" ? postgres(minutes(entered, 3 + 4 * j))
+          : `${minutes(exited, 20 + j).slice(0, 19)}.927844+00:00`;
+        return { id: id(`${source.tradeRecordId}:journal:${j}`), ...typical, recordedAt };
+      }),
+      tags: { setupGrade: "A+", liquidityContext: "ARL_LOW", mssTimeframe: "M5", tags: ["london", "sweep", "a-setup"], source: "V2", recordedAt: postgres(minutes(exited, 2)) },
     };
   });
 }
@@ -127,8 +208,8 @@ export function periodicTables(sources: readonly PeriodicTradeSource[], accountI
     accounts: [{ id: accountId, name: "Synthetic", currency: "USD", user_id: userId }],
     journal_analytics: sources.map(source => ({ ...source.trade, account_id: accountId })),
     trade_plans: sources.map(source => ({ ...source.plan, ...owned })),
-    strategy_versions: [{ ...sources[0]?.strategy, ...owned }].filter(row => row.id),
-    risk_plan_versions: [{ ...sources[0]?.risk, ...owned }].filter(row => row.id),
+    strategy_versions: [...new Map(sources.map(source => [source.strategy.id, { ...source.strategy, ...owned }])).values()],
+    risk_plan_versions: [...new Map(sources.map(source => [source.risk.id, { ...source.risk, ...owned }])).values()],
     trade_events: sources.flatMap((source, i) => [
       { id: eventId(i, 0), plan_id: source.plan.id, event_type: "PLAN_LOCKED", payload: {}, occurred_at: source.plan.locked_at, recorded_at: source.plan.locked_at, sequence: i * 10, ...owned },
       { id: eventId(i, 1), plan_id: source.plan.id, event_type: "TRADE_OPENED", payload: { entry_price: "1.1" }, occurred_at: source.trade.entered_at, recorded_at: source.entryRecordedAt, sequence: i * 10 + 1, ...owned },

@@ -2,7 +2,7 @@
 
 import { LoaderCircle } from "lucide-react";
 import { unstable_rethrow, useRouter } from "next/navigation";
-import { type ClipboardEvent, type DragEvent, type FormEvent, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
+import { type ClipboardEvent, type DragEvent, type FormEvent, type ReactNode, useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { addJournalEntry } from "@/app/actions/journal";
 import { type ActionState, idleState } from "@/app/actions/state";
 import { EvidenceStager } from "@/components/evidence/evidence-stager";
@@ -26,17 +26,18 @@ import { stripZeros } from "@/domain/format";
 import type { Timing } from "@/domain/timeline";
 import {
   EMPTY_JOURNAL_DRAFT, JOURNAL_KIND_LABELS, JOURNAL_KINDS, JOURNAL_PLACEHOLDERS, type JournalDraft, type JournalEntryInput, type JournalField, type JournalFieldErrors,
-  type JournalKind, journalEntryForm, journalEntryTitle, journalServerErrors, validateJournalDraft,
+  type JournalKind, journalEntryForm, journalEntryTitle, journalKindsFor, journalServerErrors, validateJournalDraft,
 } from "./composer-model";
 
 /**
  * Live journal composer (docs/V2_ARCHITECTURE.md §3.6, §7.1, §8.2, §13.4, §14.4): a one-line "Add to
- * trade journal…" field that grows, kind chips Note · Decision · Stop · Target · Partial · Lesson with the
- * few structured fields they need, and screenshots by paste, drop, picker or camera (default label by
- * timing: before entry → Pre-entry, while live → Management, after close → Exit; Other once a plan ended
- * without an entry). Ctrl/⌘+Enter adds the entry through `addJournalEntry`; staged screenshots are then
- * uploaded one by one. The entry shows as pending at once; errors are focused. `J` focuses the field (it
- * carries `data-journal-composer`).
+ * trade journal…" field that grows, kind chips with the few structured fields they need (Note · Decision ·
+ * Stop · Target · Partial · Lesson while the trade is live; Note · Decision · Lesson before the entry and
+ * after the close, when there is no position to manage), and screenshots by paste, drop, picker or camera
+ * (default label by timing: before entry → Pre-entry, while live → Management, after close → Exit; Other
+ * once a plan ended without an entry). Ctrl/⌘+Enter adds the entry through `addJournalEntry`; staged
+ * screenshots are then uploaded one by one. The entry shows as pending at once; errors are focused. `J`
+ * focuses the field (it carries `data-journal-composer`).
  */
 
 export interface JournalComposerActions {
@@ -53,8 +54,13 @@ export const JOURNAL_COMPOSER_ID = "journal-composer";
 
 export interface JournalComposerProps {
   tradeId: string;
-  /** Band new entries will most likely land in; sets the default screenshot label. The server decides the real timing. */
+  /**
+   * Band new entries will most likely land in; sets the default screenshot label and the kinds offered (Stop, Target and
+   * Partial only While live, `journalKindsFor`). The server decides the real timing, and refuses those kinds otherwise.
+   */
   timingHint: Timing;
+  /** Says why Stop, Target and Partial aren't offered, under the kind chips (the trade page: drafts and locked plans). */
+  kindsNote?: ReactNode;
   /**
    * Label of attached screenshots when the band's default doesn't fit (`defaultLabelForLifecycle`): Other on a plan
    * that ended without an entry, which had neither an entry nor an exit. Default: the band's (Pre-entry, Management, Exit).
@@ -87,7 +93,7 @@ type Status = { tone: "info" | "success"; text: string } | null;
 type PendingEntry = { title: string; body: string | null };
 type EntryOutcome = { ok: true } | { ok: false; message: string; fieldErrors?: Record<string, string> };
 
-const KIND_OPTIONS = JOURNAL_KINDS.map(kind => ({ value: kind, label: JOURNAL_KIND_LABELS[kind] }));
+const kindOptions = (kinds: readonly JournalKind[]) => kinds.map(kind => ({ value: kind, label: JOURNAL_KIND_LABELS[kind] }));
 const AMOUNT_OPTIONS = [
   { value: "percent", label: "Percent" },
   { value: "quantity", label: "Size" },
@@ -112,6 +118,7 @@ async function saveEntry(addEntry: JournalComposerActions["addEntry"], tradeId: 
 export function JournalComposer({
   tradeId,
   timingHint,
+  kindsNote,
   defaultLabel,
   instrument = null,
   autoFocus = false,
@@ -147,6 +154,10 @@ export function JournalComposer({
   const tickSize = instrument?.tickSize ?? null;
   const saving = phase === "saving";
   const pendingScreenshots = stager.pendingCount;
+  const kinds = journalKindsFor(timingHint);
+  // A kind the trade no longer takes (Stop was chosen, then the position closed) falls back to a note; the text stays.
+  const kind: JournalKind = kinds.includes(draft.kind) ? draft.kind : "NOTE";
+  const kindsNoteId = `${id}-kinds-note`;
 
   useEffect(() => {
     if (autoFocus) document.getElementById(id)?.focus();
@@ -194,7 +205,7 @@ export function JournalComposer({
 
   const submit = () => {
     if (phase !== "idle") return;
-    const check = validateJournalDraft(draft, { tickSize, screenshotCount: pendingScreenshots });
+    const check = validateJournalDraft({ ...draft, kind }, { tickSize, screenshotCount: pendingScreenshots });
     setFailure(null);
     if (!check.ok) {
       setStatus(null);
@@ -218,6 +229,9 @@ export function JournalComposer({
       setPendingEntry({ title: journalEntryTitle(entry, instrument), body: entry.body });
       const outcome = await saveEntry(addEntry, tradeId, key, entry);
       if (!outcome.ok) {
+        // Restored with the reason, also when a stop, target or partial is refused because the trade closed after the page
+        // loaded (ENTRY_NOT_LIVE). No refresh here: it would replace the Today card or the composer holding the text, which
+        // Note, Decision and Lesson still take.
         const mapped = journalServerErrors(outcome.fieldErrors);
         startTransition(() => {
           setDraft(snapshot);
@@ -270,10 +284,10 @@ export function JournalComposer({
     addFiles(Array.from(event.dataTransfer.files), "DROP");
   };
 
-  const screenshotsOnly = draft.kind === "NOTE" && draft.body.trim() === "" && pendingScreenshots > 0;
+  const screenshotsOnly = kind === "NOTE" && draft.body.trim() === "" && pendingScreenshots > 0;
   const submitLabel = screenshotsOnly ? (pendingScreenshots === 1 ? "Save screenshot" : `Save ${pendingScreenshots} screenshots`) : "Add to journal";
   const busyLabel = phase === "uploading" && progress && progress.total > 0 ? `Saving screenshot ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…` : "Adding…";
-  const structured = STRUCTURED.includes(draft.kind);
+  const structured = STRUCTURED.includes(kind);
   const modifierName = modifier === "⌘" ? "Command" : "Control";
 
   return (
@@ -316,21 +330,27 @@ export function JournalComposer({
           name="kind"
           legend="Entry type"
           legendHidden
-          options={KIND_OPTIONS}
-          value={draft.kind}
+          options={kindOptions(kinds)}
+          value={kind}
           disabled={saving}
           onValueChange={value => {
             if (!isJournalKind(value)) return;
             setDraft(current => ({ ...current, kind: value }));
             setFieldErrors({});
           }}
+          aria-describedby={kindsNote ? kindsNoteId : undefined}
           className="max-md:[&_.filter-chips]:flex-nowrap max-md:[&_.filter-chips]:overflow-x-auto max-md:[&_.filter-chips]:pb-1"
         />
+        {kindsNote && (
+          <p id={kindsNoteId} className="t-caption -mt-1">
+            {kindsNote}
+          </p>
+        )}
         <Field label="Journal entry" labelHidden id={fieldIds.body} error={fieldErrors.body}>
           <Textarea
             data-journal-composer=""
             rows={1}
-            placeholder={JOURNAL_PLACEHOLDERS[draft.kind]}
+            placeholder={JOURNAL_PLACEHOLDERS[kind]}
             value={draft.body}
             readOnly={saving}
             aria-busy={saving || undefined}
@@ -338,9 +358,9 @@ export function JournalComposer({
             className="min-h-10 resize-none max-md:max-h-40"
           />
         </Field>
-        {structured && draft.kind !== "PARTIAL_CLOSE" && (
+        {structured && kind !== "PARTIAL_CLOSE" && (
           <Field
-            label={draft.kind === "STOP_CHANGE" ? "New stop price" : "New target price"}
+            label={kind === "STOP_CHANGE" ? "New stop price" : "New target price"}
             required
             id={fieldIds.price}
             hint={tickSize ? `Tick size ${stripZeros(tickSize)}` : undefined}
@@ -349,7 +369,7 @@ export function JournalComposer({
             <DecimalInput value={draft.price} readOnly={saving} onValueChange={price => update({ price }, ["price"])} />
           </Field>
         )}
-        {draft.kind === "PARTIAL_CLOSE" && (
+        {kind === "PARTIAL_CLOSE" && (
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Exit price" optional id={fieldIds.price} error={fieldErrors.price}>
               <DecimalInput value={draft.price} readOnly={saving} onValueChange={price => update({ price }, ["price"])} />

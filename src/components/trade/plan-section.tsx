@@ -1,12 +1,13 @@
 import { CopyPlus, LockKeyhole, ShieldQuestion } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { Callout } from "@/components/ui/callout";
 import type { TimeDisplay } from "@/domain/time-display";
 import type { TradeDetail } from "@/lib/trades-data";
 import { DraftToolbar } from "./draft-toolbar";
 import {
-  blockingCheckOf, draftSource, lastRevisionSource, type LockSummary, lockBlockedReason, lockedLine, lockedSource, lockSummary, type PlanSource, planChecks,
-  planFacts,
+  blockingCheckOf, blockingNow, draftSource, lastRevisionSource, type LockSummary, lockBlockedReason, lockedLine, lockedSource, lockSummary, type PlanSource,
+  planChecks, planFacts,
 } from "./model";
 import { CheckHistory, PlanFactsList, RiskCheckView, Thesis, TraderChecks } from "./plan-parts";
 import { WorkspaceSection } from "./section";
@@ -16,9 +17,10 @@ import type { TradeExtras } from "./workspace-data";
 /**
  * Plan section (docs/V2_ARCHITECTURE.md §2.5, §6.5, §8.1, §14.4). A draft shows its revision, the latest free risk check
  * with its exact reasons, the draft workflow (Edit draft → new revision, Check risk, Lock plan with a confirmation,
- * Discard), the values and checks of the latest revision, the thesis (Before entry) and the pre-trade AI tools. A
- * locked plan shows "Locked 09:12 · Risk Plan V1.0 · ICT V1.0 · immutable", its sealed values, the Risk Engine result
- * at lock and the thesis. A draft that was never locked keeps its last revision readable. Server component.
+ * Discard), the values and checks of the latest revision, the thesis (Before entry) and the pre-trade AI tools; a draft
+ * whose contract the account has since updated says so, as Edit Draft does. A locked plan shows "Locked 09:12 · Risk
+ * Plan V1.0 · ICT V1.0 · immutable", its sealed values, the Risk Engine result at lock and the thesis. A draft that was
+ * never locked keeps its last revision readable. Server component.
  */
 
 export interface PlanSectionProps {
@@ -36,12 +38,27 @@ function StrategyAction({ extras }: { extras: TradeExtras }) {
   return extras.strategy ? <StrategyCardSheet card={extras.strategy.card} context={extras.strategy.context} /> : null;
 }
 
-function PlanValues({ detail, source, label, checksKnown = true }: { detail: TradeDetail; source: PlanSource; label: string; checksKnown?: boolean }) {
+function PlanValues({ detail, source, label, checksKnown = true, contractUpdated = false }: {
+  detail: TradeDetail; source: PlanSource; label: string; checksKnown?: boolean; contractUpdated?: boolean;
+}) {
   return (
     <div className="flex flex-col gap-4">
       <PlanFactsList facts={planFacts(detail, source)} label={label} />
-      {checksKnown && <TraderChecks checks={planChecks(source.proposal)} />}
+      {checksKnown && <TraderChecks checks={planChecks(source.proposal, { contractUpdated })} />}
     </div>
+  );
+}
+
+/**
+ * A draft whose contract the account has since updated (a newer version of the symbol): its checks and its lock still
+ * size with the values it was confirmed with, until Edit draft moves it to the current version (Edit Draft's words).
+ */
+function ContractUpdated({ symbol }: { symbol: string }) {
+  return (
+    <Callout tone="warning" title={`The ${symbol} contract was updated`} data-notice="contract-updated">
+      This draft still uses the earlier contract values, and checks and locking size the trade with them. Edit the draft to use the current values and confirm
+      them again.
+    </Callout>
   );
 }
 
@@ -65,6 +82,7 @@ function DraftPlan({ detail, extras, now, display, lock, discardKey, ai }: PlanS
   // checked or locked, so a stale approval names no recheck.
   const stale = check?.decision === "APPROVED" && !draft.checkCurrent;
   const archived = detail.account.status === "ARCHIVED";
+  const contractUpdated = extras.contractUpdated ?? null;
   return (
     <WorkspaceSection
       id="plan"
@@ -86,6 +104,8 @@ function DraftPlan({ detail, extras, now, display, lock, discardKey, ai }: PlanS
           </span>
         </p>
       )}
+      {/* An archived account's draft can't be edited until the account is restored; Edit Draft says it then. */}
+      {contractUpdated && !archived && <ContractUpdated symbol={contractUpdated.symbol} />}
       <div className="flex flex-col gap-4 rounded-card border border-border bg-surface-sunken p-3 sm:p-4" data-panel="draft-check">
         {check ? <RiskCheckView check={check} now={now} display={display} label="Risk check" stale={stale} recheckable={!archived} /> : <NotChecked />}
         <DraftToolbar
@@ -93,13 +113,13 @@ function DraftPlan({ detail, extras, now, display, lock, discardKey, ai }: PlanS
           editHref={`${detail.href}/edit`}
           expectedRevision={draft.expectedRevision}
           checkLabel={state.draftCheck === "UNCHECKED" ? "Check risk (free)" : "Recheck risk"}
-          lockBlockedReason={lockBlockedReason(state, blockingCheckOf(detail), now)}
+          lockBlockedReason={lockBlockedReason(state, blockingCheckOf(detail, blockingNow(lock, now)), now)}
           lock={lock ?? lockSummary(detail, null)}
           discardKey={discardKey}
           {...(archived ? { archivedManageHref: `/accounts/${detail.account.id}/manage` } : {})}
         />
       </div>
-      <PlanValues detail={detail} source={source} label={`Draft values, revision ${draft.revision}`} />
+      <PlanValues detail={detail} source={source} label={`Draft values, revision ${draft.revision}`} contractUpdated={contractUpdated !== null} />
       <Thesis narrative={draft.proposal.narrative} id="plan-thesis" />
       <CheckHistory checks={detail.checks} now={now} display={display} />
       {ai && <div className="border-t border-border pt-5 empty:hidden">{ai}</div>}

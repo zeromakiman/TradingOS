@@ -56,9 +56,9 @@ function Thumbnail({ row }: { row: TradeRowView }) {
     <span className="relative block h-10 w-16 overflow-hidden rounded-control border border-border bg-surface-sunken">
       {/* Decorative preview: the row text carries the trade; the trade page has the full gallery. */}
       <img src={row.thumbnail.src} alt="" loading="lazy" decoding="async" width={64} height={40} className="size-full object-cover" />
-      {/* A fixed dark scrim in both themes: it sits on the screenshot, not on a surface. */}
+      {/* A fixed dark scrim in both themes, with the on-scrim text colour: it sits on the screenshot, not on a surface. */}
       {row.thumbnail.extra > 0 && (
-        <span className="absolute right-0.5 bottom-0.5 rounded bg-[rgb(17_24_39/0.72)] px-1 text-[0.625rem] leading-4 font-semibold text-white num">
+        <span className="absolute right-0.5 bottom-0.5 rounded bg-[rgb(17_24_39/0.72)] px-1 text-[0.625rem] leading-4 font-semibold text-on-scrim num">
           +{row.thumbnail.extra}
         </span>
       )}

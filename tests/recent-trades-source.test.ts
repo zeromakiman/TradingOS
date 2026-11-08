@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ids, periodicSourcesV2, periodicTables, planId, tradeRecordId } from "./fixtures/periodic-v2";
+import { ids, periodicSourcesV2, periodicTables, planId, tradeRecordId, typicalPeriodicSources } from "./fixtures/periodic-v2";
 import { periodicDb, type PeriodicDbState } from "./helpers/periodic-db";
 
 // RECENT_TRADES_FACTS_V2 loading (src/lib/recent-trades-source.ts): the exact newest N completed planned trades of the
@@ -11,7 +11,7 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ requireUser: m.auth }));
 import { operationAllowedSources } from "@/ai/citation-sources";
 import { PERIODIC_V2_LIMITS } from "@/ai/periodic-limits";
-import { loadRecentFacts, ownedRecentAccount, RECENT_TOO_LARGE, RECENT_TOO_LARGE_SMALLEST, RecentScopeError } from "@/lib/recent-trades-source";
+import { loadRecentFacts, ownedRecentAccount, RECENT_TOO_LARGE_SMALLEST, RecentScopeError, recentTooLarge, recentTooManyRecords } from "@/lib/recent-trades-source";
 
 const NOW = "2026-09-23T12:00:00.000Z";
 const sources = () => periodicSourcesV2(35, { start: "2026-08-01T08:00:00.000Z", stepMinutes: 600, journal: 2 });
@@ -129,10 +129,11 @@ describe("V2 journal entries, events and tags", () => {
   it("carries every journal entry with its timing band, V1 notes with theirs, and leaves out lock/entry/close events", async () => {
     const { facts } = await load(10);
     const trade = facts.trades[0];
-    expect(trade.journal.map(entry => entry.timing)).toEqual(["BEFORE_ENTRY", "WHILE_LIVE"]);
-    expect(trade.journal[0]).toMatchObject({ id: expect.any(String), kind: "NOTE", text: expect.stringContaining("Journal entry 1") });
-    expect(trade.events.map(event => event.event_type)).toEqual(["NOTE_ADDED"]);
-    expect(trade.events[0]).toMatchObject({ timing: "WHILE_LIVE", payload: { note: expect.stringContaining("Waited for confirmation") } });
+    // Each journal entry is one row: [id, kind, recordedAt, timing, text, extra].
+    expect(trade.journal?.map(row => row[3])).toEqual(["BEFORE_ENTRY", "WHILE_LIVE"]);
+    expect(trade.journal?.[0]).toEqual([expect.any(String), "NOTE", expect.any(String), "BEFORE_ENTRY", expect.stringContaining("Journal entry 1")]);
+    expect(trade.events?.map(event => event.event_type)).toEqual(["NOTE_ADDED"]);
+    expect(trade.events?.[0]).toMatchObject({ timing: "WHILE_LIVE", payload: { note: expect.stringContaining("Waited for confirmation") } });
     expect(m.state.queries.find(q => q.table === "trade_events")?.filters).toContainEqual(["not_in", "event_type", "(PLAN_LOCKED,TRADE_OPENED,TRADE_CLOSED)"]);
     expect(JSON.stringify(facts)).not.toMatch(/PLAN_LOCKED|TRADE_OPENED|TRADE_CLOSED/);
   });
@@ -140,17 +141,17 @@ describe("V2 journal entries, events and tags", () => {
   it("an after-close note is labelled AFTER_CLOSE, never as pre-entry evidence", async () => {
     m.state.rows = periodicTables(periodicSourcesV2(10, { start: "2026-08-01T08:00:00.000Z", stepMinutes: 600, journal: 3 }));
     const { facts } = await load(10);
-    for (const trade of facts.trades) expect(trade.journal.map(entry => entry.timing)).toEqual(["BEFORE_ENTRY", "WHILE_LIVE", "AFTER_CLOSE"]);
+    for (const trade of facts.trades) expect(trade.journal?.map(row => row[3])).toEqual(["BEFORE_ENTRY", "WHILE_LIVE", "AFTER_CLOSE"]);
     expect(facts.scope).toMatch(/AFTER_CLOSE records are hindsight explanations/);
   });
 
   it("shortens long journal texts explicitly and keeps the full record count", async () => {
     m.state.rows = periodicTables(periodicSourcesV2(10, { start: "2026-08-01T08:00:00.000Z", stepMinutes: 600, journal: 2, body: "Long note ".repeat(500) }));
     const { facts } = await load(10);
-    const entry = facts.trades[0].journal[0];
-    expect(entry.textShortened).toBe(true);
-    expect([...(entry.text ?? "")].length).toBeLessThanOrEqual(200);
-    expect(facts.trades.reduce((n, t) => n + t.journal.length, 0)).toBe(20);
+    const [, , , , text, extra] = facts.trades[0].journal?.[0] ?? [];
+    expect(extra).toEqual({ textShortened: true });
+    expect([...(text ?? "")].length).toBeLessThanOrEqual(200);
+    expect(facts.trades.reduce((n, t) => n + (t.journal?.length ?? 0), 0)).toBe(20);
   });
 
   it("uses the latest V2 tag set recorded by the capture time, and the legacy V1 tags only when a trade has none", async () => {
@@ -169,15 +170,16 @@ describe("V2 journal entries, events and tags", () => {
     const allowed = operationAllowedSources("RECENT_TRADES_ANALYSIS", facts);
     expect(allowed).toContain(`trade:${tradeRecordId(34)}`);
     expect(allowed).not.toContain(`trade:${planId(34)}`);
-    for (const entry of facts.trades.flatMap(t => t.journal)) expect(allowed).toContain(`journal:${entry.id}`);
-    for (const event of facts.trades.flatMap(t => t.events)) expect(allowed).toContain(`event:${event.id}`);
+    for (const row of facts.trades.flatMap(t => t.journal ?? [])) expect(allowed).toContain(`journal:${row[0]}`);
+    for (const event of facts.trades.flatMap(t => t.events ?? [])) expect(allowed).toContain(`event:${event.id}`);
+    // The ids are listed once, in the response schema: the facts carry neither a manifest nor a sourceRefs list.
     expect(facts).not.toHaveProperty("sourceRefs");
-    expect(facts.sourceManifest.version).toBe("AI_CITATIONS_V2");
+    expect(facts).not.toHaveProperty("sourceManifest");
   });
 });
 
 describe("bounds refuse, nothing is omitted", () => {
-  it.each([[10, 150], [20, 120], [30, 90]] as const)("the last %s trades are read with at most %s journal entries and events", async (n, max) => {
+  it.each([[10, 150], [20, 120], [30, 120]] as const)("the last %s trades are read with at most %s journal entries and events", async (n, max) => {
     expect(PERIODIC_V2_LIMITS.RECENT_TRADES_ANALYSIS.records[n]).toBe(max);
     const perTrade = Math.ceil((max + 1) / n);
     m.state.rows = periodicTables(periodicSourcesV2(35, { start: "2026-08-01T08:00:00.000Z", stepMinutes: 600, journal: perTrade - 1 }));
@@ -189,20 +191,76 @@ describe("bounds refuse, nothing is omitted", () => {
       expect(message).toMatch(new RegExp(`^Even the 10 most recent trades have more than ${max} journal entries and events.*no record was left out`));
       expect(message).not.toMatch(/fewer trades/i);
     } else {
-      expect(message).toMatch(new RegExp(`^The last ${n} trades have more than ${max} journal entries and events.*Choose fewer trades.*no record was left out`));
+      // The largest smaller sample that fits one request is named, never a vague "fewer trades": the newest 20 of these
+      // trades carry 100 records (within 120), the newest 10 of the 20-trade case 70 (within 150).
+      const fits = n === 30 ? 20 : 10;
+      expect(message).toBe(recentTooManyRecords(n, fits));
+      expect(message).toMatch(new RegExp(`^The last ${n} trades have more than ${max} journal entries and events.*but the last ${fits} fit: choose ${fits} trades.*no record was left out`));
+      expect((await load(fits)).facts.trades).toHaveLength(fits);
     }
+    expect(m.state.queries.map(q => q.table)).not.toContain("recent_ai_analyses");
   });
 
-  it("refuses a sample whose whole request would not fit, before anything is written", async () => {
-    m.state.rows = periodicTables(periodicSourcesV2(35, { start: "2026-08-01T08:00:00.000Z", stepMinutes: 600, journal: 2 }));
-    m.state.rows.trade_journal_entries = m.state.rows.trade_journal_entries.map(row => ({ ...row, body: "Detailed live management note ".repeat(200) }));
-    expect((await load(20)).facts.trades).toHaveLength(20);
-    // The same journals beside 30 trades are within the record bound but not within one request.
-    await expect(load(30)).rejects.toThrow(RECENT_TOO_LARGE);
-    // A long strategy definition keeps the facts under the byte bound while the whole request exceeds 32,000 tokens.
-    m.state.rows.strategy_versions = m.state.rows.strategy_versions.map(row => ({ ...row, rules: { ...(row.rules as object), definition: "r".repeat(60_000) } }));
-    await expect(load(20)).rejects.toThrow(RECENT_TOO_LARGE);
+  it("a sample above its record bound names the largest smaller sample within both its own bound and one request", async () => {
+    // 160 typical entries over 35 trades: the newest 30 carry 135 (above 120), the newest 20 carry 85 and fit.
+    m.state.rows = periodicTables(typicalPeriodicSources(35, 160, "2026-08-01T08:00:00.000Z"));
+    const refused = await load(30).then(() => null, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(RecentScopeError);
+    expect((refused as Error).message).toBe(recentTooManyRecords(30, 20));
+    expect(recentTooManyRecords(30, 20)).toBe(
+      "The last 30 trades have more than 120 journal entries and events, more than one analysis of 30 trades can include, but the last 20 fit: choose 20 trades. Nothing was sent; no record was left out.",
+    );
+    // The smaller sample is read with its own owner- and account-scoped queries, and nothing is written.
+    const journalReads = m.state.queries.filter(q => q.table === "trade_journal_entries");
+    expect(journalReads).toHaveLength(2);
+    for (const query of journalReads) expect(query.filters).toContainEqual(["eq", "user_id", ids.user]);
     expect(m.state.queries.map(q => q.table)).not.toContain("recent_ai_analyses");
+    // What the refusal names really loads.
+    const { facts } = await load(20);
+    expect(facts.trades.reduce((n, t) => n + (t.journal?.length ?? 0), 0)).toBe(85);
+  });
+
+  it("a sample above its record bound whose smaller samples are above theirs too suggests no impossible step", async () => {
+    // Sixteen entries for every trade: even the newest 10 carry 160, above their bound of 150.
+    m.state.rows = periodicTables(typicalPeriodicSources(35, 35 * 16, "2026-08-01T08:00:00.000Z"));
+    for (const n of [30, 20] as const) {
+      const refused = await load(n).then(() => null, (error: unknown) => error);
+      expect(refused).toBeInstanceOf(RecentScopeError);
+      expect((refused as Error).message).toBe(RECENT_TOO_LARGE_SMALLEST);
+      expect(recentTooManyRecords(n, null)).toBe(RECENT_TOO_LARGE_SMALLEST);
+    }
+    await expect(load(10)).rejects.toThrow(recentTooManyRecords(10, null));
+  });
+
+  it("the last 30 typically journaled trades load as one request, about three journal entries each", async () => {
+    m.state.rows = periodicTables(typicalPeriodicSources(35, 105, "2026-08-01T08:00:00.000Z"));
+    const { facts } = await load(30);
+    expect(facts.trades).toHaveLength(30);
+    expect(facts.trades.reduce((n, t) => n + (t.journal?.length ?? 0), 0)).toBe(90);
+  });
+
+  it("refuses a sample whose whole request would not fit, before anything is written, and names the largest sample that fits", async () => {
+    // Four typical journal entries for every trade: within the record bound of 30 trades, but not within one request.
+    m.state.rows = periodicTables(typicalPeriodicSources(35, 140, "2026-08-01T08:00:00.000Z"));
+    expect((await load(20)).facts.trades).toHaveLength(20);
+    const refused = await load(30).then(() => null, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(RecentScopeError);
+    expect((refused as Error).message).toBe(recentTooLarge(30, 20));
+    expect(recentTooLarge(30, 20)).toBe("The last 30 trades carry more recorded detail than one analysis can include, but the last 20 fit: choose 20 trades. Nothing was sent and no record was left out.");
+    // A long strategy definition (carried once, whatever the sample) keeps the facts under the byte bound while even
+    // the 10 latest trades exceed 32,000 tokens: no smaller sample is offered.
+    m.state.rows.strategy_versions = m.state.rows.strategy_versions.map(row => ({ ...row, rules: { ...(row.rules as object), definition: "r".repeat(80_000) } }));
+    await expect(load(20)).rejects.toThrow(RECENT_TOO_LARGE_SMALLEST);
+    expect(m.state.queries.map(q => q.table)).not.toContain("recent_ai_analyses");
+  });
+
+  it("offers ten trades when twenty do not fit either", async () => {
+    m.state.rows = periodicTables(typicalPeriodicSources(35, 140, "2026-08-01T08:00:00.000Z"));
+    m.state.rows.strategy_versions = m.state.rows.strategy_versions.map(row => ({ ...row, rules: { ...(row.rules as object), definition: "r".repeat(56_000) } }));
+    const refused = await load(30).then(() => null, (error: unknown) => error);
+    expect((refused as Error).message).toBe(recentTooLarge(30, 10));
+    await expect(load(20)).rejects.toThrow(recentTooLarge(20, 10));
+    expect((await load(10)).facts.trades).toHaveLength(10);
   });
 
   it("the smallest sample's pre-flight refusal names no impossible next step", async () => {
@@ -210,7 +268,8 @@ describe("bounds refuse, nothing is omitted", () => {
     const result = await load(10).then(() => null, (error: unknown) => error);
     expect(result).toBeInstanceOf(RecentScopeError);
     expect((result as Error).message).toBe(RECENT_TOO_LARGE_SMALLEST);
-    expect(RECENT_TOO_LARGE_SMALLEST).not.toMatch(/fewer trades/i);
-    expect(RECENT_TOO_LARGE).toMatch(/Choose fewer trades/);
+    expect(RECENT_TOO_LARGE_SMALLEST).not.toMatch(/fewer trades|choose/i);
+    expect(recentTooLarge(10, null)).toBe(RECENT_TOO_LARGE_SMALLEST);
+    expect(recentTooLarge(30, null)).toBe(RECENT_TOO_LARGE_SMALLEST);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import Decimal from "decimal.js";
-import { evaluateRisk, moneyString, type Proposal, type RiskContext } from "@/domain/risk";
+import { evaluateRisk, type Proposal, type RiskContext } from "@/domain/risk";
 import { previewContext, previewProposal, usageFixture } from "@/domain/fixtures";
 import { strategyClock } from "@/domain/session";
 const proposal = { ...previewProposal, narrative:"Liquidity sweep then meaningful M5 displacement; user-reported.", contractConfirmed:true };
@@ -29,7 +29,6 @@ describe("exact monetary risk and sizing",()=>{
   });
   it("does not compare display-rounded RR",()=>{has("MIN_RR",{target:"1.10599"});});
   it("blocks an undersized futures-like quantity instead of rounding upward",()=>{has("MINIMUM_QUANTITY",{entry:"100",stop:"98",target:"106"},{instrument:{...previewContext.instrument,tickSize:"0.25",tickValue:"12.5",pipSize:null,quantityStep:"1",minimumQuantity:"1"}});});
-  it.each(["50.005","10000.99999","NaN","-1","1e5"])("rejects invalid monetary input %s",v=>{expect(moneyString.safeParse(v).success).toBe(false);});
   it("retains exact version links",()=>{const r=run();expect(r.strategyVersionId).toBe(previewContext.strategyVersionId);expect(r.riskPlanVersionId).toBe(previewContext.plan.id);});
 });
 describe("hard rules and missing data",()=>{

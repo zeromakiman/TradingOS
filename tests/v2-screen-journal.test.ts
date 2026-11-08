@@ -459,6 +459,31 @@ describe("Journal filters", () => {
     expect(hrefs(html)).toContain("/journal?result=win");
   });
 
+  it("opens one currency's trades (EDGE's daily net P&L of a currency) as a removable chip that every other filter keeps", async () => {
+    const html = await render({ currency: "eur", closedFrom: "2026-10-22", closedTo: "2026-10-22", state: "closed,reviewed" });
+    expect(m.listTrades).toHaveBeenCalledWith({ currency: "EUR", closedFrom: "2026-10-22", closedTo: "2026-10-22", states: ["CLOSED", "REVIEWED"] }, null, FETCH);
+    expect(visibleText(html)).toContain("Currency: EUR");
+    expect(html).toContain('aria-label="Remove filter: Currency: EUR"');
+    // Its chip removes it alone; the search form and the other chips keep it.
+    const links = hrefs(html).filter(href => href.startsWith("/journal?")).map(paramsOf);
+    expect(links.filter(search => !search.has("currency")).map(search => search.toString())).toContain("closedFrom=2026-10-22&closedTo=2026-10-22&state=closed%2Creviewed");
+    expect(links.filter(search => !search.has("closedFrom")).every(search => search.get("currency") === "EUR")).toBe(true);
+    expect(html).toMatch(/<input type="hidden" name="currency" value="EUR"\/>/);
+  });
+
+  it("keeps a V1 Journal bookmark's status and outcome as the state and result filters, never silently widening it (§1.2)", async () => {
+    const html = await render({ account: FTMO, status: "CLOSED", outcome: "WIN", page: "2" });
+    expect(m.listTrades).toHaveBeenCalledWith({ states: ["CLOSED", "REVIEWED"], result: "WIN" }, null, FETCH);
+    const text = visibleText(html);
+    expect(text).toContain("State: Closed, Reviewed");
+    expect(text).toContain("Result: Win");
+    expect(text).not.toContain("couldn't be read");
+    // Every link of the page names them with the V2 names.
+    expect(hrefs(html).some(href => /[?&](status|outcome|page)=/.test(href))).toBe(false);
+    // A V1 value outside V1's vocabulary is named as the filter it would set.
+    expect(visibleText(await render({ status: "OPEN", outcome: "WIN" }))).toContain("Some filters couldn't be read and were ignored (state).");
+  });
+
   it("names unreadable filters in words and ignores them", async () => {
     const text = visibleText(await render({ result: "maybe", rFrom: "abc", model: "OTE" }));
     expect(m.listTrades).toHaveBeenCalledWith({ model: "OTE" }, null, FETCH);
@@ -870,5 +895,48 @@ describe("Journal client pieces", () => {
     m.listTrades.mockResolvedValue(listPage([]));
     const html = await render({ q: "zzzz" });
     expect(html).toMatch(/<a [^>]*href="\/journal"[^>]*>Clear search<\/a>/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The row thumbnail's "+N" count, checked against the stylesheet the project's own Tailwind builds
+// ---------------------------------------------------------------------------------------------------------------------
+describe("Journal row thumbnail", () => {
+  /** src/app/globals.css built for `classes` by the project's Tailwind, as the dev server and `next build` build it. */
+  async function stylesheetFor(classes: readonly string[]): Promise<string> {
+    const [{ compile }, { readFileSync }, { dirname, resolve }, { fileURLToPath }] = await Promise.all([
+      import("tailwindcss"), import("node:fs"), import("node:path"), import("node:url"),
+    ]);
+    const root = new URL("../", import.meta.url);
+    const load = async (file: string) => ({ path: file, base: dirname(file), content: readFileSync(file, "utf8") });
+    const globals = fileURLToPath(new URL("src/app/globals.css", root));
+    const compiler = await compile(readFileSync(globals, "utf8"), {
+      base: dirname(globals),
+      loadStylesheet: (id, base) => load(id === "tailwindcss" ? fileURLToPath(new URL("node_modules/tailwindcss/index.css", root)) : resolve(base, id)),
+    });
+    return compiler.build([...classes]);
+  }
+  /** The declarations of `.className { … }` in built CSS ("" when no rule has that selector). */
+  function ruleOf(css: string, className: string): string {
+    const selector = `.${className.replace(/[^a-zA-Z0-9_-]/g, character => `\\${character}`)} {`;
+    const start = css.indexOf(selector);
+    return start < 0 ? "" : css.slice(start + selector.length, css.indexOf("}", start));
+  }
+
+  it("prints how many more screenshots a trade has in a colour both themes define, light on the fixed dark scrim", async () => {
+    // closedWin has three screenshots: its thumbnail shows the cover and "+2" on a dark scrim.
+    const badge = /<span class="([^"]+)">\+(?:<!-- -->)?2<\/span>/.exec(await render());
+    expect(badge).not.toBeNull();
+    const classes = (badge?.[1] ?? "").split(/\s+/);
+    const css = await stylesheetFor(classes);
+    // globals.css clears Tailwind's default palette (`--color-*: initial`), so a class such as `text-white` builds no
+    // rule at all and the count would take the row's text colour: near-black on the scrim in the light theme.
+    for (const className of classes) expect(ruleOf(css, className), className).not.toBe("");
+    const colours = classes.filter(className => /(^|[\s;])color:/.test(ruleOf(css, className)));
+    expect(colours).toEqual(["text-on-scrim"]);
+    expect(ruleOf(css, "text-on-scrim")).toContain("color: var(--color-on-scrim);");
+    // A fixed colour, never redefined by a theme: the scrim is the same in both.
+    expect(css.match(/--color-on-scrim:[^;]*;/g)).toEqual(["--color-on-scrim: #ffffff;"]);
+    expect(ruleOf(css, "bg-[rgb(17_24_39/0.72)]")).toContain("background-color: rgb(17 24 39/0.72);");
   });
 });

@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -30,7 +30,9 @@ vi.mock("@/app/password-actions", () => ({ requestPasswordRecovery: m.action, up
 import ForgotPasswordPage from "@/app/forgot-password/page";
 import LoginPage from "@/app/login/page";
 import UpdatePasswordPage from "@/app/update-password/page";
+import { RecoveryView } from "@/components/password-recovery";
 import { SIGN_IN_NOTICES } from "@/components/settings/auth-page-data";
+import { INVALID_RECOVERY, RECOVERY_SESSION_REQUIRED, UNSUPPORTED_RECOVERY_LINK } from "@/lib/password-recovery";
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const ENUM = /\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/;
@@ -146,5 +148,43 @@ describe("/update-password", () => {
     expect(html).toContain('href="/login"');
     expect(m.action).not.toHaveBeenCalled();
     expectTruthful(html);
+  });
+
+  // What the page shows once the server answered (src/app/password-actions.ts completePasswordRecovery).
+  const view = (state: Parameters<typeof RecoveryView>[0]["state"]) => renderToStaticMarkup(createElement(RecoveryView, { state }));
+
+  it("offers the new-password form only after a recent recovery session was verified", () => {
+    const html = view({ success: "Choose your new password." });
+    expect(html).toContain('name="password"');
+    expect(html).toContain('name="confirmation"');
+    expect(visibleText(html)).toContain("Update password");
+    expect(html).toContain('href="/forgot-password"');
+  });
+
+  it("sends a signed-in visitor without a recent recovery link to Settings → Security, with no new-password form", () => {
+    // V2 §14.11: a signed-in login changes its password only with the current one, which Settings asks for.
+    const html = view({ error: RECOVERY_SESSION_REQUIRED, signedIn: true });
+    const text = visibleText(html);
+    expect(html).not.toContain('name="password"');
+    expect(html).not.toContain('name="confirmation"');
+    expect(text).toContain("Change your password in Settings");
+    expect(text).toContain(RECOVERY_SESSION_REQUIRED);
+    expect(html).toContain('href="/settings#security"');
+    expect(text).toContain("Forgot your current password?");
+    expect(html).toContain('href="/forgot-password"');
+    expect(html.match(/<h1\b/g)).toHaveLength(1);
+  });
+
+  it.each([
+    ["a link carrying session tokens (never adopted)", UNSUPPORTED_RECOVERY_LINK],
+    ["an invalid or expired link", INVALID_RECOVERY],
+  ])("refuses %s and offers a new recovery link instead of the form", (_label, error) => {
+    const html = view({ error });
+    const text = visibleText(html);
+    expect(html).not.toContain('name="password"');
+    expect(text).toContain("This link can't be used");
+    expect(text).toContain(error);
+    expect(html).toContain('href="/forgot-password"');
+    expect(html).toContain('href="/login"');
   });
 });

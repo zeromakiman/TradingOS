@@ -1,5 +1,9 @@
+import Decimal from "decimal.js";
 import type { DraftCheck, LedgerTrade, Lifecycle, TradeOrigin } from "./ledger";
+import type { RiskReportV12 } from "./risk-report";
 import { compareInstants, type Instant, strategyDay } from "./time-display";
+
+const D = Decimal.clone({ precision: 60 });
 
 /**
  * Trade lifecycle, vocabulary, next action and editability (spec §2). The lifecycle mirrors the
@@ -13,7 +17,7 @@ export type AiActionOperation = "ANALYZE_SETUP" | "CHALLENGE_BIAS" | "REVIEW_TRA
 export type TradeActionKind =
   | "CHECK_RISK" | "EDIT_DRAFT" | "DISCARD" | "ANALYZE_BLOCKED" | "LOCK_PLAN" | "ANALYZE_SETUP" | "CHALLENGE_BIAS"
   | "RECHECK_RISK" | "RECORD_ENTRY" | "SKIP" | "ADD_JOURNAL" | "CLOSE_TRADE" | "ADD_ENTRY_DETAILS"
-  | "WRITE_REVIEW" | "AI_REVIEW" | "REOPEN_REVIEW";
+  | "WRITE_REVIEW" | "AI_REVIEW" | "REOPEN_REVIEW" | "CONFIRM_VALUES";
 
 export interface TradeAction {
   kind: TradeActionKind;
@@ -88,7 +92,10 @@ export interface TradeStateOptions {
   checkCurrent: boolean;
   /** Offer paid AI actions (account opted in, budget and pricing available). Default false. */
   aiAvailable?: boolean;
-  /** First blocking reason of the latest check (`explainReport(...).blocking[0].detail`), shown with "Edit draft". */
+  /**
+   * First blocking reason of the latest check (`explainReport(...).blocking[0].detail`), carried by "Edit draft"; the
+   * screens show it with how many more the check found (`reasonWithCount`).
+   */
   blockingReason?: string;
   /**
    * The trade's account is archived (§3.2, §9, §14.9): it takes no new activity, so a draft can only be discarded (the
@@ -167,6 +174,135 @@ function action(kind: TradeActionKind, label: string, aiOperation?: AiActionOper
 const EDIT_DRAFT = action("EDIT_DRAFT", "Edit draft");
 const DISCARD = action("DISCARD", "Discard");
 const RECHECK_RISK = action("RECHECK_RISK", "Recheck risk");
+const CONFIRM_VALUES = action("CONFIRM_VALUES", "Confirm account values");
+
+/**
+ * The first blocking reason of a check with ` (+N more)` when it found more (spec §10: a trader who fixes the reason in
+ * sight must not meet a hidden one at the next check). The words of Today's account status row.
+ */
+export function reasonWithCount(blocking: readonly { detail: string }[]): string | undefined {
+  const first = blocking[0]?.detail;
+  if (first === undefined) return undefined;
+  const more = blocking.length - 1;
+  return more > 0 ? `${first} (+${more} more)` : first;
+}
+
+/**
+ * What clears one blocking finding of a check from today (spec §6.3): an edit of the draft (prices, risk, flags, the
+ * instrument: `EDIT`), the end of Dead Pool (`SESSION`), the next trading day once today's trade slots, daily risk or
+ * daily loss limit are used up (`DAY`), closing an open position whose risk fills the daily loss limit (`OPEN_RISK`),
+ * today's confirmed account values (`ACCOUNT_VALUES`), or nothing more than the free recheck, because what blocked has
+ * changed since the check ran (`RECHECK`: today's account values were confirmed after it).
+ */
+export type BlockRemedy = "EDIT" | "SESSION" | "DAY" | "OPEN_RISK" | "ACCOUNT_VALUES" | "RECHECK";
+
+/** A blocking finding of a check with the facts that decide its remedy (exact decimal text of report 1.2). */
+export interface BlockingFinding {
+  code: string;
+  /**
+   * DAILY_RISK_LIMIT: the daily risk still free under the cap; DAILY_LOSS_LIMIT: the limit less today's losses and open
+   * risk. The engine blocks once the trade's risk exceeds it, so a lower risk fits while it is positive. Unknown (a
+   * report that doesn't carry it): an edit is taken to help.
+   */
+  room?: string | null;
+  /** DAILY_LOSS_LIMIT: the risk of positions still open; closing one can free room under the limit. */
+  openRisk?: string | null;
+  /**
+   * STALE_EQUITY: the account's values have been confirmed for today since the check ran, so the next check sizes with
+   * them and this reason no longer applies.
+   */
+  valuesConfirmed?: boolean;
+}
+
+/** What is known now, beyond the stored check, about its blocking reasons. */
+export interface BlockingNow {
+  /** The account's latest values are from today's trading day (strategy day, UTC−5). */
+  valuesConfirmedToday?: boolean;
+}
+
+/**
+ * The blocking findings of a stored check (its blocking codes, in engine order) with what its report 1.2 says about
+ * the daily caps when it ran: `cap − (planned + recorded-live risk)` for the daily risk cap and `cap − (losses + open
+ * risk)` for the daily loss limit, the exact amounts the engine compared the trade's risk with (§6.3). An older report
+ * carries no such amounts (null). A stale-values reason of a check whose account has since confirmed today's values is
+ * marked as such (`now.valuesConfirmedToday`): the check found the values from an earlier day, so today's are newer.
+ */
+export function blockingFindingsOf(codes: readonly string[], report: Pick<RiskReportV12, "limits" | "snapshot"> | null, now: BlockingNow = {}): BlockingFinding[] {
+  return codes.map(code => {
+    if (code === "STALE_EQUITY" && now.valuesConfirmedToday === true) return { code, valuesConfirmed: true };
+    if (!report) return { code };
+    const { limits, snapshot } = report;
+    if (code === "DAILY_RISK_LIMIT" && limits.dailyRiskCap !== null) return { code, room: new D(limits.dailyRiskCap).minus(snapshot.riskConsumed).toFixed() };
+    if (code === "DAILY_LOSS_LIMIT" && limits.dailyLossCap !== null) {
+      return { code, room: new D(limits.dailyLossCap).minus(snapshot.grossLoss).minus(snapshot.openExposure).toFixed(), openRisk: snapshot.openExposure };
+    }
+    return { code };
+  });
+}
+
+function positive(value: string | null | undefined): boolean | null {
+  if (value === null || value === undefined) return null;
+  try {
+    return new D(value).gt(0);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether closing the open positions can free room under the daily loss limit: the limit less today's losses alone
+ * (`room + openRisk`) is still positive. Once losses alone reach the limit, no close frees anything, even at break-even.
+ */
+function openRiskFreesRoom(finding: BlockingFinding): boolean {
+  if (positive(finding.openRisk) !== true || finding.room === null || finding.room === undefined) return false;
+  try {
+    return new D(finding.room).plus(finding.openRisk as string).gt(0);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The remedy of a blocking finding. A daily cap is edit-clearable while it has room left: a lower risk fits under it.
+ * Once nothing is left, only the next trading day frees room, or, for the loss limit, a closed open position while
+ * today's losses alone leave room under it. The trade limit, Dead Pool and stale account values never depend on the
+ * draft (stale values confirmed since the check need only the recheck); every other rule does (a duplicate differs once
+ * its instrument, direction, model or prices change).
+ */
+export function blockRemedy(finding: BlockingFinding): BlockRemedy {
+  switch (finding.code) {
+    case "DEAD_POOL":
+      return "SESSION";
+    case "MAX_TRADES":
+      return "DAY";
+    case "STALE_EQUITY":
+      return finding.valuesConfirmed === true ? "RECHECK" : "ACCOUNT_VALUES";
+    case "DAILY_RISK_LIMIT":
+      return positive(finding.room) === false ? "DAY" : "EDIT";
+    case "DAILY_LOSS_LIMIT":
+      if (positive(finding.room) !== false) return "EDIT";
+      return openRiskFreesRoom(finding) ? "OPEN_RISK" : "DAY";
+    default:
+      return "EDIT";
+  }
+}
+
+/**
+ * The next action of a draft blocked today, once the findings of its check are known (§2.4, §6.3): Edit draft while an
+ * edit can clear any of them. When none can, the step that does leads and Edit draft stays one click away: confirming
+ * today's account values, or else the free recheck once the session, the trading day or the open positions change (or
+ * at once, when today's values were confirmed after the check).
+ * Other states, a block from an earlier day (already led by the recheck) and a frozen draft are returned unchanged.
+ */
+export function withBlockingFindings(state: TradeState, findings: readonly BlockingFinding[]): TradeState {
+  const edit = state.nextAction;
+  if (state.lifecycle !== "DRAFT" || state.draftCheck !== "BLOCKED" || edit?.kind !== "EDIT_DRAFT" || findings.length === 0) return state;
+  const remedies = new Set(findings.map(blockRemedy));
+  if (remedies.has("EDIT")) return state;
+  // Values confirmed today don't open a trading day whose slots or risk are used up: that block waits for tomorrow.
+  const next = remedies.has("ACCOUNT_VALUES") && !remedies.has("DAY") ? CONFIRM_VALUES : RECHECK_RISK;
+  return { ...state, nextAction: next, secondaryActions: [edit, ...state.secondaryActions] };
+}
 
 /**
  * State pill of a draft whose trading account is archived (§3.2, §9): whatever its last check said, the draft waits for

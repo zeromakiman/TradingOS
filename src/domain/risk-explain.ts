@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { formatAgainst, formatDecimal, formatMoney, formatMoneyAgainst, formatMoneyExact, formatQuantity, stripZeros } from "./format";
+import { formatAgainst, formatDecimal, formatMoney, formatMoneyAgainst, formatMoneyExact, formatMoneyUp, formatQuantity, stripZeros } from "./format";
 import type { RiskReport, RiskReportV12, StoredRiskReport } from "./risk-report";
 import { formatDay } from "./time-display";
 
@@ -192,7 +192,7 @@ class Values {
 }
 
 function moneyUp(value: string, currency: string): string {
-  return formatMoneyExact(new exact(value).toDecimalPlaces(2, exact.ROUND_CEIL).toFixed(), currency);
+  return formatMoneyUp(value, currency);
 }
 
 function observationDayText(day: string, reference: string): string {

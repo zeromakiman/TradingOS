@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { formatAgainst, formatDecimal, formatMoney, formatPrice, formatQuantity, formatR, stripZeros } from "./format";
+import { formatAgainst, formatDecimal, formatMoneyUp, formatPrice, formatQuantity, formatR, stripZeros } from "./format";
 import type { LedgerTrade } from "./ledger";
 
 /**
@@ -92,8 +92,12 @@ export type PlanVsReality =
     realizedRActualRisk: string | null;
   };
 
+/**
+ * Money at risk at the stop, rounded up to the cent so it is never understated (§6.6): the plan preview, the plan's
+ * "Risk at stop" and the lock confirmation state the same amount the same way.
+ */
 function money(value: string | null, currency: string): string | null {
-  return value === null ? null : formatMoney(value, currency);
+  return value === null ? null : formatMoneyUp(value, currency);
 }
 
 function signed(value: Decimal, text: string): string {

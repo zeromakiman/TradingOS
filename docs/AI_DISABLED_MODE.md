@@ -1,5 +1,10 @@
 # AI-disabled application mode
 
+> Historical V1 record. The V1 pages and the scripts `verify-ai-live.mjs` and `verify-non-ai-live.mjs` named below no
+> longer exist in V2. In V2, AI stays off unless `AI_ENABLED=true` ([DEPLOYMENT.md](DEPLOYMENT.md)): AI tools are inert
+> with the reason while every other workflow works, and the legacy `POST /api/setups/[id]/analyze` still answers
+> `DISABLED` (checked by `scripts/verify-audit-live.mjs`).
+
 Verified 2026-09-06. Live OpenAI use is paused. `AI_ENABLED=false` is set in the ignored local environment and in `.env.example`; absent or unrecognized flag values also disable AI. An existing API key does not enable it.
 
 ## Behavior

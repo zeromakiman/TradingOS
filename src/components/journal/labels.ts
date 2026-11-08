@@ -75,4 +75,8 @@ export const FILTER_PARAM_NAMES: Record<string, string> = {
   rFrom: "R range",
   rTo: "R range",
   accountFilter: "trading account",
+  currency: "currency",
+  // V1 Journal names (read when the V2 name is absent): named as the V2 filter they set.
+  status: "state",
+  outcome: "result",
 };

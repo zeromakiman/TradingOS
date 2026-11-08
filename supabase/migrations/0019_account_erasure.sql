@@ -2,14 +2,15 @@
 -- MUST stay the last migration: the TRUNCATE guards, the privilege revokes, the foreign-key lookup indexes and the
 -- purge's catalog-driven delete order cover every object that exists when this file runs, including the tables and
 -- views of 0016-0018.
--- History stays append-only for everyone else. The only delete path is public.purge_my_trading_data(text), which
--- removes the calling user's rows in one transaction and rolls everything back when any of them remains. It runs
--- only for a session that signed in with the password moments ago, so an access token alone cannot erase anything.
+-- History stays append-only for everyone else. The only delete path is public.purge_user_trading_data(uuid, text),
+-- which removes one user's rows in one transaction and rolls everything back when any of them remains. Only the
+-- trusted server (service_role) can execute it, after the server action re-authenticated the session user: no access
+-- token of a user, however fresh its password sign-in, can call any purge function.
 
 -- ---------------------------------------------------------------------------------------------------------
 -- Immutability with one scoped exception. create or replace keeps the function's OID, so every existing
 -- immutable/immutable_record trigger runs this body. A DELETE passes only while the transaction-local setting
--- trading_os.erase_user_id names the row's owner. Only purge_my_trading_data sets it, and no API role holds a
+-- trading_os.erase_user_id names the row's owner. Only purge_user_trading_data sets it, and no API role holds a
 -- DELETE grant on any table. UPDATE is never allowed; every other case raises the original message.
 -- ---------------------------------------------------------------------------------------------------------
 create or replace function private.reject_mutation() returns trigger
@@ -70,7 +71,7 @@ end $$;
 -- Lookup indexes for the purge's foreign-key checks. Deleting a referenced row makes PostgreSQL search the
 -- referencing table for rows that still point at it. Unless an index starts with foreign-key columns that identify
 -- the referenced row, every deleted row scans that table (all users' rows): an active user's erasure then grows
--- quadratically and hits the API statement timeout (8 s for authenticated) on every retry. Each foreign key into a
+-- quadratically and hits the API statement timeout on every retry. Each foreign key into a
 -- tenant table without such an index gets one on just the columns that reference the parent's smallest unique key
 -- (in practice its primary key). Narrow on purpose: an index that also carried user_id and account_id could
 -- out-match a parent's unique key when the planner has no statistics yet.
@@ -118,21 +119,21 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------------------------------------
--- public.purge_my_trading_data(p_confirm): deletes every row of the calling user from every public table that has
--- a user_id column. The delete order is computed from the catalog on each call (children before parents along
+-- public.purge_user_trading_data(p_user_id, p_confirm): deletes every row of one user from every public table that
+-- has a user_id column. The delete order is computed from the catalog on each call (children before parents along
 -- the foreign keys between those tables), so tables added by later migrations are covered without changing this
 -- function; tables without user_id (evaluator_versions) are never touched. Storage objects are not touched here:
 -- their paths are returned so the trusted server can delete them through the Storage API.
--- The caller's JWT must record a password sign-in of this user from the last 5 minutes: GoTrue's amr claim keeps
--- the time of each sign-in method across token refreshes, so only the server action's fresh re-authentication
--- passes, never a leaked or long-lived access token.
--- Errors: AUTH_REQUIRED, CONFIRMATION_REQUIRED, REAUTH_REQUIRED, AI_REQUEST_IN_PROGRESS, PURGE_INCOMPLETE: <table>.
+-- Service role only. The server action calls it with the secret key, for the session user, after the typed DELETE
+-- and a password re-entry that signed in that same user (src/lib/erasure.ts). The database cannot tell that
+-- re-authentication from a browser's own recent sign-in (both carry the same JWT amr claim), so no access token of a
+-- user may execute it at all: the user comes from p_user_id, never from the caller's token.
+-- Errors: INVALID_INPUT, CONFIRMATION_REQUIRED, AI_REQUEST_IN_PROGRESS, PURGE_INCOMPLETE: <table>.
 -- ---------------------------------------------------------------------------------------------------------
-create function public.purge_my_trading_data(p_confirm text) returns jsonb
+create function public.purge_user_trading_data(p_user_id uuid, p_confirm text) returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
-  v_uid uuid := auth.uid();
-  v_claims jsonb := coalesce(nullif(pg_catalog.current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb);
+  v_uid uuid := p_user_id;
   v_legacy jsonb;
   v_evidence jsonb;
   v_counts jsonb := '{}'::jsonb;
@@ -143,17 +144,9 @@ declare
   v_deleted bigint;
   v_leftover boolean;
 begin
-  if v_uid is null then raise exception 'AUTH_REQUIRED: Authentication required.'; end if;
+  if v_uid is null then raise exception 'INVALID_INPUT: A user id is required.'; end if;
   if p_confirm is distinct from 'ERASE ALL MY TRADING OS DATA' then
     raise exception 'CONFIRMATION_REQUIRED: Erasure requires the explicit confirmation phrase.';
-  end if;
-  if v_claims ->> 'sub' is distinct from v_uid::text or not exists (
-       select 1
-         from pg_catalog.jsonb_array_elements(
-                case when pg_catalog.jsonb_typeof(v_claims -> 'amr') = 'array' then v_claims -> 'amr' else '[]'::jsonb end) as m(entry)
-        where m.entry ->> 'method' = 'password' and pg_catalog.jsonb_typeof(m.entry -> 'timestamp') = 'number'
-          and (m.entry ->> 'timestamp')::numeric >= extract(epoch from clock_timestamp()) - 300) then
-    raise exception 'REAUTH_REQUIRED: Erasure requires a password sign-in within the last 5 minutes.';
   end if;
   -- The account rows are the serialization point of every account-scoped RPC (plans, slots, AI reservations).
   perform 1 from public.accounts a where a.user_id = v_uid order by a.id for update;
@@ -251,12 +244,13 @@ end $$;
 
 -- ---------------------------------------------------------------------------------------------------------
 -- Table and view privileges under Supabase default privileges (§10.1, §10.3). API roles read through RLS and
--- write only through security-definer functions. The legacy server code still inserts three tables directly
--- with the secret key (src/app/api/setups/[id]/screenshots/route.ts, src/lib/setup-analysis.ts).
+-- write only through security-definer functions. The legacy setup evaluator (src/lib/setup-analysis.ts) still
+-- inserts two tables directly with the secret key. No code registers legacy screenshots any more (V2 evidence goes
+-- through register_trade_evidence), so setup_screenshots keeps no insert grant.
 -- ---------------------------------------------------------------------------------------------------------
 revoke all on all tables in schema public from public, anon;
 revoke insert, update, delete, truncate, references, trigger on all tables in schema public from authenticated, service_role;
-grant insert on public.setup_screenshots, public.setup_evaluation_passes, public.evaluator_versions to service_role;
+grant insert on public.setup_evaluation_passes, public.evaluator_versions to service_role;
 -- 0006 left journal_analytics with the default grants of authenticated and service_role; the app reads it only
 -- with the user's session.
 revoke all on public.journal_analytics from authenticated, service_role;
@@ -279,7 +273,7 @@ revoke all on function
 
 revoke all on function private.reject_mutation(), private.reject_truncate(), private.tenant_tables(),
   private.erase_rows(regclass, uuid) from public, anon, authenticated, service_role;
-revoke all on function public.purge_my_trading_data(text) from public, anon, authenticated, service_role;
-grant execute on function public.purge_my_trading_data(text) to authenticated;
+revoke all on function public.purge_user_trading_data(uuid, text) from public, anon, authenticated, service_role;
+grant execute on function public.purge_user_trading_data(uuid, text) to service_role;
 
 notify pgrst, 'reload schema';

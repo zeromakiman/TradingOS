@@ -10,7 +10,7 @@ import {
 } from "@/components/evidence/paste-model";
 import { EvidencePasteTarget } from "@/components/evidence/paste-target";
 import {
-  capacityMessage, createStagedItem, evidenceFileProblem, isEditable, needsUpload, planStaging, stagedAnnouncement, stagedStatusText, type StagerAction, stagerReducer,
+  capacityMessage, createStagedItem, evidenceFileProblem, isEditable, needsUpload, planStaging, stagedAnnouncement, type StagerAction, stagerReducer,
   uploadStagedBatch,
 } from "@/components/evidence/stager-model";
 import { CAPTURE_METHODS, EVIDENCE_LABELS, type EvidenceLabel, MAX_EVIDENCE_BYTES, type StagedEvidence, TIMEFRAMES } from "@/components/evidence/types";
@@ -141,14 +141,12 @@ describe("stager state machine", () => {
     items = stagerReducer(items, { type: "failed", localId: item.localId, error: "Screenshot storage is temporarily unavailable." });
     expect(items[0]).toMatchObject({ status: "failed", error: "Screenshot storage is temporarily unavailable." });
     expect(needsUpload(items[0])).toBe(true);
-    expect(stagedStatusText(items[0])).toBe("Screenshot storage is temporarily unavailable.");
     items = stagerReducer(items, { type: "update", localId: item.localId, patch: { caption: "retry" } });
     expect(items[0].status).toBe("staged");
     expect(items[0]).not.toHaveProperty("error");
     items = stagerReducer(items, { type: "uploading", localId: item.localId });
     items = stagerReducer(items, { type: "uploaded", localId: item.localId });
     expect(items[0].status).toBe("uploaded");
-    expect(stagedStatusText(items[0])).toBe("Saved");
     expect(stagerReducer(items, { type: "failed", localId: item.localId, error: "late" })[0].status).toBe("uploaded");
   });
 

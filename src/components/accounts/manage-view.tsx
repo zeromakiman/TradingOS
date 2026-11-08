@@ -11,6 +11,7 @@ import { Card, CardBody, CardDescription, CardHeader, CardTitle } from "@/compon
 import { cx } from "@/components/ui/cx";
 import { Disclosure } from "@/components/ui/disclosure";
 import { EmptyState } from "@/components/ui/empty-state";
+import { prefetchFor } from "@/components/ui/links";
 import { PageHeader, SectionHeader } from "@/components/ui/page-header";
 import { Stat } from "@/components/ui/stat";
 import { DataTable } from "@/components/ui/table";
@@ -23,7 +24,7 @@ import { ConfirmUnchangedButton, UpdateValuesForm } from "./account-values-forms
 import { connectionLabel } from "./accounts-overview";
 import type { ConnectionDetails } from "./connection-data";
 import {
-  ADD_EXTERNAL_LOSS, ARCHIVE_COPY, ARCHIVED_VALUES_COPY, EXTERNAL_LOSSES_TITLE, MANAGE_TABS, MANUAL_CONNECTION_COPY, type ManageTab, manageHref,
+  ADD_EXTERNAL_LOSS, ARCHIVE_COPY, ARCHIVED_VALUES_COPY, accountDashboardHref, EXTERNAL_LOSSES_TITLE, MANAGE_TABS, MANUAL_CONNECTION_COPY, type ManageTab, manageHref,
   RESTORE_COPY, RR_POLICY_LABELS, STARTS_TOMORROW, typeAndBroker, UPDATE_VALUES, VERSIONING_COPY,
 } from "./copy";
 import { LinkExecutionForm, MockConnectButton, MockSyncControls, UnlinkExecutionButton } from "./manage-connection-controls";
@@ -51,11 +52,12 @@ export interface ManageViewProps {
 
 function ManageHeader({ manage }: { manage: AccountManage }) {
   const { account } = manage;
+  const dashboard = accountDashboardHref(account);
   return (
     <PageHeader
       className="mb-0"
       eyebrow={
-        <Link href={`/accounts/${account.id}`} className="inline-flex min-h-10 items-center gap-1 text-text-2 hover:text-text pointer-coarse:min-h-11">
+        <Link href={dashboard} prefetch={prefetchFor(dashboard, undefined)} className="inline-flex min-h-10 items-center gap-1 text-text-2 hover:text-text pointer-coarse:min-h-11">
           <ChevronLeft aria-hidden="true" className="size-4" />
           {account.name}
         </Link>

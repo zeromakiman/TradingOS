@@ -41,6 +41,7 @@ const input: AccountMetricsInput = {
   profile: { displayName: "FTMO 100K", broker: "FTMO", platform: "MT5", accountType: "EVALUATION", startingBalance: "100000.00", status: "ACTIVE" },
   latestObservation: observation,
   trades,
+  tradesComplete: true,
   now: "2026-09-15T14:00:00Z",
 };
 
@@ -76,7 +77,22 @@ describe("account metrics (spec §9.4)", () => {
   it("reports R statistics, counts and exclusions", () => {
     expect(metrics.cumulativeR).toEqual({ value: "1.7", unknownReason: null });
     expect(metrics.maxDrawdownR).toEqual({ value: "1", unknownReason: null });
-    expect(metrics).toMatchObject({ rTrades: 4, excludedNoRiskBasis: 1, closedCount: 5, openCount: 1 });
+    expect(metrics).toMatchObject({ tradesUnknown: null, rTrades: 4, excludedNoRiskBasis: 1, closedCount: 5, openCount: 1 });
+  });
+
+  it("never adds up part of the trades: when the read stopped at its row limit, every figure from trades is unknown with the reason", () => {
+    const partial = accountMetrics({ ...input, tradesComplete: false });
+    expect(partial).toMatchObject({
+      tradesUnknown: UNKNOWN_REASONS.tooManyTrades, realizedPnl: null, todayPnl: null, monthPnl: null, rTrades: null, excludedNoRiskBasis: null, closedCount: null,
+      openCount: null,
+    });
+    for (const figure of [partial.balanceFromTrades, partial.cumulativeR, partial.maxDrawdownR]) expect(figure).toEqual({ value: null, unknownReason: UNKNOWN_REASONS.tooManyTrades });
+    // What the trader recorded stays known.
+    expect(partial.startingBalance).toEqual(metrics.startingBalance);
+    expect(partial.lastBalance).toEqual(metrics.lastBalance);
+    // Without a starting balance, the balance from trades keeps that (actionable) reason.
+    const noStart = accountMetrics({ ...input, tradesComplete: false, profile: { ...input.profile, startingBalance: null } });
+    expect(noStart.balanceFromTrades).toEqual({ value: null, unknownReason: UNKNOWN_REASONS.balanceFromTrades });
   });
 
   it("marks unknown values instead of estimating them", () => {
@@ -102,6 +118,16 @@ describe("currency totals", () => {
     expect(accountCurrencyTotals([usd, eur, usd2])).toEqual([
       { currency: "EUR", accounts: 1, realizedPnl: "80", todayPnl: "80", monthPnl: "80" },
       { currency: "USD", accounts: 2, realizedPnl: "1139", todayPnl: "1069", monthPnl: "1239" },
+    ]);
+  });
+
+  it("leaves a currency's totals unknown while one of its accounts' trades could not all be read; other currencies keep theirs", () => {
+    const usd = accountMetrics(input);
+    const usdPartial = accountMetrics({ ...input, account: { id: OTHER, currency: "USD" }, tradesComplete: false });
+    const eur = accountMetrics({ ...input, account: { id: "20000000-0000-4000-8000-00000000000c", currency: "EUR" }, trades: [closedTrade("2026-09-15T13:00:00Z", "80", "1", { account_id: "20000000-0000-4000-8000-00000000000c", currency: "EUR" })] });
+    expect(accountCurrencyTotals([usd, usdPartial, eur])).toEqual([
+      { currency: "EUR", accounts: 1, realizedPnl: "80", todayPnl: "80", monthPnl: "80" },
+      { currency: "USD", accounts: 2, realizedPnl: null, todayPnl: null, monthPnl: null },
     ]);
   });
 });

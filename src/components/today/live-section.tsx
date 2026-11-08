@@ -7,7 +7,7 @@ import { LIVE_DESCRIPTION, LIVE_EMPTY_JOURNAL, LIVE_TITLE, RISK_NOT_RECORDED_HIN
 import { liveCardId } from "./dom-ids";
 import { LiveDuration } from "./live-duration";
 import { LivePanelsProvider, LiveQuickDock, LiveTradeActions } from "./live-panels";
-import { TodaySection } from "./section";
+import { AccountName, TodaySection } from "./section";
 import type { LiveFactView, LiveTradeView } from "./types";
 
 /**
@@ -88,7 +88,11 @@ function LiveTradeCard({ trade, nowIso, showAccount }: { trade: LiveTradeView; n
             )}
           </div>
           <p className="t-meta">
-            {showAccount && <span className="font-medium text-1">{trade.accountName} · </span>}
+            {showAccount && (
+              <>
+                <AccountName name={trade.accountName} tail=" ·" className="font-medium text-1" />{" "}
+              </>
+            )}
             <span className="num">{trade.sinceLabel}</span>
             {trade.screenshots && <span className="whitespace-nowrap"> · {trade.screenshots}</span>}
           </p>

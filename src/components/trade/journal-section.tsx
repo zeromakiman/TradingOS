@@ -1,5 +1,8 @@
+import Link from "next/link";
+import type { ReactNode } from "react";
 import type { GalleryItem } from "@/components/evidence/gallery-model";
 import { JournalComposer } from "@/components/trade/journal/composer";
+import { liveKindsNote } from "@/components/trade/journal/composer-model";
 import { TradeTimeline } from "@/components/trade/journal/timeline";
 import { plural } from "@/domain/format";
 import type { TimeDisplay } from "@/domain/time-display";
@@ -11,9 +14,10 @@ import { WorkspaceSection } from "./section";
 /**
  * Journal section (docs/V2_ARCHITECTURE.md §3.6, §5.3–5.4, §7.1, §14.4): the trade's timeline grouped Before entry /
  * While live / After close with exact times and flags, then the composer ("Add to trade journal…", kind chips Note ·
- * Decision · Stop · Target · Partial · Lesson, screenshots, Ctrl/⌘+Enter). While the position is live the composer
- * docks above the tab bar on phones, and Ctrl/⌘+V anywhere on the page attaches screenshots to it. `#journal` opens the
- * page with the composer focused (`TradeHashFocus`). Server component.
+ * Decision · Stop · Target · Partial · Lesson while the position is live, Note · Decision · Lesson otherwise, with a
+ * pointer to Edit draft on a draft; screenshots, Ctrl/⌘+Enter). While the position is live the composer docks above the
+ * tab bar on phones, and Ctrl/⌘+V anywhere on the page attaches screenshots to it. `#journal` opens the page with the
+ * composer focused (`TradeHashFocus`). Server component.
  */
 
 export interface JournalSectionProps {
@@ -24,6 +28,25 @@ export interface JournalSectionProps {
   gallery: readonly GalleryItem[];
   composerKey: string;
   sticky: boolean;
+}
+
+const EDIT_DRAFT = "Edit draft";
+
+/** Why the composer has no Stop, Target or Partial on this trade (drafts link to Edit draft), or null. */
+function kindsNoteOf(detail: TradeDetail): ReactNode {
+  const note = liveKindsNote(detail.state.lifecycle, detail.state.editable.plan);
+  if (!note) return null;
+  if (!note.editDraft) return note.text;
+  const at = note.text.indexOf(EDIT_DRAFT);
+  return (
+    <>
+      {note.text.slice(0, at)}
+      <Link href={`${detail.href}/edit`} className="font-medium text-accent underline-offset-2 hover:underline">
+        {EDIT_DRAFT}
+      </Link>
+      {note.text.slice(at + EDIT_DRAFT.length)}
+    </>
+  );
 }
 
 export function JournalSection({ detail, display, developerMode, mode, gallery, composerKey, sticky }: JournalSectionProps) {
@@ -40,6 +63,7 @@ export function JournalSection({ detail, display, developerMode, mode, gallery, 
       <JournalComposer
         tradeId={detail.tradeId}
         timingHint={mode.timingHint}
+        kindsNote={kindsNoteOf(detail)}
         defaultLabel={mode.defaultLabel}
         instrument={detail.instrument ? { tickSize: detail.instrument.tickSize, quantityStep: detail.instrument.quantityStep } : null}
         requestKey={composerKey}

@@ -19,10 +19,20 @@ import type { AccountContextSelection, SelectAccountAction, ShellAccount } from 
 export const CONTEXT_CHANNEL = "tos.account-context";
 
 const SelectionContext = createContext<AccountContextSelection | null>(null);
+const StoredContext = createContext<((value: string) => void) | null>(null);
+const ignoreStored = () => {};
 
 /** The context of the page on screen, which the header shows; `fallback` outside the shell (tests, isolated views). */
 export function useAccountContextSelection(fallback: AccountContextSelection): AccountContextSelection {
   return useContext(SelectionContext) ?? fallback;
+}
+
+/**
+ * Tells the shell that the account action stored a context ("all" or an account id), so the navigation to `?account=`
+ * that follows a header or palette switch does not store it a second time. Does nothing outside the shell.
+ */
+export function useContextStored(): (value: string) => void {
+  return useContext(StoredContext) ?? ignoreStored;
 }
 
 type Router = ReturnType<typeof useRouter>;
@@ -42,16 +52,22 @@ export type AccountContextSyncProps = {
   accounts: ShellAccount[];
   /** The context the layout was rendered with. */
   context: AccountContextSelection;
+  /**
+   * The layout showed the "That trading account isn't available" notice because the stored context itself names an
+   * account that is no longer available (archived on another device, or left by someone else's session).
+   */
+  storedUnavailable?: boolean;
   /** Stores a context (cookie `tos_account`); without it the shell only follows the URL. */
   selectAccountAction?: SelectAccountAction;
   children: ReactNode;
 };
 
 /**
- * Keeps the header's context equal to the context of the page on screen, in every tab, and stores the context of a
- * client-side navigation to `?account=` (the proxy only stores it for page loads, so prefetches never switch it).
+ * Keeps the header's context equal to the context of the page on screen, in every tab, stores the context of a
+ * client-side navigation to `?account=` (the proxy only stores it for page loads, so prefetches never switch it), and
+ * replaces a stored context that is no longer available with All Accounts, so its notice is shown once.
  */
-export function AccountContextSync({ accounts, context, selectAccountAction, children }: AccountContextSyncProps) {
+export function AccountContextSync({ accounts, context, storedUnavailable = false, selectAccountAction, children }: AccountContextSyncProps) {
   const router = useRouter();
   const pathname = usePathname() ?? "";
   const search = useSearchParams();
@@ -131,6 +147,20 @@ export function AccountContextSync({ accounts, context, selectAccountAction, chi
     dispatch({ type: "navigated", param: live.current.param, accounts: live.current.accounts });
   }, [location, dispatch]);
 
+  // The stored context is no longer available (this page load, or a refresh or server action that rendered the layout
+  // again): store All Accounts. Once each time it appears, so a store that fails (the page then renders again, still
+  // saying so) is never repeated in a loop. A prerendered page stores nothing until the person opens it.
+  const seenUnavailable = useRef(false);
+  useEffect(() => {
+    const appeared = storedUnavailable && !seenUnavailable.current;
+    seenUnavailable.current = storedUnavailable;
+    if (!appeared) return;
+    const report = () => dispatch({ type: "unavailable" });
+    const doc = document as Document & { prerendering?: boolean };
+    if (doc.prerendering) document.addEventListener("prerenderingchange", report, { once: true });
+    else report();
+  }, [storedUnavailable, dispatch]);
+
   // The layout rendered again (refresh or server action).
   const seenRendered = useRef(rendered);
   useEffect(() => {
@@ -157,5 +187,17 @@ export function AccountContextSync({ accounts, context, selectAccountAction, chi
     };
   }, [dispatch]);
 
-  return <SelectionContext.Provider value={contextSelection(state.page)}>{children}</SelectionContext.Provider>;
+  const noteStored = useCallback(
+    (value: string) => {
+      const parsed = parseContextParam(value);
+      if (parsed !== null) dispatch({ type: "stored", value: parsed });
+    },
+    [dispatch],
+  );
+
+  return (
+    <StoredContext.Provider value={noteStored}>
+      <SelectionContext.Provider value={contextSelection(state.page)}>{children}</SelectionContext.Provider>
+    </StoredContext.Provider>
+  );
 }

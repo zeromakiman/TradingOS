@@ -1,5 +1,5 @@
 import Decimal from "decimal.js";
-import { formatAgainst, formatDecimal, formatMoney, formatMoneyExact, formatPercent, formatQuantity, stripZeros } from "@/domain/format";
+import { formatAgainst, formatDecimal, formatMoney, formatMoneyExact, formatMoneyUp, formatPercent, formatQuantity, stripZeros } from "@/domain/format";
 import { evaluateRisk, type Instrument, isDuplicatePlan, type Proposal, proposalSchema, type RiskContext } from "@/domain/risk";
 import { type ExplainedIssue, explainReport } from "@/domain/risk-explain";
 import type { RiskReportV12 } from "@/domain/risk-report";
@@ -407,7 +407,7 @@ function statsOf(report: RiskReportV12, instrument: Instrument, currency: string
     quantity: formatQuantity(calculations.quantity, instrument.quantityStep),
     unit: instrument.quantityUnit,
     unitWord: unitWord(instrument.quantityUnit),
-    risk: formatMoneyExact(nominal.toDecimalPlaces(2, Decimal.ROUND_CEIL).toFixed(), currency),
+    risk: formatMoneyUp(nominal, currency),
     riskOfEquity: `${formatAgainst(ofEquity.toFixed(), requested, "max", ofEquity.lte(requested))}%`,
     requestedRisk: formatPercent(requested),
     rr: `${formatAgainst(calculations.plannedRR, report.limits.minRR, "min", rrState === "pass")}R`,

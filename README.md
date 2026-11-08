@@ -11,8 +11,8 @@ plans, decisions and results and never places or changes a trade.
 **This branch (`ui/claude-v2`) is Trading OS V2.** The authoritative design is
 [docs/V2_ARCHITECTURE.md](docs/V2_ARCHITECTURE.md); deployment, migrations and rollback are in
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); the deterministic risk engine is specified in
-[docs/RISK_ENGINE.md](docs/RISK_ENGINE.md). V1 documents and verification records under `docs/` are kept as dated
-historical evidence.
+[docs/RISK_ENGINE.md](docs/RISK_ENGINE.md); known gaps planned for V2.1 are in [docs/V2_1_GAPS.md](docs/V2_1_GAPS.md).
+V1 documents and verification records under `docs/` are kept as dated historical evidence.
 
 ## What V2 is
 
@@ -32,7 +32,7 @@ historical evidence.
   with concise cards, friendly source chips, strict citation validation and per-account budgets. AI never overrides a
   BLOCKED verdict and is never the default next action.
 - **Data rights**: Export my data (a ZIP assembled in the browser from RLS-scoped reads) and Delete Trading OS
-  account (one atomic purge that requires a fresh password sign-in).
+  account (typed DELETE and password re-entry, then one atomic purge run by the trusted server).
 
 ## Information architecture
 
@@ -52,7 +52,8 @@ historical evidence.
 The header always shows the **Trading Account** context, the strategy clock (fixed UTC−5), Search (Ctrl/⌘+K) and the
 two primary actions **Plan Trade** and **Record Live Trade**; phones get a bottom tab bar (Today · Journal · + ·
 Accounts · More). A URL with `?account=all|<id>` switches the context when it is opened (prefetches never do). V1
-routes (`/analyze`, `/journal/[id]`, `/edge/weekly|recent|monthly`, `/preview`) redirect to their V2 pages.
+routes (`/analyze`, `/journal/[id]`, `/edge/weekly|recent|monthly`, `/preview`) redirect to their V2 pages, and V1
+bookmarks of `/journal` and `/edge` keep their filters.
 
 ## Local development
 
@@ -77,7 +78,7 @@ differences from hosted Supabase) is in [scripts/local-stack/README.md](scripts/
 ```sh
 node scripts/local-stack/screenshot.mjs --user=<seeded email> --out=.local/screenshots/v2 today journal edge @todayBlocked
 node scripts/local-stack/screenshot.mjs --user=<seeded email> --out=.local/screenshots/v2 --viewport=393x852 --theme=dark today
-npx pnpm@11.19.0 run acceptance        # scripted V2 acceptance (planned, live-first, analytics, accounts, AI, settings)
+npx pnpm@11.19.0 run acceptance        # scripted V2 acceptance (planned, live-first, analytics, accounts, AI, settings, UX)
 ```
 
 `@name` stands for the seeded showcase trades and accounts (`@todayBlocked`, `@ftmo/manage`, …). From Git Bash pass
@@ -96,18 +97,21 @@ AI_ENABLED=true OPENAI_API_KEY=sk-local-mock-local MOCK_OPENAI=1 TRADING_OS_ENAB
 ```
 
 Each Node process prints `[mock-openai] active (pid …)`; without that line the mock is not loaded, so stop the server.
-Never use the mock, a real key, or `TRADING_OS_ENABLE_MOCK_SYNC` on Vercel Preview or production.
+Never use the mock, a real key, or `TRADING_OS_ENABLE_MOCK_SYNC` on Vercel Preview or production. The reviewed AI
+pricing (`src/ai/pricing.ts`, gpt-5.4-mini) is valid until 2026-11-12 00:00 UTC; from then on every AI request is
+refused, mock or not, until the pricing is reviewed.
 
 ## Scripts and tests
 
 | Command | What it does |
 |---|---|
 | `npx pnpm@11.19.0 dev` | Development server on 127.0.0.1:3000 |
-| `npx pnpm@11.19.0 lint` | Biome over `src`, `tests`, `scripts` (warnings fail) |
+| `npx pnpm@11.19.0 lint` | Biome over `src`, `tests`, `scripts` (warnings fail), then the unused-export check below |
 | `npx pnpm@11.19.0 typecheck` | `tsc --noEmit` |
 | `npx pnpm@11.19.0 test` | Vitest: domain, engine parity (TypeScript ↔ SQL), database (PGlite applies every migration), actions, routes, UI (server-rendered markup) |
 | `npx pnpm@11.19.0 build` | Production build |
 | `npx pnpm@11.19.0 run acceptance` | Browser acceptance against the running local app |
+| `node scripts/check-unused-exports.mjs` | Dead-code check: every exported value under `src/` needs a caller in the app or the scripts (tests never count; deliberate exceptions are listed with a reason in its `KEPT`). Part of `lint`; `tests/v2-unused-exports.test.ts` also runs it with the suite |
 | `npx pnpm@11.19.0 check` | lint, typecheck, test and build in sequence |
 
 Tests need no credentials and never call a paid provider: `tests/no-live-ai.ts` blocks OpenAI hosts for the whole

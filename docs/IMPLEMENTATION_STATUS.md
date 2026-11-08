@@ -19,7 +19,11 @@ and migrations: [DEPLOYMENT.md](DEPLOYMENT.md). Overview and local setup: [READM
 - **AI**: off by default; verified locally with a mock provider only (no paid calls). Real-provider acceptance follows
   the independent audit.
 - **Not in V2**: real broker or platform connectivity (cTrader in V2.1, MetaTrader in V2.2; V2 has the connection model
-  and a mock provider), market data, partial-position accounting beyond journal entries, outcome amendments.
+  and a mock provider), market data, multi-leg (partial-position) accounting, outcome amendments. Partial closes are
+  journal records; the close still records one exit price, which the close form works out from the partial closes
+  journaled while the trade was live when each has a price and an amount (V2_ARCHITECTURE.md §3.6).
+- **Known gaps for V2.1**: [V2_1_GAPS.md](V2_1_GAPS.md) (held or unlinked platform executions and daily limits, imported
+  trades without a contract, accounts above 20,000 trades).
 
 The final V2 report and its verification records are added when verification completes.
 

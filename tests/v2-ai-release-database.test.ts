@@ -12,11 +12,17 @@ import { type AiLedger, budgetedAiRequest, GENERATION_NOT_SENT } from "@/ai/requ
 // 0018 Part 4: the recheck before the paid generation request records the generation commit (ai_request_generations);
 // a dispatched request is released for zero cost (CANCELLED, usage {"generation":"NOT_SENT"}) only while no generation
 // was committed, so SQL itself refuses a refund after a committed generation. Plain CANCELLED keeps its 0008 meaning.
+// SQL cannot see whether the input count reached the provider: the gate sends that release only while no provider
+// request of any kind was issued, and holds everything after contact (second describe, through the real SQL).
 
+// The whole file runs on a pinned clock (PGlite follows the JS Date): inside the Mini pricing profile's reviewed window
+// and away from the AI month boundary, never on the real time.
+const NOW = new Date("2026-10-17T12:00:00Z");
 type Db = Awaited<ReturnType<typeof createTestDatabase>>;
 let db: Db;
 const HASH = "a".repeat(64);
-const RELEASE = { disposition: "CANCELLED", chargedMicros: 0, usage: { generation: "NOT_SENT" }, errorCode: "INPUT_LIMIT_EXCEEDED" };
+/** A dispatched request whose adapter failed before its first provider request (the only dispatched release). */
+const RELEASE = { disposition: "CANCELLED", chargedMicros: 0, usage: { generation: "NOT_SENT" }, errorCode: "INVALID_OPERATION_ENVELOPE" };
 
 async function account(): Promise<string> {
   const { accountId } = await db.bootstrapAccount(OWNER);
@@ -48,10 +54,15 @@ async function generations(id: string): Promise<number> {
 }
 
 beforeAll(async () => {
+  vi.useFakeTimers({ toFake: ["Date"], shouldAdvanceTime: true });
+  vi.setSystemTime(NOW);
   db = await createTestDatabase();
   await db.applyMigrations();
 }, 120_000);
-afterAll(async () => { await db.close(); });
+afterAll(async () => {
+  await db.close();
+  vi.useRealTimers();
+});
 
 describe("releasing provably unsent requests (0018 Part 4)", () => {
   it("releases a dispatched request whose generation was never committed, for zero cost, without pausing the account", async () => {
@@ -63,7 +74,7 @@ describe("releasing provably unsent requests (0018 Part 4)", () => {
     expect(await budget(a)).toMatchObject({ heldMicros: 0, usedMicros: 0, uncertain: false });
     await db.admin();
     expect((await db.query("select disposition,charged_micros,usage,error_code from public.ai_usage_records where reservation_id=$1", [id])).rows)
-      .toEqual([{ disposition: "CANCELLED", charged_micros: 0, usage: { generation: "NOT_SENT" }, error_code: "INPUT_LIMIT_EXCEEDED" }]);
+      .toEqual([{ disposition: "CANCELLED", charged_micros: 0, usage: { generation: "NOT_SENT" }, error_code: "INVALID_OPERATION_ENVELOPE" }]);
     // The account can reserve again at once: nothing waits for an accounting review.
     await reserve(a);
   });
@@ -110,7 +121,7 @@ describe("releasing provably unsent requests (0018 Part 4)", () => {
     expect(await budget(a)).toMatchObject({ usedMicros: 1234, heldMicros: 0, uncertain: false });
   });
 
-  it("an opt-out or a lowered cap between count and generation commits nothing, so the request is released", async () => {
+  it("an opt-out or a lowered cap before the generation recheck commits no generation", async () => {
     const a = await account();
     const id = await reserve(a);
     await dispatch(id);
@@ -118,6 +129,8 @@ describe("releasing provably unsent requests (0018 Part 4)", () => {
     await db.query("select public.set_account_ai_preferences($1,false,null)", [a]);
     await expect(dispatch(id, true)).rejects.toThrow(/changed/);
     expect(await generations(id)).toBe(0);
+    // Without a generation commit SQL accepts the NOT_SENT release; whether the input count already reached the
+    // provider is known only to the gate, which then holds the request instead (see the next describe).
     await settle(id, { ...RELEASE, errorCode: "AI_BUDGET_OR_PERMISSION_CHANGED" });
     expect(await budget(a)).toMatchObject({ heldMicros: 0, usedMicros: 0, uncertain: false });
   });
@@ -166,12 +179,13 @@ describe("releasing provably unsent requests (0018 Part 4)", () => {
 });
 
 // The request gate (src/ai/request-gate.ts) against the real SQL: each ledger call commits and then loses its response,
-// as a timeout after the database committed would. The gate must release exactly what provably sent nothing and hold
-// everything else.
+// as a timeout after the database committed would, and provider failures before and after the input count. The gate
+// must release exactly what never reached the provider and hold everything else.
 describe("lost responses through the request gate and the real SQL", () => {
   const operation = operationFor("WEEKLY_REVIEW");
+  const amount = reservationMicros(operationPricing(operation, NOW), operation);
   const owner = (accountId: string) => ({ userId: OWNER, accountId, operationId: randomUUID(), stage: "A", operation: operation.id });
-  const input = () => ({ apiKey: "mock-only", config: operationRequestConfig(operation), context: weeklyFacts, images: [], prior: [] });
+  const input = (images: { sourceId: string; role: string; dataUrl: string }[] = []) => ({ apiKey: "mock-only", config: operationRequestConfig(operation), context: weeklyFacts, images, prior: [] });
   type Fault = "reserve" | "dispatch" | "recheck";
 
   /** A service-role ledger whose `fault` call commits in SQL and then throws, as a lost response does. */
@@ -201,6 +215,10 @@ describe("lost responses through the request gate and the real SQL", () => {
   async function usage(id: string) {
     await db.admin();
     return (await db.query<{ disposition: string; charged_micros: number; usage: unknown }>("select disposition,charged_micros,usage from public.ai_usage_records where reservation_id=$1", [id])).rows;
+  }
+  async function errorCode(id: string) {
+    await db.admin();
+    return (await db.query<{ error_code: string | null }>("select error_code from public.ai_usage_records where reservation_id=$1", [id])).rows[0]?.error_code;
   }
 
   beforeAll(() => {
@@ -237,12 +255,59 @@ describe("lost responses through the request gate and the real SQL", () => {
     const book = ledger("recheck");
     const fetcher = transport();
     await expect(budgetedAiRequest(input(), owner(a), book, fetcher)).rejects.toMatchObject({ code: "ACCOUNTING_UNCERTAIN" });
-    // Only the input count reached the provider; the generation request was not sent, yet SQL cannot know that.
+    // Only the input count reached the provider, which already rules out a release; SQL would refuse one as well.
     expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual(["https://api.openai.com/v1/responses/input_tokens"]);
     expect(await generations(book.ids[0])).toBe(1);
-    const amount = reservationMicros(operationPricing(operation), operation);
     expect(await usage(book.ids[0])).toEqual([{ disposition: "UNCERTAIN", charged_micros: amount, usage: null }]);
     expect(await budget(a)).toMatchObject({ heldMicros: 0, usedMicros: amount, uncertain: true });
+  });
+
+  it("an input count that failed or refused the request after it was sent is held in full, never released", async () => {
+    const answers: [code: string, count: () => Promise<Response>][] = [
+      ["INPUT_COUNT_UNAVAILABLE", async () => { throw new Error("offline"); }],
+      ["INPUT_LIMIT_EXCEEDED", async () => Response.json({ input_tokens: operation.maxInputTokens + 1 })],
+    ];
+    for (const [code, count] of answers) {
+      const a = await account();
+      const book = ledger(null);
+      const fetcher = vi.fn<typeof fetch>(count);
+      await expect(budgetedAiRequest(input(), owner(a), book, fetcher)).rejects.toMatchObject({ code: "ACCOUNTING_UNCERTAIN" });
+      expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual(["https://api.openai.com/v1/responses/input_tokens"]);
+      expect(await generations(book.ids[0])).toBe(0);
+      expect(await usage(book.ids[0])).toEqual([{ disposition: "UNCERTAIN", charged_micros: amount, usage: null }]);
+      expect(await errorCode(book.ids[0])).toBe(code);
+      // The account's AI pauses for an accounting review, exactly as for any other request of unknown cost.
+      expect(await budget(a)).toMatchObject({ heldMicros: 0, usedMicros: amount, uncertain: true });
+    }
+  });
+
+  it("an opt-out between the input count and the generation commits nothing, yet holds the request: the count was sent", async () => {
+    const a = await account();
+    const book = ledger(null);
+    const fetcher = vi.fn<typeof fetch>(async () => {
+      await db.actor(OWNER);
+      await db.query("select public.set_account_ai_preferences($1,false,null)", [a]);
+      return Response.json({ input_tokens: 1000 });
+    });
+    await expect(budgetedAiRequest(input(), owner(a), book, fetcher)).rejects.toMatchObject({ code: "ACCOUNTING_UNCERTAIN" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await generations(book.ids[0])).toBe(0);
+    expect(await usage(book.ids[0])).toEqual([{ disposition: "UNCERTAIN", charged_micros: amount, usage: null }]);
+    expect(await budget(a)).toMatchObject({ enabled: false, heldMicros: 0, usedMicros: amount, uncertain: true });
+  });
+
+  it("an adapter failure before its first provider request is released: nothing reached the provider", async () => {
+    const a = await account();
+    const book = ledger(null);
+    const fetcher = transport();
+    // Weekly reviews take no charts: the adapter refuses the envelope before it counts anything.
+    const chart = { sourceId: "evidence:0", role: "M5", dataUrl: "data:image/png;base64,iVBORw0KGgo=" };
+    await expect(budgetedAiRequest(input([chart]), owner(a), book, fetcher)).rejects.toMatchObject({ code: "INVALID_OPERATION_ENVELOPE" });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(await generations(book.ids[0])).toBe(0);
+    expect(await usage(book.ids[0])).toEqual([{ disposition: "CANCELLED", charged_micros: 0, usage: { ...GENERATION_NOT_SENT } }]);
+    expect(await errorCode(book.ids[0])).toBe("INVALID_OPERATION_ENVELOPE");
+    expect(await budget(a)).toMatchObject({ heldMicros: 0, usedMicros: 0, uncertain: false });
   });
 
   it("a complete request settles its measured usage; nothing is released or held", async () => {

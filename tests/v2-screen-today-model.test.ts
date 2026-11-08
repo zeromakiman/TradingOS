@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checkedOnLead, EARLIER_LOCKED_LABEL, EARLIER_LOCKED_NOTE, skipPlanDescription, UNSAVED_BADGE } from "@/components/today/copy";
 import { anyPanelShown, cardPanels, hidePanel, type LivePanel, type LivePanelsState, openPanel } from "@/components/today/live-panels-model";
-import { type ManagementRow, summarizeManagement } from "@/components/today/management";
+import { MANAGEMENT_COLUMNS, type ManagementRow, managementRow, summarizeManagement } from "@/components/today/management";
 import { holdsDraft } from "@/components/today/use-kept-draft";
 
 // Today's live trade cards (docs/V2_ARCHITECTURE.md §14.1, §3.6, §7.1): the pure rules behind the inline panels (nothing
@@ -117,5 +117,29 @@ describe("Today · live position management", () => {
     ]);
     expect(summary.get(A)?.stop).toEqual({ price: "1.0985", recordedAt: "2026-10-23T12:00:00Z" });
     expect(summary.get(A)?.partials[0].percent).toBeNull();
+  });
+
+  it("reads only what was recorded while the position was live, never a stop or partial journaled before the entry", () => {
+    // A locked plan with a 50% "partial" and a stop journaled before its entry, then entered: none of it describes
+    // the open position. Rows stored after a close don't either.
+    const phased = (n: number, kind: ManagementRow["kind"], details: Record<string, unknown>, recordedAt: string, phase: ManagementRow["phase"]) => ({
+      ...row(n, A, kind, details, recordedAt), phase,
+    });
+    const summary = summarizeManagement([
+      phased(1, "PARTIAL_CLOSE", { percent: "50", price: "1.1031" }, "2026-10-23T12:00:00Z", "PRE_ENTRY"),
+      phased(2, "STOP_CHANGE", { price: "1.1" }, "2026-10-23T12:01:00Z", "PRE_ENTRY"),
+      phased(3, "STOP_CHANGE", { price: "1.0995" }, "2026-10-23T12:30:00Z", "LIVE"),
+      phased(4, "STOP_CHANGE", { price: "1.105" }, "2026-10-23T13:00:00Z", "POST_TRADE"),
+      phased(5, "PARTIAL_CLOSE", { percent: "30" }, "2026-10-23T13:00:00Z", "POST_TRADE"),
+    ]);
+    expect(summary.get(A)).toEqual({ stop: { price: "1.0995", recordedAt: "2026-10-23T12:30:00Z" }, partials: [] });
+    expect(summarizeManagement([phased(1, "PARTIAL_CLOSE", { percent: "50" }, "2026-10-23T12:00:00Z", "PRE_ENTRY")]).has(A)).toBe(false);
+  });
+
+  it("reads the stored phase with the rows, and refuses a phase the database doesn't have", () => {
+    expect(MANAGEMENT_COLUMNS.split(",")).toEqual(["id", "trade_id", "kind", "details", "recorded_at", "phase"]);
+    const stored = { ...row(1, A, "STOP_CHANGE", { price: "1.1" }, "2026-10-23T12:00:00Z"), phase: "LIVE" };
+    expect(managementRow.parse(stored)).toEqual(stored);
+    expect(managementRow.safeParse({ ...stored, phase: "WHILE_LIVE" }).success).toBe(false);
   });
 });

@@ -1,9 +1,10 @@
 import "server-only";
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 import { z } from "zod";
-import { LEDGER_COLUMNS, TRADE_ORIGINS } from "@/domain/ledger";
+import { LEDGER_COLUMNS, LIFECYCLES, TRADE_ORIGINS } from "@/domain/ledger";
 import { compareInstants } from "@/domain/time-display";
-import { classifyTiming, type EvidenceLabel, inferStoredPhase, legacyEvidenceLabel, type Timing } from "@/domain/timeline";
+import { classifyTiming, type EvidenceLabel, inferStoredPhase, legacyEvidenceLabel, type StoredPhase, type Timing } from "@/domain/timeline";
+import { planEndedAt } from "@/domain/trade-state";
 import { RequestError } from "./route-security";
 
 /**
@@ -363,15 +364,29 @@ const screenshotRow = z.object({
   byte_size: z.number().int(), width: z.number().int(), height: z.number().int(), sha256: z.string(), uploaded_at: timestamp,
 });
 const revisionRow = z.object({ proposal_id: z.uuid(), trade_id: z.uuid() });
+/**
+ * Ledger columns the timing band needs: entry and exit times, and what `planEndedAt` reads to date a plan's end
+ * (`entry_price` is read as text: PostgREST sends NUMERIC as a lossy JSON number).
+ */
 const timingRow = z.object({
-  id: z.uuid(), origin: z.enum(TRADE_ORIGINS), created_at: timestamp, entered_at: timestamp.nullable(),
-  entry_recorded_at: timestamp.nullable(), exited_at: timestamp.nullable(), close_recorded_at: timestamp.nullable(),
+  id: z.uuid(), origin: z.enum(TRADE_ORIGINS), created_at: timestamp, entered_at: timestamp.nullable(), entry_recorded_at: timestamp.nullable(),
+  entry_price: z.string().nullable(), exited_at: timestamp.nullable(), close_recorded_at: timestamp.nullable(),
+  outcome: z.enum(["WIN", "LOSS", "BREAKEVEN"]).nullable(), plan_id: z.uuid().nullable(), lifecycle: z.enum(LIFECYCLES),
+  disposition: z.enum(["SKIPPED", "CANCELLED"]).nullable(), legacy_decision: z.enum(["TAKEN", "SKIPPED"]).nullable(), discarded_at: timestamp.nullable(),
 });
 type TradeTiming = z.output<typeof timingRow>;
+const endRow = z.object({ recorded_at: timestamp });
 
 const LEDGER = table("trade_ledger");
 const REVISIONS = table("trade_revisions", ["proposal_id"]);
-const LEDGER_TIMING_COLUMNS = "id,origin,created_at,entered_at,entry_recorded_at,exited_at,close_recorded_at";
+const DISPOSITIONS = table("trade_dispositions");
+const DECISIONS = table("setup_human_decisions");
+const LEDGER_TIMING_COLUMNS = [
+  "id", "origin", "created_at", "entered_at", "entry_recorded_at", "entry_price::text", "exited_at", "close_recorded_at", "outcome",
+  "plan_id", "lifecycle", "disposition", "legacy_decision", "discarded_at",
+].join(",");
+/** Planned trades that ended without an entry: only these can have an end time (`planEndedAt`). */
+const ENDED_LIFECYCLES = new Set<string>(["SKIPPED", "CANCELLED", "DISCARDED"]);
 const EVIDENCE_LABELS = new Set<string>(["HTF", "CONTEXT", "PRE_ENTRY", "ENTRY", "MANAGEMENT", "EXIT", "OTHER"]);
 
 function parseRows<T>(schema: z.ZodType<T>, rows: readonly Row[]): T[] {
@@ -391,8 +406,14 @@ function removalTimes(rows: readonly Row[], key: string): Map<string, string> {
   return new Map(rows.map((row) => [String(row[key]), parseRows(removalRow, [row])[0].recorded_at]));
 }
 
-/** Every legacy screenshot and V2 evidence item with its effective label, timing band and download route. */
-export function buildEvidenceManifest(tables: Readonly<Record<string, readonly Row[]>>, revisions: readonly Row[], trades: readonly Row[]): EvidenceManifestItem[] {
+/**
+ * Every legacy screenshot and V2 evidence item with its effective label, timing band and download route. Timing is the
+ * trade page's (spec §5.3): `endedAt` holds when each planned trade that ended without an entry ended (`planEnds`), so
+ * what was recorded from then on is After close, never pre-entry evidence.
+ */
+export function buildEvidenceManifest(
+  tables: Readonly<Record<string, readonly Row[]>>, revisions: readonly Row[], trades: readonly Row[], endedAt: ReadonlyMap<string, string> = new Map(),
+): EvidenceManifestItem[] {
   const tradeById = new Map(parseRows(timingRow, trades).map((trade) => [trade.id, trade]));
   const tradeOfProposal = new Map(parseRows(revisionRow, revisions).map((revision) => [revision.proposal_id, revision.trade_id]));
   // Relabel history is append-only; the newest row (highest identity) wins.
@@ -401,11 +422,16 @@ export function buildEvidenceManifest(tables: Readonly<Record<string, readonly R
   for (const row of parseRows(evidenceLabelRow, labelRows)) labels.set(row.evidence_id, row);
   const evidenceRemovals = removalTimes(tables.trade_evidence_removals ?? [], "evidence_id");
   const screenshotRemovals = removalTimes(tables.setup_screenshot_removals ?? [], "screenshot_id");
-  const timing = (trade: TradeTiming | undefined, recordedAt: string, storedPhase: "PRE_ENTRY" | "LIVE" | "POST_TRADE"): Timing | null =>
-    trade ? classifyTiming({
-      recordedAt, storedPhase, origin: trade.origin, entryAt: trade.entered_at, entryRecordedAt: trade.entry_recorded_at,
-      exitAt: trade.exited_at, tradeCreatedAt: trade.created_at,
-    }).timing : null;
+  // Records without a stored phase (legacy screenshots) get the one private.trade_phase would have stored.
+  const timing = (trade: TradeTiming | undefined, recordedAt: string, storedPhase: StoredPhase | null): Timing | null => {
+    if (!trade) return null;
+    const ended = endedAt.get(trade.id) ?? null;
+    const entryRecordedAt = trade.entry_recorded_at ?? (trade.origin === "PLANNED" ? null : trade.created_at);
+    return classifyTiming({
+      recordedAt, storedPhase: storedPhase ?? inferStoredPhase(recordedAt, entryRecordedAt, trade.close_recorded_at, ended), origin: trade.origin,
+      entryAt: trade.entered_at, entryRecordedAt, exitAt: trade.exited_at, tradeCreatedAt: trade.created_at, endedAt: ended,
+    }).timing;
+  };
 
   const v2 = parseRows(evidenceRow, tables.trade_evidence ?? []).map((item): EvidenceManifestItem => {
     const current = labels.get(item.id);
@@ -424,8 +450,7 @@ export function buildEvidenceManifest(tables: Readonly<Record<string, readonly R
     return {
       id: item.id, kind: "LEGACY", tradeId, proposalId: item.proposal_id, label: legacyEvidenceLabel(item.role), role: item.role, timeframe: item.role,
       caption: null, originalFilename: item.original_filename, mimeType: item.mime_type, byteSize: item.byte_size, width: item.width,
-      height: item.height, sha256: item.sha256, recordedAt: item.uploaded_at,
-      timing: timing(trade, item.uploaded_at, inferStoredPhase(item.uploaded_at, trade?.entry_recorded_at, trade?.close_recorded_at)),
+      height: item.height, sha256: item.sha256, recordedAt: item.uploaded_at, timing: timing(trade, item.uploaded_at, null),
       removedAt: screenshotRemovals.get(item.id) ?? null, captureMethod: null, copiedFrom: null, downloadPath: `/api/screenshots/${item.id}`,
     };
   });
@@ -441,25 +466,62 @@ type ManifestPage = (db: SupabaseClient, rows: readonly Row[]) => Promise<Eviden
 const columnValues = (rows: readonly Row[], column: string) => rows.map((row) => String(row[column]));
 
 /**
- * Paged mode: the manifest items of one page of evidence rows, built from only the labels, removals, revisions and
- * ledger timing those rows need, so the whole manifest arrives page by page within the response budget.
+ * When each planned trade of `trades` that ended without an entry ended: `planEndedAt` (`private.plan_ended_at`), the
+ * earliest of its discard, the skip or cancellation of its plan and a latest V1 skip, exactly as the trade page dates
+ * it. Only the dispositions and V1 decisions the ledger names are read, a URL-sized chunk of values at a time; the V1
+ * decisions of a trade lie on any of its revisions, so `revisions` must hold every revision of the trades (the whole
+ * table), else (null) the revisions of the trades with a V1 skip are read.
+ */
+async function planEnds(db: SupabaseClient, trades: readonly Row[], revisions: readonly Row[] | null): Promise<Map<string, string>> {
+  const ended = parseRows(timingRow, trades).filter((trade) => trade.origin === "PLANNED" && ENDED_LIFECYCLES.has(trade.lifecycle));
+  const planIds = ended.flatMap((trade) => (trade.disposition !== null && trade.plan_id !== null ? [trade.plan_id] : []));
+  const skipped = new Set(ended.filter((trade) => trade.legacy_decision === "SKIPPED").map((trade) => trade.id));
+  const tradeOfProposal = new Map(parseRows(revisionRow, revisions ?? await readWhereIn(db, REVISIONS, "trade_id", [...skipped]))
+    .filter((revision) => skipped.has(revision.trade_id)).map((revision) => [revision.proposal_id, revision.trade_id]));
+  const dispositionAt = new Map((await readWhereIn(db, DISPOSITIONS, "plan_id", planIds, "id,plan_id,recorded_at"))
+    .map((row) => [String(row.plan_id), parseRows(endRow, [row])[0].recorded_at]));
+  // The ledger names a trade's latest V1 decision; it is a skip here, recorded at the latest decision time of the trade.
+  const legacySkipAt = new Map<string, string>();
+  for (const row of await readWhereIn(db, DECISIONS, "proposal_id", [...tradeOfProposal.keys()], "id,proposal_id,recorded_at")) {
+    const tradeId = tradeOfProposal.get(String(row.proposal_id));
+    const at = parseRows(endRow, [row])[0].recorded_at;
+    const latest = tradeId ? legacySkipAt.get(tradeId) : undefined;
+    if (tradeId && (latest === undefined || compareInstants(at, latest) > 0)) legacySkipAt.set(tradeId, at);
+  }
+  const ends = new Map<string, string>();
+  for (const trade of ended) {
+    const at = planEndedAt(trade, { dispositionAt: trade.plan_id ? dispositionAt.get(trade.plan_id) ?? null : null, legacySkipAt: legacySkipAt.get(trade.id) ?? null });
+    if (at !== null) ends.set(trade.id, at);
+  }
+  return ends;
+}
+
+/**
+ * Paged mode: the manifest items of one page of evidence rows, built from only the labels, removals, revisions, ledger
+ * timing and plan ends those rows need, so the whole manifest arrives page by page within the response budget.
  */
 const MANIFEST_PAGES: Partial<Record<string, ManifestPage>> = {
-  trade_evidence: async (db, rows) => buildEvidenceManifest(
-    {
-      trade_evidence: rows,
-      trade_evidence_labels: await readWhereIn(db, LABEL_HISTORY, "evidence_id", columnValues(rows, "id")),
-      trade_evidence_removals: await readWhereIn(db, EVIDENCE_REMOVALS, "evidence_id", columnValues(rows, "id")),
-    },
-    [],
-    await readWhereIn(db, LEDGER, "id", columnValues(rows, "trade_id"), LEDGER_TIMING_COLUMNS),
-  ),
+  trade_evidence: async (db, rows) => {
+    const trades = await readWhereIn(db, LEDGER, "id", columnValues(rows, "trade_id"), LEDGER_TIMING_COLUMNS);
+    return buildEvidenceManifest(
+      {
+        trade_evidence: rows,
+        trade_evidence_labels: await readWhereIn(db, LABEL_HISTORY, "evidence_id", columnValues(rows, "id")),
+        trade_evidence_removals: await readWhereIn(db, EVIDENCE_REMOVALS, "evidence_id", columnValues(rows, "id")),
+      },
+      [],
+      trades,
+      await planEnds(db, trades, null),
+    );
+  },
   setup_screenshots: async (db, rows) => {
     const revisions = await readWhereIn(db, REVISIONS, "proposal_id", columnValues(rows, "proposal_id"));
+    const trades = await readWhereIn(db, LEDGER, "id", columnValues(revisions, "trade_id"), LEDGER_TIMING_COLUMNS);
     return buildEvidenceManifest(
       { setup_screenshots: rows, setup_screenshot_removals: await readWhereIn(db, SCREENSHOT_REMOVALS, "screenshot_id", columnValues(rows, "id")) },
       revisions,
-      await readWhereIn(db, LEDGER, "id", columnValues(revisions, "trade_id"), LEDGER_TIMING_COLUMNS),
+      trades,
+      await planEnds(db, trades, null),
     );
   },
 };
@@ -467,7 +529,7 @@ const MANIFEST_PAGES: Partial<Record<string, ManifestPage>> = {
 const FORMULA_START = /^[=+@\t\r\n]/;
 const PLAIN_NEGATIVE_NUMBER = /^-[\d.]+$/;
 
-/** One CSV cell, guarded against spreadsheet formula injection exactly like the legacy tradeCsv. */
+/** One CSV cell, guarded against spreadsheet formula injection exactly like the V1 CSV (`tradeCsv` at bc5441c). */
 export function csvCell(value: unknown): string {
   let text = value === null || value === undefined ? "" : Array.isArray(value) ? value.join("; ") : String(value);
   if (FORMULA_START.test(text) || (text.startsWith("-") && !PLAIN_NEGATIVE_NUMBER.test(text))) text = `'${text}`;
@@ -513,7 +575,7 @@ export async function exportResponse(db: SupabaseClient, user: ExportUser, param
       document.tables = await readTables(db, EXPORT_TABLES[request.part]);
       if (request.part === "evidence-manifest") {
         const [revisions, trades] = [await readTable(db, REVISIONS), await readTable(db, LEDGER, LEDGER_TIMING_COLUMNS)];
-        document.manifest = buildEvidenceManifest(document.tables, revisions, trades);
+        document.manifest = buildEvidenceManifest(document.tables, revisions, trades, await planEnds(db, trades, revisions));
       }
     }
     return new Response(JSON.stringify(document), { headers: exportHeaders("application/json; charset=utf-8", filename) });

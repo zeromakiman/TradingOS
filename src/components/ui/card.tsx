@@ -14,12 +14,14 @@ export function CardHeader({ className, ...props }: ComponentProps<"div">) {
 
 type HeadingLevel = "h2" | "h3" | "h4";
 
+// Titles and descriptions can carry user text, such as an account name of up to 100 characters without a space: a word
+// wider than its box breaks instead of widening the page (`break-words` leaves every other line break as it was).
 export function CardTitle({ as: Heading = "h2", className, ...props }: ComponentProps<"h2"> & { as?: HeadingLevel }) {
-  return <Heading className={cx("card-title", className)} {...props} />;
+  return <Heading className={cx("card-title break-words", className)} {...props} />;
 }
 
 export function CardDescription({ className, ...props }: ComponentProps<"p">) {
-  return <p className={cx("card-description", className)} {...props} />;
+  return <p className={cx("card-description break-words", className)} {...props} />;
 }
 
 export function CardBody({ className, ...props }: ComponentProps<"div">) {

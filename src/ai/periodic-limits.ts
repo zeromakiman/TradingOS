@@ -7,15 +7,20 @@ import type { PeriodicTradeSource } from "./periodic-facts";
  * refused as a whole, nothing is omitted. Whether a sample within them fits is decided by the conservative estimate of
  * the whole request (src/ai/request-estimate.ts) before anything is written or reserved: a sample that would not fit is
  * refused with its review's copy, and a month falls back to its deterministic summary. How much fits depends on the
- * trade count and on how much each trade records; with the densest realistic content (database ids and timestamps,
- * every text at its bound) the tests pin it at 95, 60 and 25 records for 10, 20 and 30 recent trades, 60 and 25 records
- * for a 10- and a 20-trade week, and 90 and 15 records for a detailed 10- and 30-trade month.
+ * trade count and on how much each trade records; with the densest realistic content (database ids and server times,
+ * every text at its bound, two strategy and two risk versions) the tests pin it at 139, 94 and 49 records for 10, 20 and
+ * 30 recent trades, 85 and 42 records for a 10- and a 20-trade week, and 130 and 38 records for a 10- and a 30-trade
+ * month (a detailed month reads at most `detailedRecords`). Typically journaled trades fit far more: the last 30 with
+ * up to 110 journal entries (the seeded traders' 80–95 measure 28.8k–30.1k of the 32k tokens).
  * `bytes` is 4 × the operation's input limit: the facts alone can never be larger than the request may be.
  */
 export const PERIODIC_V2_LIMITS = Object.freeze({
   WEEKLY_REVIEW: Object.freeze({ trades: 20, records: 70, bytes: 96_000 }),
-  /** Recent trades: the more trades requested, the fewer journal entries and events are read beside them. */
-  RECENT_TRADES_ANALYSIS: Object.freeze({ trades: 30, records: Object.freeze({ 10: 150, 20: 120, 30: 90 }), bytes: 128_000 }),
+  /**
+   * Recent trades: at most this many journal entries and events are read beside the requested trades. Thirty typically
+   * journaled trades (about three records each) fit one request, so 30 trades read as many records as 20 do.
+   */
+  RECENT_TRADES_ANALYSIS: Object.freeze({ trades: 30, records: Object.freeze({ 10: 150, 20: 120, 30: 120 }), bytes: 128_000 }),
   /**
    * Detailed mode lists up to `detailedTrades` trades and `detailedRecords` records when the whole request fits;
    * otherwise the month is the explicit deterministic summary of up to `trades` trades. Only a month that may be

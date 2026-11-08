@@ -76,18 +76,20 @@ describe("monthly owner-scoped bounded database selection", () => {
     const note = m.state.rows.trade_events.find(row => row.event_type === "NOTE_ADDED");
     m.state.rows.trade_events.push({ ...note, id: ids.image, plan_id: ids.image }, { ...note, id: ids.event, occurred_at: MONTH_END }, { ...note, id: ids.review, recorded_at: "2026-09-04T05:00:00.000Z" });
     const facts = detailed(await load());
-    expect(facts.trades[0].events.map(event => event.event_type)).toEqual(["NOTE_ADDED"]);
+    expect(facts.trades[0].events?.map(event => event.event_type)).toEqual(["NOTE_ADDED"]);
     expect(JSON.stringify(facts)).not.toContain("plan_id");
     expect(JSON.stringify(facts)).not.toMatch(/TRADE_OPENED|TRADE_CLOSED|PLAN_LOCKED/);
   });
 
   it("details journal entries with their timing and cites trades by their V2 identity", async () => {
     const facts = detailed(await load());
-    expect(facts.trades[0].journal.map(item => item.timing)).toEqual(["BEFORE_ENTRY", "WHILE_LIVE", "AFTER_CLOSE"]);
+    // Each journal entry is one row: [id, kind, recordedAt, timing, text, extra].
+    expect(facts.trades[0].journal?.map(row => row[3])).toEqual(["BEFORE_ENTRY", "WHILE_LIVE", "AFTER_CLOSE"]);
     const allowed = operationAllowedSources("MONTHLY_REVIEW", facts);
     expect(allowed.slice(0, 5)).toEqual(["period", "sample", "edge", "models", "sessions"]);
     expect(allowed).toContain(`trade:${tradeRecordId(2)}`);
-    expect(allowed).toContain(`journal:${facts.trades[2].journal[2].id}`);
+    expect(allowed).toContain(`journal:${facts.trades[2].journal?.[2][0]}`);
+    expect(facts).not.toHaveProperty("sourceManifest");
   });
 
   it("empty month reads no version, event or journal history", async () => {

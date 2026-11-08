@@ -51,7 +51,3 @@ export function scoreByQuery<T>(items: readonly T[], query: string, text: (item:
     .map(({ item, score }) => ({ item, score }));
 }
 
-/** Items matching `query`, best first. */
-export function rankByQuery<T>(items: readonly T[], query: string, text: (item: T) => string): T[] {
-  return scoreByQuery(items, query, text).map((entry) => entry.item);
-}

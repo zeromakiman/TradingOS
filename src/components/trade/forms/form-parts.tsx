@@ -98,15 +98,21 @@ export function GroupError({ id, message }: { id: string; message: string | unde
   );
 }
 
-/** `FTMO 100K · USD`: the form header repeats the account and its currency (spec §9.2). */
+/**
+ * `FTMO 100K · USD`: the form header repeats the account and its currency (spec §9.2). Account names run up to 100
+ * characters: the chip shrinks beside the header's back link instead of widening the page (`min-w-0`), a long name ends
+ * in an ellipsis with the whole name in its tooltip, and the currency stays.
+ */
 export function AccountChip({ name, currency, className }: { name: string; currency: string; className?: string }) {
   return (
-    <span className={cx("inline-flex max-w-full items-center gap-1.5 rounded-pill border border-border-strong bg-surface px-3 py-1 font-medium text-sm text-text", className)}>
-      <span className="truncate">{name}</span>
-      <span aria-hidden="true" className="text-text-3">
+    <span className={cx("inline-flex max-w-full min-w-0 items-center gap-1.5 rounded-pill border border-border-strong bg-surface px-3 py-1 font-medium text-sm text-text", className)}>
+      <span className="truncate" title={name}>
+        {name}
+      </span>
+      <span aria-hidden="true" className="flex-none text-text-3">
         ·
       </span>
-      <span className="text-text-2">{currency}</span>
+      <span className="flex-none text-text-2">{currency}</span>
     </span>
   );
 }

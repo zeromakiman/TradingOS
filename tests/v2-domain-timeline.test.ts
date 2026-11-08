@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { LEDGER_COLUMNS, type LedgerTrade } from "@/domain/ledger";
 import type { ExplainLookup } from "@/domain/risk-explain";
 import {
-  buildTimeline, type CheckExplainLookup, classifyTiming, evidenceName, groupByTiming, inferStoredPhase, legacyEvidenceLabel, type TimelineInputs, type TimingInput,
+  buildTimeline, type CheckExplainLookup, classifyTiming, evidenceName, groupByTiming, inferStoredPhase, legacyEvidenceLabel, type TimelineInputs, type TimelineLegacyDecision,
+  type TimingInput,
 } from "@/domain/timeline";
 
 function ledger(changes: Partial<LedgerTrade> = {}): LedgerTrade {
@@ -272,7 +273,10 @@ describe("buildTimeline (spec §5.4)", () => {
     expect(utc.find(item => item.kind === "ENTRY")?.timeLabel).toBe("12:45 · recorded 13:20");
     const lateEntry = { ...closedPlanned, entered_at: "2026-09-04T21:00:00Z", entry_recorded_at: "2026-09-05T02:00:00Z" };
     expect(buildTimeline({ trade: lateEntry }).find(item => item.kind === "ENTRY")?.timeLabel).toBe("16:00 · recorded 21:00");
-    expect(buildTimeline({ trade: lateEntry }, { mode: "utc" }).find(item => item.kind === "ENTRY")?.timeLabel).toBe("21:00 · recorded Sep 5, 02:00");
+    // Recorded on another day: both times carry their day, so the entry is never read as made on the recording day.
+    expect(buildTimeline({ trade: lateEntry }, { mode: "utc" }).find(item => item.kind === "ENTRY")?.timeLabel).toBe("Sep 4, 21:00 · recorded Sep 5, 02:00");
+    const imported = ledger({ origin: "IMPORTED", created_at: "2026-10-31T01:34:00Z", entered_at: "2026-09-15T08:15:00Z", entry_recorded_at: "2026-10-31T01:34:00Z" });
+    expect(buildTimeline({ trade: imported }).find(item => item.kind === "ENTRY")?.timeLabel).toBe("Sep 15, 03:15 · recorded Oct 30, 20:34");
   });
 
   it("orders equal times by id deterministically, whatever the input order", () => {
@@ -361,6 +365,79 @@ describe("timeline of a plan that ended without an entry (spec §5.3)", () => {
   });
 });
 
+describe("decisions recorded in V1 (setup_human_decisions)", () => {
+  const DECIDED = {
+    skipEarly: "00000000-0000-4000-8000-000000000401", taken: "00000000-0000-4000-8000-000000000402", skip: "00000000-0000-4000-8000-000000000403",
+    override: "00000000-0000-4000-8000-000000000404", late: "00000000-0000-4000-8000-000000000405",
+  };
+  const decision = (id: string, changes: Partial<TimelineLegacyDecision>): TimelineLegacyDecision => ({
+    id, decision: "SKIPPED", eventType: "HUMAN_DECISION", reason: null, riskDecision: "APPROVED", aiDecision: "NOT_EVALUATED", recordedAt: "2026-09-04T12:30:00Z", ...changes,
+  });
+  const SKIPPED_AT = "2026-09-04T13:00:00Z";
+  const skippedDraft = ledger({ lifecycle: "SKIPPED", legacy_decision: "SKIPPED" });
+
+  it("shows each decision with the trader's reason, and keeps the skip that ended the plan Before entry", () => {
+    const items = buildTimeline({
+      trade: skippedDraft,
+      revisions: [{ proposalId: ID.rev1, revision: 1, createdAt: "2026-09-04T12:00:00Z" }],
+      legacyDecisions: [
+        decision(DECIDED.skip, { reason: "Spread widened to 3 pips at the London open, so I passed on it.", riskDecision: "BLOCKED", recordedAt: SKIPPED_AT }),
+        decision(DECIDED.skipEarly, { recordedAt: "2026-09-04T12:10:00Z" }),
+        decision(DECIDED.taken, { decision: "TAKEN", reason: "   ", recordedAt: "2026-09-04T12:20:00Z" }),
+      ],
+      // A V1 screenshot of where price went, uploaded after the skip.
+      evidence: [{ kind: "LEGACY", id: ID.h4, role: "H4", recordedAt: "2026-09-04T13:20:00Z" }],
+      planEndedAt: SKIPPED_AT,
+    });
+    expect(items.map(item => [item.kind, item.title, item.body ?? null, item.timing, item.flags])).toEqual([
+      ["DRAFT_REVISION", "Draft created", null, "BEFORE_ENTRY", []],
+      ["LEGACY_DECISION", "Decision: Skipped", null, "BEFORE_ENTRY", []],
+      ["LEGACY_DECISION", "Decision: Taken", null, "BEFORE_ENTRY", []],
+      ["LEGACY_DECISION", "Decision: Skipped", "Spread widened to 3 pips at the London open, so I passed on it.", "BEFORE_ENTRY", []],
+      ["EVIDENCE_ADDED", "H4 chart added", null, "AFTER_CLOSE", []],
+    ]);
+    // V1 records share the `event:` source; the verdicts it was recorded against stay in the item's details.
+    expect(items[3]).toMatchObject({
+      id: `event:${DECIDED.skip}`, source: `event:${DECIDED.skip}`, at: SKIPPED_AT, recordedAt: SKIPPED_AT,
+      details: { decision: "SKIPPED", eventType: "HUMAN_DECISION", riskDecision: "BLOCKED", aiDecision: "NOT_EVALUATED" },
+    });
+  });
+
+  it("says Taken despite a block for a V1 manual override, and classifies decisions by their recording time", () => {
+    const live = ledger({
+      plan_id: ID.plan, locked_at: "2026-09-04T12:30:00Z", lifecycle: "LIVE", legacy_decision: "TAKEN", entered_at: "2026-09-04T12:45:00Z",
+      entry_recorded_at: "2026-09-04T13:20:00Z", entry_price: "1.1",
+    });
+    const items = buildTimeline({
+      trade: live,
+      legacyDecisions: [
+        decision(DECIDED.override, { decision: "TAKEN", eventType: "MANUAL_OVERRIDE", reason: "Took it anyway: news was priced in.", riskDecision: "BLOCKED", aiDecision: "BLOCKED", recordedAt: "2026-09-04T12:25:00Z" }),
+        // Recorded after the reported (earlier) entry time but before the entry was recorded: flagged like any such record.
+        decision(DECIDED.late, { decision: "TAKEN", recordedAt: "2026-09-04T12:50:00Z" }),
+      ],
+    });
+    const byId = Object.fromEntries(items.map(item => [item.id, item]));
+    expect(byId[`event:${DECIDED.override}`]).toMatchObject({
+      kind: "LEGACY_DECISION", title: "Taken despite a block", body: "Took it anyway: news was priced in.", timing: "BEFORE_ENTRY", flags: [],
+      details: { decision: "TAKEN", eventType: "MANUAL_OVERRIDE", riskDecision: "BLOCKED", aiDecision: "BLOCKED" },
+    });
+    expect(byId[`event:${DECIDED.late}`]).toMatchObject({ title: "Decision: Taken", timing: "WHILE_LIVE", flags: ["RECORDED_AFTER_EXECUTION_BEGAN"] });
+  });
+
+  it("moves a decision recorded after a plan ended some other way to After close", () => {
+    const cancelled = ledger({ plan_id: ID.plan, locked_at: "2026-09-04T12:30:00Z", lifecycle: "CANCELLED", disposition: "CANCELLED", legacy_decision: "SKIPPED" });
+    const items = buildTimeline({
+      trade: cancelled,
+      disposition: { status: "CANCELLED", reason: "News.", recordedAt: "2026-09-04T12:40:00Z" },
+      legacyDecisions: [decision(DECIDED.skip, { recordedAt: SKIPPED_AT })],
+      planEndedAt: "2026-09-04T12:40:00Z",
+    });
+    expect(items.map(item => [item.kind, item.timing, item.flags])).toEqual([
+      ["PLAN_LOCKED", "BEFORE_ENTRY", []], ["DISPOSITION", "BEFORE_ENTRY", []], ["LEGACY_DECISION", "AFTER_CLOSE", []],
+    ]);
+  });
+});
+
 describe("decision history in causal order (spec §5.4)", () => {
   const PROP1 = "00000000-0000-4000-8000-000000000101";
   const PROP2 = "00000000-0000-4000-8000-000000000102";
@@ -403,6 +480,34 @@ describe("decision history in causal order (spec §5.4)", () => {
     // recorded before the lock.
     const early = { ...inputs, riskChecks: [{ id: EVAL_LOCK, proposalId: PROP2, recordedAt: "2026-10-24T15:02:54.600000+00:00", decision: "APPROVED" as const }] };
     expect(buildTimeline(early).slice(-2).map(item => item.id)).toEqual([`check:${EVAL_LOCK}`, `plan:${ID.plan}`]);
+  });
+
+  it("keeps the lock and the evaluation that authorised it Before entry when the entry is reported at the lock instant", () => {
+    // An "Earlier" entry typed in the lock's minute is stored at locked_at itself (the database accepts entered_at =
+    // locked_at); the lock's evaluation is written ~17 ms after locked_at. A note stored pre-entry after that entry
+    // time is still flagged: only the records of the lock itself precede every entry by definition.
+    const note = "00000000-0000-4000-8000-000000000301";
+    const live = {
+      ...locked, lifecycle: "LIVE" as const, entered_at: locked.locked_at, entry_recorded_at: "2026-10-24T15:09:00.000000+00:00", entry_price: "1.1", quantity: "0.5",
+    };
+    const items = buildTimeline({
+      ...inputs, trade: live,
+      journal: [{ id: note, kind: "NOTE", body: "Filled on the retest.", details: {}, phase: "PRE_ENTRY", recordedAt: "2026-10-24T15:05:00.000000+00:00" }],
+    });
+    expect(groupByTiming(items).map(group => [group.label, group.items.map(item => [item.id, item.flags])])).toEqual([
+      ["Before entry", [
+        [`revision:${PROP1}`, []], [`check:${EVAL_SAVE1}`, []], [`check:${EVAL_MANUAL}`, []], [`revision:${PROP2}`, []], [`check:${EVAL_SAVE2}`, []],
+        [`check:${EVAL_LOCK}`, []], [`plan:${ID.plan}`, []],
+      ]],
+      ["While live", [[`entry:${live.id}`, []], [`journal:${note}`, ["RECORDED_AFTER_EXECUTION_BEGAN"]]]],
+      ["After close", []],
+    ]);
+    // The evaluation keeps the time it was recorded; only its band and place follow the lock.
+    expect(items.find(item => item.id === `check:${EVAL_LOCK}`)).toMatchObject({ at: "2026-10-24T15:02:54.626000+00:00", title: "Risk check: Approved" });
+    // Control: a check nothing names as the lock's evaluation is classified by its own time.
+    const unnamed = buildTimeline({ ...inputs, trade: live, lockEvaluationId: null });
+    expect(unnamed.find(item => item.id === `check:${EVAL_LOCK}`)).toMatchObject({ timing: "WHILE_LIVE", flags: ["RECORDED_AFTER_EXECUTION_BEGAN"] });
+    expect(unnamed.find(item => item.id === `plan:${ID.plan}`)).toMatchObject({ timing: "BEFORE_ENTRY", flags: [] });
   });
 
   it("orders seeded records written at one instant causally too, deterministically", () => {

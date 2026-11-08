@@ -193,16 +193,6 @@ export async function uploadStagedBatch(
   });
 }
 
-/** Short status line of a staged item for its card. */
-export function stagedStatusText(item: Pick<StagedEvidence, "status" | "error">): string {
-  switch (item.status) {
-    case "staged": return "Ready to save";
-    case "uploading": return "Uploading…";
-    case "uploaded": return "Saved";
-    case "failed": return item.error ?? "Not saved. Try again.";
-  }
-}
-
 /** Polite announcement after images were staged from the stager's own controls. */
 export function stagedAnnouncement(added: number, errors: number): string {
   const parts: string[] = [];

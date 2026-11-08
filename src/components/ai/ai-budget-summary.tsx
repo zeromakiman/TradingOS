@@ -52,6 +52,11 @@ export interface AiBudgetSummaryProps {
    * sending the trader to Settings. Every other placement keeps the default.
    */
   inSettings?: boolean;
+  /**
+   * The account is archived: Settings → AI shows it read-only until it is restored, so the copy sends the trader to
+   * Manage account (where Restore lives) to turn AI on or raise the limit.
+   */
+  archived?: boolean;
   className?: string;
 }
 
@@ -97,22 +102,26 @@ export const HELD_RESERVATION_REASON =
   "An earlier AI request ended without a confirmed cost, so the amount held for it stays in place. Nothing beyond that amount was charged. AI requests for this account are paused until an accounting review confirms the cost or releases the hold.";
 const OFF_REASON = "AI is off for this account. Nothing is sent until you turn it on in Settings → AI.";
 const OFF_REASON_IN_SETTINGS = "AI is off for this account. Nothing is sent until you turn it on below.";
+const OFF_REASON_ARCHIVED = "AI is off for this account. It is archived, so restore it in Manage account first, then turn AI on in Settings → AI.";
+const LIMIT_REACHED_ARCHIVED =
+  "This month's budget can't cover another AI request. New requests are blocked until it resets; the account is archived, so restore it in Manage account to raise the limit.";
 
 /**
  * The one status chip and its reason. Uncertainty wins over everything because it pauses requests until it is
  * resolved. "Limit reached" also covers a remainder too small for the cheapest request, and "Unavailable" expired
- * pricing, so the chip never says On while every AI button is disabled.
+ * pricing, so the chip never says On while every AI button is disabled. An archived account's AI settings change only
+ * after it is restored (`archived`).
  */
-export function aiBudgetStatus(budget: AiBudgetModel, now: Date = new Date(), options: { inSettings?: boolean } = {}): AiBudgetStatusModel {
+export function aiBudgetStatus(budget: AiBudgetModel, now: Date = new Date(), options: { inSettings?: boolean; archived?: boolean } = {}): AiBudgetStatusModel {
   const { snapshot, presentation } = budget;
   if (!snapshot || !presentation) return { label: "Unavailable", tone: "muted", reason: budget.error ?? UNAVAILABLE };
   if (snapshot.uncertain) return { label: "Paused — needs review", tone: "warning", reason: HELD_RESERVATION_REASON };
-  if (!snapshot.enabled) return { label: "Off", tone: "neutral", reason: options.inSettings ? OFF_REASON_IN_SETTINGS : OFF_REASON };
+  if (!snapshot.enabled) return { label: "Off", tone: "neutral", reason: options.archived ? OFF_REASON_ARCHIVED : options.inSettings ? OFF_REASON_IN_SETTINGS : OFF_REASON };
   if (budget.system.status !== "ENABLED") return { label: "Unavailable", tone: "muted", reason: budget.error ?? UNAVAILABLE };
   const smallest = smallestRequestMicros(now);
   if (smallest === null) return { label: "Unavailable", tone: "muted", reason: `${PRICING_UNAVAILABLE} Other Trading OS workflows are unaffected.` };
   const exhausted = snapshot.usedMicros + snapshot.heldMicros >= snapshot.budgetCents * MICROS_PER_CENT;
-  if (exhausted || presentation.remainingMicros < smallest) return { label: "Limit reached", tone: "warning", reason: LIMIT_REACHED };
+  if (exhausted || presentation.remainingMicros < smallest) return { label: "Limit reached", tone: "warning", reason: options.archived ? LIMIT_REACHED_ARCHIVED : LIMIT_REACHED };
   return { label: "On", tone: "positive", reason: null };
 }
 
@@ -239,8 +248,8 @@ function BudgetDetails({ budget, display }: { budget: AiBudgetModel; display: Ti
   );
 }
 
-export function AiBudgetSummary({ accountName, budget, compact = false, timeDisplay = STRATEGY_TIME, now, inSettings = false, className }: AiBudgetSummaryProps) {
-  const status = aiBudgetStatus(budget, now, { inSettings });
+export function AiBudgetSummary({ accountName, budget, compact = false, timeDisplay = STRATEGY_TIME, now, inSettings = false, archived = false, className }: AiBudgetSummaryProps) {
+  const status = aiBudgetStatus(budget, now, { inSettings, archived });
   const chip = (
     <StatusPill tone={status.tone} data-budget-status={status.label}>
       {status.label}
@@ -250,7 +259,7 @@ export function AiBudgetSummary({ accountName, budget, compact = false, timeDisp
     const amounts = budget.snapshot && budget.presentation ? aiBudgetAmounts(budget.snapshot, budget.presentation.remainingMicros) : "Usage unavailable";
     return (
       <p className={cx("flex flex-wrap items-center gap-x-2 gap-y-1", className)}>
-        <span className="font-medium text-text">{accountName}</span>
+        <span className="min-w-0 font-medium text-text wrap-anywhere">{accountName}</span>
         <span className="t-meta num">{amounts}</span>
         {chip}
       </p>
@@ -261,7 +270,7 @@ export function AiBudgetSummary({ accountName, budget, compact = false, timeDisp
     <section aria-label={`AI budget · ${accountName}`} className={cx("card", className)}>
       <div className="card-body flex flex-col gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="font-semibold text-text">{accountName}</p>
+          <p className="min-w-0 font-semibold text-text wrap-anywhere">{accountName}</p>
           {chip}
         </div>
         <p className="t-meta num">{aiBudgetUsageText(budget)}</p>

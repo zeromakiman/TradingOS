@@ -20,9 +20,18 @@ Keep the **Reset password** email template's normal `{{ .ConfirmationURL }}` lin
 
 ## Session/security design
 
-`requestPasswordRecovery` uses the existing writable Supabase SSR cookie adapter and `resetPasswordForEmail`. The SDK stores the PKCE verifier cookie. `/update-password` is reachable before authentication so it can establish the recovery session; it exposes no trading data. It removes callback values from the browser URL, then calls a server action to exchange a PKCE code or validate legacy dashboard recovery fragments with `setSession`. Supabase `getUser` verifies the resulting session before the password form is enabled.
+This section describes the V2 code (`src/app/password-actions.ts`, `src/lib/password-recovery.ts`, `src/components/password-recovery.tsx`).
 
-The password submission independently calls `getUser`, then `updateUser({ password })` using the user's session. It does not use an administrative password-update API. It requests global sign-out, clears local auth cookies and redirects only to `/login?reason=password_updated`. Existing authenticated users may also use this page; possession of a URL alone does not authorize an update. Supabase may require a fresh recovery session under stricter project policies.
+`requestPasswordRecovery` uses the existing writable Supabase SSR cookie adapter and `resetPasswordForEmail`. The SDK stores the PKCE verifier cookie (HttpOnly, like every Supabase auth cookie the server writes: `src/lib/cookie-security.ts`). `/update-password` is reachable before authentication so it can establish the recovery session; it exposes no trading data. It removes callback values from the browser URL (and tells the Next.js router the clean address, so a reload never reuses a spent code), then calls a server action:
+
+- A PKCE link (`?code=`) is the only accepted link. The action exchanges the code; the code's sign-in keeps only All Accounts and the person's own account ids in the trading-account context cookies (`keepOwnAccountContext`).
+- A link carrying session tokens (`#access_token=…&refresh_token=…`, in the fragment or the query) is never adopted: the page says "Trading OS no longer accepts this kind of recovery link…" and links to Forgot password, without contacting the server. `token_hash`/`token` links and error parameters are refused as invalid as well.
+- The form is enabled only for a session that a recovery link started within the last 15 minutes: `getUser` validates the session first, then `getClaims` must show an `amr` entry `{method: "recovery"}` whose timestamp is from the last 15 minutes (`isRecentRecovery`).
+- A signed-in visitor without such a session sees "Change your password in Settings", with a button to Settings → Security (which asks for the current password) and a Forgot password link.
+
+The password submission checks the 15-minute recovery session again, because the action can be called directly: any other session gets "Your password was not changed…" and nothing is changed (no `updateUser`, no sign-out, no cookie cleanup). Otherwise it calls `updateUser({ password })` with the user's session, never an administrative password-update API, requests global sign-out, clears the local auth cookies and both trading-account context cookies (`tos_account`, `tos_last_account`), and redirects only to `/login?reason=password_updated`. Possession of a URL alone does not authorize an update.
+
+Hosted assumption, to verify on the hosted project before release: GoTrue's PKCE exchange of a recovery link issues `amr: [{method: "recovery", timestamp}]` (from the flow state's authentication method) and keeps it across refreshes; the local gateway does the same. A custom access-token hook that rewrites `amr` into strings would disable recovery.
 
 Server secrets never enter browser code. Passwords, codes, session tokens and provider error payloads are not logged or returned as diagnostics. Recovery responses are private/no-store; the callback uses `Referrer-Policy: no-referrer`. Invalid/expired callback input cannot fall back to an existing session. A later refresh without callback credentials still requires a valid authenticated session. No caller-controlled return URL is used. Existing trading authorization, RLS and AI-disabled behavior are unchanged.
 
@@ -30,7 +39,7 @@ PKCE recovery must finish in the browser/device that holds the verifier cookie. 
 
 ## Verification scope
 
-Local checks: 370 tests pass (325 existing plus 45 focused recovery/proxy checks), TypeScript passes, lint has no errors/warnings, and the production build passes. Live isolated-user acceptance covers recovery requests and PKCE verifier cookies, real Supabase recovery-session establishment, mismatch, password update, old-password rejection, new-password sign-in and signed-out route protection. Test credentials are rotated only for the existing isolated test user and kept in ignored local files.
+V1 local checks (when this flow was released): 370 tests passed (325 existing plus 45 focused recovery/proxy checks), TypeScript passed, lint had no errors/warnings, and the production build passed. V2 covers the rules above in `tests/password-recovery.test.ts` (recovery window with a pinned clock, token links, ordinary and old sessions refused with nothing changed, context cookies cleared), `tests/v2-screen-auth.test.ts` (each page state), `tests/v2-supabase-server-cookies.test.ts` (HttpOnly/Secure session and PKCE verifier cookies through the real `@supabase/ssr`) and `tests/v2-proxy.test.ts`. Live isolated-user acceptance covers recovery requests and PKCE verifier cookies, real Supabase recovery-session establishment, mismatch, password update, old-password rejection, new-password sign-in and signed-out route protection. Test credentials are rotated only for the existing isolated test user and kept in ignored local files.
 
 The generated-link acceptance uses a real Supabase recovery token without relying on mailbox delivery. It does not claim that an email was delivered to the user's inbox or that a mailed PKCE link was clicked. Final hosted results and dashboard status are recorded in `PASSWORD_RECOVERY_VERIFICATION.json`. A personal inbox check should request one new email and follow it in the same browser; never paste a password or recovery link into chat.
 
@@ -43,7 +52,7 @@ AI remains `AI_ENABLED=false`; production requires no OpenAI key and no paid Ope
 - `src/app/password-actions.ts`: reset request, verified recovery session and authenticated password update.
 - `src/components/password-recovery.tsx`, `src/lib/password-recovery.ts`: callback parsing, URL cleanup and form/session states.
 - `src/proxy.ts`, `next.config.ts`: recovery entry access, private caching and callback referrer policy.
-- `tests/password-recovery.test.ts`, `tests/audit-routes.test.ts`: focused recovery and protected-route tests.
+- `tests/password-recovery.test.ts`, `tests/audit-routes.test.ts`: focused recovery and protected-route tests (V2 adds `tests/v2-screen-auth.test.ts`, `tests/v2-supabase-server-cookies.test.ts` and `tests/v2-proxy.test.ts`).
 - `docs/DEPLOYMENT.md`, `docs/PRODUCTION_DEPLOYMENT.md`, this guide and `docs/PASSWORD_RECOVERY_VERIFICATION.json`: operational instructions and recorded verification.
 
 No application dependencies, database migrations, trading logic or AI settings changed. Ignored `.local/` helpers performed acceptance and retained test credentials; they were not deployed.

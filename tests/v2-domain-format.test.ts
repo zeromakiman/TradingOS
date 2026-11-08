@@ -1,8 +1,8 @@
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
-  formatAgainst, formatDecimal, formatMoney, formatMoneyAgainst, formatMoneyExact, formatPercent, formatPrice, formatQuantity, formatR,
-  formatSignedMoney, formatSignedMoneyList, plural, scaleOf, stripZeros,
+  formatAgainst, formatDecimal, formatMoney, formatMoneyAgainst, formatMoneyExact, formatMoneyUp, formatPercent, formatPrice, formatQuantity,
+  formatR, formatSignedMoney, formatSignedMoneyList, plural, scaleOf, stripZeros,
 } from "@/domain/format";
 
 const SQL_98 = "98.00000000000000000000000000000000";
@@ -176,6 +176,13 @@ describe("money (spec §6.6, §9.3)", () => {
     expect(formatMoneyAgainst("50.001", "50", "USD", "max", false)).toBe("$50.01");
     expect(formatMoneyAgainst("49.996", "49.995", "USD", "max", false)).toBe("$49.996");
     expect(formatMoneyAgainst("100", "100", "USD", "min", true)).toBe("$100.00");
+  });
+
+  it("states money at risk rounded up to the cent, never understated (§6.6)", () => {
+    expect(formatMoneyUp("530.452", "USD")).toBe("$530.46");
+    expect(formatMoneyUp("530.45", "USD")).toBe("$530.45");
+    expect(formatMoneyUp(new Decimal("1061.6901"), "EUR")).toBe("€1,061.70");
+    expect(formatMoneyUp(SQL_98, "USD")).toBe("$98.00");
   });
 
   it("rejects invalid currency codes", () => {

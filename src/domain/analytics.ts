@@ -5,7 +5,6 @@ import { strategyClock } from "./session";
 const D = Decimal.clone({ precision: 40 });
 export const grades = ["A+", "A", "B", "C", "INVALID"] as const;
 export const liquidityTypes = ["ARL_HIGH", "ARL_LOW", "PDH", "PDL", "PWH", "PWL", "KZ_HIGH", "KZ_LOW", "EQUAL_HIGHS", "EQUAL_LOWS", "OTHER"] as const;
-export const sessions = ["JUDAS", "ACTIVE_KILL_ZONE", "DEAD_POOL", "ASIAN_RANGE", "OTHER"] as const;
 export const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 const numeric = z.string().refine(v => /^-?\d+(\.\d+)?$/.test(v) && new D(v).isFinite(), "Invalid stored decimal");
 export const journalRow = z.object({
@@ -93,15 +92,4 @@ export function groups(rows:EnrichedTrade[],key:(t:EnrichedTrade)=>string,expect
  const grouped=new Map<string,EnrichedTrade[]>(expected.map(k=>[k,[]]));
  for(const t of rows.filter(x=>x.status==="CLOSED")){const k=key(t),group=grouped.get(k)??[];group.push(t);grouped.set(k,group);}
  return [...grouped].map(([name,trades])=>({name,...metrics(trades)}));
-}
-export function realizedR(input:{direction:"LONG"|"SHORT";entry:string;exit:string;quantity:string;tickSize:string;tickValue:string;initialRisk:string;fees:string}){
- for(const k of ["entry","exit","quantity","tickSize","tickValue","initialRisk"] as const)if(!new D(input[k]).isFinite()||new D(input[k]).lte(0))throw new Error("Positive finite values required");
- if(!new D(input.fees).isFinite()||new D(input.fees).lt(0))throw new Error("Nonnegative finite fees required");
- const pnl=new D(input.exit).minus(input.entry).mul(input.direction==="LONG"?1:-1).div(input.tickSize).mul(input.tickValue).mul(input.quantity).minus(input.fees);
- return {realizedR:pnl.div(input.initialRisk).toFixed(),outcome:pnl.gt(0)?"WIN":pnl.lt(0)?"LOSS":"BREAKEVEN"};
-}
-export function tradeCsv(rows:EnrichedTrade[]){
- const fields=["instrument","entry_model","direction","status","strategy_version","risk_plan_version","planned_entry","initial_stop","entry_price","quantity","entered_at","exit_price","exited_at","fees","initial_risk","risk_percent","net_pnl","realized_r","outcome","session","weekday","dailySequence","setup_grade","liquidity_context","mss_timeframe","tag_source"] as const;
- const cell=(value:unknown)=>{let s=String(value??"");if(/^[=+@\t\r]/.test(s)||(/^-/.test(s)&&!/^-[\d.]+$/.test(s)))s=`'${s}`;return `"${s.replaceAll('"','""')}"`;};
- return [fields.join(","),...rows.map(t=>fields.map(f=>cell(t[f])).join(","))].join("\r\n");
 }
