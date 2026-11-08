@@ -4,7 +4,7 @@
 |---|---|
 | Branch | `ui/claude-v2` |
 | Base (V1 production release) | `bc5441c09caf215de8e77d9e6f670af7266cca56` |
-| Final commit | ⟦FINAL: commit⟧pending⟦/FINAL⟧ |
+| Final commit | `ab2e1bd4cc30ece522eb712b400f58bd713c5878` |
 | Design of record | [V2_ARCHITECTURE.md](V2_ARCHITECTURE.md), cited as **ARCH §n** |
 | Known gaps with designs | [V2_1_GAPS.md](V2_1_GAPS.md), cited as **GAPS §n** |
 | Deployment runbook | [DEPLOYMENT.md](DEPLOYMENT.md), cited as **DEPLOY** |
@@ -1265,7 +1265,7 @@ local mock AI; charts inside screenshots are stamped "Synthetic chart"). Index w
 
 ## 46. Final commit
 
-⟦FINAL: commit⟧pending⟦/FINAL⟧ on `ui/claude-v2` holds everything delivered. The branch tip is the commit after it, which only
+`ab2e1bd4cc30ece522eb712b400f58bd713c5878` on `ui/claude-v2` holds everything delivered. The branch tip is the commit after it, which only
 records this hash and the bundle path here and in [V2_VERIFICATION.json](V2_VERIFICATION.json).
 
 History since the base (`git log --oneline bc5441c..HEAD`):
@@ -1281,10 +1281,10 @@ History since the base (`git log --oneline bc5441c..HEAD`):
 | `4215b24` | 2026-11-08 | Review findings fixed and verified |
 | `87e8d2f` | 2026-11-08 | Archived-account guards, connections, weekly-review capacity, UI audit fixes, performance |
 | `4cbd03d` | 2026-11-08 | Archived-account AI off, linked-plan guard, bounded charts and exit sorts, report draft |
-| ⟦FINAL: commit⟧pending⟦/FINAL⟧ | ⟦FINAL: commit date⟧pending⟦/FINAL⟧ | ⟦FINAL: commit content⟧pending⟦/FINAL⟧ |
+| `ab2e1bd4cc30ece522eb712b400f58bd713c5878` | 2026-11-08T20:50:46Z | all V2 code, migrations, tests, documentation and the published screens |
 
 **Delivery.** The build environment has no push rights to `github.com/zeromakiman/TradingOS`; its stored credential can
-only pull. The branch is therefore delivered as a git bundle: ⟦FINAL: bundle path⟧pending⟦/FINAL⟧. In a clone of the
+only pull. The branch is therefore delivered as a git bundle, `TradingOS-ui-claude-v2.bundle`, which holds `ui/claude-v2` from `bc5441c` to the tip. In a clone of the
 repository that contains `bc5441c`:
 
 ```sh
