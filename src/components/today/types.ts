@@ -1,3 +1,4 @@
+import type { OverviewFigures, OverviewRange } from "@/domain/all-accounts-overview";
 import type { TimeDisplay } from "@/domain/time-display";
 
 /**
@@ -310,6 +311,16 @@ export interface TodayView {
   /** Nothing live, waiting or closed today: the two large actions lead. */
   empty: boolean;
   newTradeHrefs: { plan: string; live: string };
+  /** All Accounts only (V2.1): the combined overview between the header and the session ribbon. */
+  overview?: OverviewState | null;
+}
+
+/** The All Accounts overview of one request; `figures` is null when it could not be read. */
+export interface OverviewState {
+  range: OverviewRange;
+  figures: OverviewFigures | null;
+  /** `?currency=` of the chart; the first currency when it names none of the period's. */
+  currency: string | null;
 }
 
 /** What the Today route renders. */

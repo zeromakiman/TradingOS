@@ -3,10 +3,12 @@ import { z } from "zod";
 import type { Instrument } from "@/domain/risk";
 import { type ExplainLookup, explainReport } from "@/domain/risk-explain";
 import { storedRiskSchema } from "@/domain/risk-report";
+import { allAccountsOverview, type OverviewFigures, type OverviewRange, overviewBounds, parseOverviewRange } from "@/domain/all-accounts-overview";
 import { strategyDayLabel } from "@/domain/time-display";
 import { type BlockingFinding, blockingFindingsOf, reasonWithCount, withBlockingFindings } from "@/domain/trade-state";
 import { currentSession, type Db, getAccountContext, getPreferences } from "@/lib/account-context";
 import { operationalFailure } from "@/lib/operational-log";
+import { loadLedgerRows } from "@/lib/performance-data";
 import { getToday, type TodayData } from "@/lib/today-data";
 import { inBatches, type TradeListRow } from "@/lib/trades-data";
 import { INSTRUMENT_SELECT, parseInstrumentRows, parseRiskPlanRow, RISK_PLAN_SELECT, toInstrument } from "@/lib/workspace";
@@ -175,8 +177,32 @@ export async function loadLiveManagement(db: Db, userId: string, data: TodayData
   return summarizeManagement(rows);
 }
 
+/**
+ * All Accounts overview (V2.1): every account's closed trades exiting in the period (trashed trades never reach the
+ * ledger read), with the active accounts' latest recorded balances. More than the read limit leaves every figure unknown.
+ */
+export async function loadAllAccountsOverview(db: Db, userId: string, data: TodayData, range: OverviewRange): Promise<OverviewFigures> {
+  const { from, to } = overviewBounds(range, data.day);
+  const loaded = await loadLedgerRows(db, userId, { mode: "all" }, { ...(from ? { closedFrom: from } : {}), closedTo: to }, { closedOnly: true });
+  return allAccountsOverview({
+    range, today: data.day, trades: loaded.rows, truncated: loaded.truncated,
+    accounts: data.context.accounts.map(account => ({ id: account.id, name: account.name, currency: account.currency, status: account.status })),
+    balances: data.accounts.flatMap(status => {
+      const observation = status.workspace.observation;
+      return observation ? [{ accountId: status.account.id, currency: status.account.currency, balance: observation.balance, day: observation.tradingDay }] : [];
+    }),
+  });
+}
+
+export interface TodayPageOptions {
+  /** `?range=` of the All Accounts overview. */
+  range?: string | string[];
+  /** `?currency=` of the overview's chart (several currencies). */
+  currency?: string | string[];
+}
+
 /** Today of the request's account context. */
-export async function loadTodayPage(): Promise<TodayPage> {
+export async function loadTodayPage(options: TodayPageOptions = {}): Promise<TodayPage> {
   const context = await getAccountContext();
   const dayLabel = strategyDayLabel(new Date());
   if (context.accounts.length === 0) return { kind: "onboarding", dayLabel };
@@ -193,11 +219,17 @@ export async function loadTodayPage(): Promise<TodayPage> {
       return new Map<string, LiveManagement>();
     }),
   ]);
-  return {
-    kind: "today",
-    view: buildTodayView({
-      data: withBlockedPlanActions(data, extras.blockingFindings), display: preferences.timeDisplay, instruments: extras.instruments,
-      blockingReasons: extras.blockingReasons, management, requestKey: () => crypto.randomUUID(),
-    }),
-  };
+  const view = buildTodayView({
+    data: withBlockedPlanActions(data, extras.blockingFindings), display: preferences.timeDisplay, instruments: extras.instruments,
+    blockingReasons: extras.blockingReasons, management, requestKey: () => crypto.randomUUID(),
+  });
+  // The overview shows only in All Accounts; one account's Today is unchanged. A failed read leaves Today as it was.
+  if (data.context.selected.mode !== "all") return { kind: "today", view };
+  const range = parseOverviewRange(options.range);
+  const currency = (Array.isArray(options.currency) ? options.currency[0] : options.currency)?.toUpperCase() ?? null;
+  const figures = await loadAllAccountsOverview(db, user.id, data, range).catch(() => {
+    operationalFailure("data_read_failed");
+    return null;
+  });
+  return { kind: "today", view: { ...view, overview: { range, figures, currency } } };
 }

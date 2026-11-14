@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/ui/page-header";
+import { AllAccountsOverview } from "./all-accounts-overview";
 import { ClosedTodaySection } from "./closed-section";
 import { TODAY_TITLE } from "./copy";
 import { LiveTradesSection } from "./live-section";
@@ -39,6 +40,8 @@ function Workspace({ view }: { view: TodayView }) {
   return (
     <div className="flex flex-col gap-6">
       <Header view={view} />
+      {/* All Accounts only (V2.1): the combined overview, between the header and the session ribbon. */}
+      {view.context.mode === "all" && view.overview && <AllAccountsOverview state={view.overview} display={view.display} />}
       <SessionRibbon nowIso={view.now} />
       {view.live.length > 0 && (
         <LiveTradesSection trades={view.live} nowIso={view.now} showAccount={view.showAccount} truncated={view.liveTruncated} journalHref={view.liveJournalHref} />

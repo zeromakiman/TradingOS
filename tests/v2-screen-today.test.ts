@@ -14,6 +14,8 @@ const m = vi.hoisted(() => ({
   tables: {} as Record<string, unknown[]>,
   rpc: vi.fn(),
   revalidatePath: vi.fn(),
+  // The All Accounts overview's ledger read (V2.1): closed rows of the period and the filters it was asked for.
+  loadLedgerRows: vi.fn(),
   accounts: {
     createTradingAccount: vi.fn(), recordAccountValues: vi.fn(), confirmAccountValuesUnchanged: vi.fn(), addExternalLoss: vi.fn(), removeExternalLoss: vi.fn(),
     updateProfile: vi.fn(), archiveAccount: vi.fn(), restoreAccount: vi.fn(), createInstrument: vi.fn(), createRiskPolicyVersion: vi.fn(),
@@ -44,6 +46,10 @@ vi.mock("@/lib/account-context", async importOriginal => {
   };
 });
 vi.mock("@/lib/today-data", () => ({ getToday: m.getToday }));
+vi.mock("@/lib/performance-data", async importOriginal => ({
+  ...(await importOriginal<typeof import("@/lib/performance-data")>()),
+  loadLedgerRows: m.loadLedgerRows,
+}));
 
 const USER = "10000000-0000-4000-8000-000000000001";
 
@@ -281,8 +287,8 @@ function instrumentRow(instrument: typeof previewInstrument) {
   };
 }
 
-async function render(): Promise<string> {
-  const element = (await TodayPage()) as ReactElement;
+async function render(query: Record<string, string> = {}): Promise<string> {
+  const element = (await TodayPage({ searchParams: Promise.resolve(query) })) as ReactElement;
   return renderToStaticMarkup(element);
 }
 
@@ -310,6 +316,8 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOW));
   m.context = accountContext();
   m.timeDisplay = { mode: "strategy" };
+  m.loadLedgerRows.mockReset();
+  m.loadLedgerRows.mockResolvedValue({ rows: [], truncated: false });
   m.tables = {
     risk_evaluations: [{
       id: EVALUATION, result: blockedReport(), proposal: { direction: "LONG", riskPercent: "1" }, risk_plan_version_id: previewRiskPlan.id,
@@ -614,6 +622,63 @@ describe("Today · All Accounts", () => {
     const text = visibleText(await render());
     expect(text).not.toMatch(UUID);
     expect(text).not.toMatch(ENUM);
+  });
+
+  it("leads with the combined overview (V2.1): cards, chart and P&L by account, money per currency", async () => {
+    m.loadLedgerRows.mockResolvedValue({ rows: [closedWin, closedLossEur], truncated: false });
+    const html = await render();
+    const text = visibleText(html);
+    // Between the page header and the session ribbon.
+    const overview = text.indexOf("Total P&L (All Accounts)");
+    expect(overview).toBeGreaterThan(text.indexOf("All Accounts · 2 active trading accounts"));
+    expect(overview).toBeLessThan(text.indexOf("Trading status · All Accounts"));
+    expect(text).toContain("Total P&L (All Accounts) -€40.00, +$120.00 Per currency, never added together.");
+    expect(text).toContain("Total R +1.20R 1 without recorded risk not in R");
+    expect(text).toContain("Win Rate 100.0% 1W / 0L N = 1");
+    expect(text).toContain("Avg R +1.20R");
+    expect(text).toContain("Trades 2 Closed in the period");
+    expect(text).not.toMatch(/\+\d+(\.\d+)?%/);
+    expect(text).toContain("P&L by Account");
+    expect(text).toContain("FTMO 100K USD +$120.00 +1.20R 1 100.0%");
+    expect(text).toContain("Personal 12K EUR -€40.00 — 1 —");
+    // Recorded balances are summed per currency only, never presented as live equity.
+    expect(text).toContain("€12,440.23 · Sum of last recorded balances · not live equity · recorded Oct 22.");
+    expect(text).toMatch(/\$[\d,.]+ · Sum of last recorded balances · not live equity · recorded Oct 23\./);
+    // D/W/M/Y/All and one currency at a time.
+    expect(hrefs(html)).toEqual(expect.arrayContaining(["/today", "/today?range=w", "/today?range=m", "/today?range=y", "/today?range=all"]));
+    expect(html).toContain('aria-label="Chart currency"');
+    expect(hrefs(html)).toContain(`/accounts/${FTMO}?account=${FTMO}`);
+    expect(m.loadLedgerRows).toHaveBeenCalledWith(expect.anything(), expect.anything(), { mode: "all" }, { closedFrom: DAY, closedTo: DAY }, { closedOnly: true });
+  });
+
+  it("reads the chosen period and currency from the URL", async () => {
+    m.loadLedgerRows.mockResolvedValue({ rows: [closedWin, closedLossEur], truncated: false });
+    const html = await render({ range: "w", currency: "EUR" });
+    expect(m.loadLedgerRows).toHaveBeenCalledWith(expect.anything(), expect.anything(), { mode: "all" }, { closedFrom: "2026-10-19", closedTo: DAY }, { closedOnly: true });
+    expect(visibleText(html)).toContain("This week · Oct 19–Oct 23, by exit day (UTC−5)");
+    expect(visibleText(html)).toContain("EUR accounts · cumulative net P&L · one currency at a time");
+    // Without a choice, the currency with the most trades of the period (then by code) is charted.
+    expect(visibleText(await render())).toContain("EUR accounts · cumulative net P&L");
+    expect(hrefs(html)).toContain("/today?range=m&currency=EUR");
+  });
+
+  it("shows no figure from a partial read, and keeps Today when the overview can't be read", async () => {
+    m.loadLedgerRows.mockResolvedValue({ rows: [closedWin], truncated: true });
+    const partial = visibleText(await render({ range: "all" }));
+    expect(partial).toContain("Total P&L (All Accounts) — Too many trades in this period");
+    m.loadLedgerRows.mockRejectedValue(new Error("down"));
+    const failed = visibleText(await render());
+    expect(failed).toContain("The All Accounts overview could not be loaded.");
+    expect(failed).toContain("Trading status · All Accounts");
+  });
+});
+
+describe("Today · one account has no combined overview", () => {
+  it("leaves one account's Today unchanged and never reads the overview", async () => {
+    const text = visibleText(await render({ range: "w" }));
+    expect(text).not.toContain("Total P&L (All Accounts)");
+    expect(text).not.toContain("P&L by Account");
+    expect(m.loadLedgerRows).not.toHaveBeenCalled();
   });
 });
 
