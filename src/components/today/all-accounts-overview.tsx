@@ -213,14 +213,18 @@ function AccountsTable({ figures }: { figures: OverviewFigures | null }) {
         {rows.length === 0 ? (
           <p className="t-meta">No active trading accounts.</p>
         ) : (
-          <Table caption="P&L by account in the period" cards>
+          <Table
+            caption="P&L by account in the period"
+            cards
+            className="text-sm md:[&_td]:px-2 md:[&_th]:px-2 md:[&_td:first-child]:pl-3 md:[&_th:first-child]:pl-3"
+          >
             <TableHead>
               <TableRow>
                 <TableHeaderCell>Account</TableHeaderCell>
                 <TableHeaderCell align="end">P&L</TableHeaderCell>
                 <TableHeaderCell align="end">R</TableHeaderCell>
                 <TableHeaderCell align="end">Trades</TableHeaderCell>
-                <TableHeaderCell align="end">Win Rate</TableHeaderCell>
+                <TableHeaderCell align="end">Win rate</TableHeaderCell>
                 <TableHeaderCell align="end">
                   <span className="sr-only">Open</span>
                 </TableHeaderCell>
@@ -232,13 +236,13 @@ function AccountsTable({ figures }: { figures: OverviewFigures | null }) {
                 const href = accountDashboardHref(row.account);
                 return (
                   <TableRow key={row.account.id} interactive>
-                    <TableCell primary className="max-w-48">
+                    <TableCell primary className="max-w-36 xl:max-w-44">
                       <TableLink href={href} className="flex min-w-0 items-center gap-2">
                         <span aria-hidden="true" className={cx("size-2 flex-none rounded-full", row.trades > 0 ? "bg-accent" : "bg-border-strong")} />
                         <span className="truncate" title={row.account.name}>
                           {row.account.name}
                         </span>{" "}
-                        <span className="flex-none text-xs font-normal text-3">{row.account.currency}</span>
+                        <span className="hidden flex-none text-xs font-normal text-3 2xl:inline">{row.account.currency}</span>
                       </TableLink>
                       {row.account.status === "ARCHIVED" && <Badge className="ml-4">Archived</Badge>}
                     </TableCell>
