@@ -1,4 +1,4 @@
-import { BookOpen, SearchX, Wallet } from "lucide-react";
+import { BookOpen, SearchX, Trash2, Wallet } from "lucide-react";
 import Link from "next/link";
 import { buttonClasses } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -56,6 +56,12 @@ export function JournalScreen({ view }: { view: JournalView }) {
             <>
               <span className="font-medium text-1">{view.contextLabel}</span> · Every trade and its decision history, newest first
             </>
+          }
+          actions={
+            <Link href="/trades/deleted" className={buttonClasses({ variant: "ghost", size: "sm" })}>
+              <Trash2 aria-hidden="true" />
+              Deleted trades
+            </Link>
           }
         />
         {showFilters && <FilterBar filters={view.filters} />}

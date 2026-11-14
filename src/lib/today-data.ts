@@ -298,7 +298,7 @@ function bounded(trades: readonly LedgerTrade[], limit: number): { trades: Ledge
  */
 async function draftsIn(db: Db, scope: TradeScope, accounts: readonly ContextAccount[], limit: number): Promise<{ trades: LedgerTrade[]; truncated: boolean }> {
   const reads = await mapLimited(accountScopes(scope, accounts), ACCOUNT_READ_CONCURRENCY, async reads => {
-    let query = ledgerSelect(db).eq("lifecycle", "DRAFT").eq("origin", "PLANNED").is("plan_id", null);
+    let query = ledgerSelect(db).eq("lifecycle", "DRAFT").eq("origin", "PLANNED").is("plan_id", null).is("trashed_at", null);
     if (reads.mode === "account") query = query.eq("account_id", reads.accountId);
     const { data, error } = await query.order("created_at", { ascending: false }).order("id", { ascending: false }).limit(limit + 1);
     if (error) throw new Error("Today's trades are unavailable.");

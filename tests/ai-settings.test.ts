@@ -4,7 +4,7 @@ import { beforeEach,describe,it,expect,vi } from "vitest";
 // step, on/off, unavailable deployment) plus tests/v2-screen-settings.test.ts and tests/v2-ui-ai-components.test.ts
 // (budget amounts, reset day and status chips). The real schema gate runs (src/lib/schema-gate.ts): it reads
 // trading_os_schema() with the same session before anything is written (§13.10).
-const mocks=vi.hoisted(()=>({user:vi.fn(),rpc:vi.fn(),system:vi.fn(),revalidate:vi.fn(),schema:{data:"2.0",error:null} as {data:unknown;error:unknown}}));
+const mocks=vi.hoisted(()=>({user:vi.fn(),rpc:vi.fn(),system:vi.fn(),revalidate:vi.fn(),schema:{data:"2.1",error:null} as {data:unknown;error:unknown}}));
 vi.mock("server-only",()=>({}));
 vi.mock("@/lib/supabase/server",()=>({requireUser:mocks.user}));
 vi.mock("@/lib/ai-budget",()=>({aiSystemAvailability:mocks.system}));
@@ -18,7 +18,7 @@ const ARCHIVED_SQL="ACCOUNT_ARCHIVED: This trading account is archived; restore 
 const ARCHIVED_COPY="This trading account is archived. Restore it in Manage account to turn AI on or change its monthly limit.";
 function form(fields:Record<string,string>){const f=new FormData();f.set("accountId",accountId);for(const [k,v] of Object.entries(fields))f.set(k,v);return f;}
 let saveResult:{error:unknown}={error:null};
-beforeEach(()=>{vi.clearAllMocks();mocks.schema={data:"2.0",error:null};saveResult={error:null};mocks.user.mockResolvedValue({db:{rpc:mocks.rpc},user:{id:"owner"}});mocks.rpc.mockImplementation(async(name:string)=>name==="trading_os_schema"?mocks.schema:saveResult);mocks.system.mockReturnValue({status:"ENABLED",message:"AI available",deepEnabled:true});});
+beforeEach(()=>{vi.clearAllMocks();mocks.schema={data:"2.1",error:null};saveResult={error:null};mocks.user.mockResolvedValue({db:{rpc:mocks.rpc},user:{id:"owner"}});mocks.rpc.mockImplementation(async(name:string)=>name==="trading_os_schema"?mocks.schema:saveResult);mocks.system.mockReturnValue({status:"ENABLED",message:"AI available",deepEnabled:true});});
 describe("authenticated AI settings actions",()=>{
  it("requires explicit consent, with no write on unchecked disclosure",async()=>{expect(await saveAiActivation({},form({enabled:"true"}))).toHaveProperty("error");expect(mocks.rpc).not.toHaveBeenCalledWith(SAVE,expect.anything());});
  it("does not activate when deployment is unavailable",async()=>{mocks.system.mockReturnValue({status:"DISABLED"});expect(await saveAiActivation({},form({enabled:"true",confirm:"on"}))).toHaveProperty("error");expect(mocks.rpc).not.toHaveBeenCalledWith(SAVE,expect.anything());});

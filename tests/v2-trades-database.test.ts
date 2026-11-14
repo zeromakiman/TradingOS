@@ -27,6 +27,8 @@ const LEDGER_COLUMNS = [
   "lifecycle", "draft_check", "review_completed_at",
   "setup_grade", "liquidity_context", "mss_timeframe", "tags", "tag_source",
   "evidence_count", "cover_evidence_id", "cover_evidence_kind", "journal_count", "ai_review_count",
+  // 0020: Deleted trades and custom models.
+  "trashed_at", "custom_model_id", "custom_model_name",
 ];
 
 const USER_RPCS: Record<string, string[]> = {
@@ -1411,7 +1413,7 @@ describe("access control", () => {
       await expect(db.query("select public.register_trade_evidence(null::uuid, null::jsonb)"), role).rejects.toThrow(/permission denied for function/);
     }
     await db.actor(OWNER);
-    expect(await value<string>("select public.trading_os_schema() as value")).toBe("2.0");
+    expect(await value<string>("select public.trading_os_schema() as value")).toBe("2.1");
   });
 
   it("denies every RPC on another user's account, trade, evidence and losses", async () => {

@@ -113,3 +113,22 @@ export function skipDialogCopy(status: "SKIPPED" | "CANCELLED", slotNote: string
     cancelLabel: "Keep plan",
   };
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Deleted trades (0020).
+// ---------------------------------------------------------------------------------------------------------
+/** The word a trader types to delete a trade permanently (sent to the database as the confirmation). */
+export const DELETE_TRADE_WORD = "DELETE";
+export const DELETION_COPY = Object.freeze({
+  trashOpenReason: "Close, skip or cancel the trade first",
+  trashTitle: "Delete trade?",
+  trashBody: "The trade moves to Deleted trades. It disappears from the Journal, EDGE, calendars, dashboards and Today, but it still counts toward today's limits. You can restore it from Deleted trades.",
+  permanentTitle: "Delete trade permanently?",
+  permanentBody: "This removes the trade, its plan, fills, journal, tags, screenshots and its AI results. AI spend and accounting records are kept. This can't be undone.",
+  permanentConfirm: `Type ${"DELETE"} to confirm`,
+  countsToday: "It counts toward today's limits; delete it permanently from 00:00 UTC−5 tomorrow.",
+  banner: "This trade is in Deleted trades. It is hidden from the Journal, EDGE, calendars, dashboards and Today, and still counts toward the day's limits.",
+});
+
+/** A custom model is a journal label only: the Risk Engine validates OB first touch and OTE. */
+export const CUSTOM_MODEL_BADGE = "Custom model · not validated by the Risk Engine";

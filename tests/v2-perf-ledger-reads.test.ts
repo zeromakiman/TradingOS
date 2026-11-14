@@ -97,7 +97,7 @@ function trade(n: number, lifecycle: Lifecycle, accountId = A1): Row {
     discarded_at: lifecycle === "DISCARDED" ? created(n) : null,
     lifecycle, draft_check: lifecycle === "DRAFT" ? "UNCHECKED" : null, review_completed_at: lifecycle === "REVIEWED" ? created(n) : null,
     setup_grade: null, liquidity_context: null, mss_timeframe: null, tags: [], tag_source: null,
-    evidence_count: 0, cover_evidence_id: null, cover_evidence_kind: null, journal_count: 0, ai_review_count: 0,
+    evidence_count: 0, cover_evidence_id: null, cover_evidence_kind: null, journal_count: 0, ai_review_count: 0, trashed_at: null, custom_model_id: null, custom_model_name: null,
   };
   return { ...row };
 }

@@ -154,6 +154,12 @@ export interface TradeRowView {
   aiReviewed: boolean;
   thumbnail: { src: string; extra: number } | null;
   evidenceCount: number;
+  /** The trade id, for the row's menu (Open, Delete trade); never rendered as text. */
+  tradeId: string;
+  /** Locked or live: Delete trade waits until the trade is closed, skipped or cancelled. */
+  open: boolean;
+  /** `model` is a custom model (0020), never validated by the Risk Engine. */
+  customModel: boolean;
 }
 
 export interface TradeGroupView {

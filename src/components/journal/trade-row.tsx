@@ -2,6 +2,7 @@
 import { ImageOff, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { Badge, StatusPill } from "@/components/ui/badge";
+import { CUSTOM_MODEL_BADGE } from "@/components/trade/copy";
 import { cx } from "@/components/ui/cx";
 import type { TradeRowView, ValueView } from "./types";
 
@@ -125,7 +126,8 @@ export function TradeRow({ row }: { row: TradeRowView }) {
 
       <span className="hidden @min-[60rem]:col-start-3 @min-[60rem]:row-start-1 @min-[60rem]:block @min-[60rem]:truncate @min-[60rem]:text-sm @min-[60rem]:text-2">
         <span className="sr-only">Model: </span>
-        {row.model ?? <span className="text-3">—</span>}
+        {row.model ? <span title={row.customModel ? CUSTOM_MODEL_BADGE : undefined}>{row.model}</span> : <span className="text-3">—</span>}
+        {row.customModel && <span className="sr-only"> ({CUSTOM_MODEL_BADGE})</span>}
       </span>
       <Value value={row.plannedRisk} label="Planned risk" className="hidden text-sm @min-[60rem]:col-start-4 @min-[60rem]:row-start-1 @min-[60rem]:block @min-[60rem]:text-right" />
 

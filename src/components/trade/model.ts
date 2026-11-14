@@ -28,7 +28,8 @@ import {
 } from "@/domain/trade-state";
 import type { CheckView, ProposalView, TradeDetail } from "@/lib/trades-data";
 import {
-  directionLabel, gradeLabel, liquidityLabel, MSS_TIMEFRAMES, modelLabel, NEWS_LABELS, OUTCOME_LABELS, PNL_SOURCE_LABELS, RISK_BASIS_LABELS, unitWord,
+  DELETION_COPY, directionLabel, gradeLabel, liquidityLabel, MSS_TIMEFRAMES, modelLabel, NEWS_LABELS, OUTCOME_LABELS, PNL_SOURCE_LABELS, RISK_BASIS_LABELS,
+  unitWord,
 } from "./copy";
 
 const MSS_VALUES: ReadonlySet<string> = new Set(MSS_TIMEFRAMES);
@@ -127,7 +128,7 @@ export function workspaceLayout(detail: { origin: TradeOrigin; state: Pick<Trade
 // Header actions (§2.4): one primary next action, a few visible secondary actions, the rest in the overflow menu.
 // ---------------------------------------------------------------------------------------------------------------------
 
-export type MenuKind = "EDIT_DRAFT" | "CLOSE_TRADE" | "ADD_ENTRY_DETAILS" | "REOPEN_REVIEW" | "DUPLICATE" | "DISCARD" | "SKIP" | "TECHNICAL";
+export type MenuKind = "EDIT_DRAFT" | "CLOSE_TRADE" | "ADD_ENTRY_DETAILS" | "REOPEN_REVIEW" | "DUPLICATE" | "DISCARD" | "SKIP" | "DELETE" | "TECHNICAL";
 
 export interface MenuEntry {
   kind: MenuKind;
@@ -135,6 +136,8 @@ export interface MenuEntry {
   destructive?: boolean;
   /** Shown as a button from the small breakpoint up, so the menu lists it on phones only. */
   compactOnly?: boolean;
+  /** Listed but unavailable, with the reason in words (Delete trade on a locked or live trade). */
+  disabledReason?: string;
 }
 
 export interface HeaderActionsModel {
@@ -153,7 +156,9 @@ const VISIBLE_SECONDARY: ReadonlySet<TradeActionKind> = new Set(["EDIT_DRAFT", "
  * the header: they live with their estimate in the Plan (pre-trade tools) and Review (trade review) sections, which
  * load their own availability.
  */
-export function headerActions(state: TradeState): HeaderActionsModel {
+export function headerActions(state: TradeState, options: { trashed?: boolean } = {}): HeaderActionsModel {
+  // A trade in Deleted trades is read-only until it is restored: its page offers Restore and Delete permanently instead.
+  if (options.trashed) return { primary: null, secondary: [], menu: [{ kind: "TECHNICAL", label: "Technical details" }] };
   const next = state.nextAction;
   const primary = next && !next.aiOperation ? next : null;
   const secondary = state.secondaryActions.filter(action => !action.aiOperation && VISIBLE_SECONDARY.has(action.kind));
@@ -161,6 +166,9 @@ export function headerActions(state: TradeState): HeaderActionsModel {
   if (state.canDuplicate) menu.push({ kind: "DUPLICATE", label: "Duplicate draft" });
   if (state.lifecycle === "DRAFT") menu.push({ kind: "DISCARD", label: "Discard draft", destructive: true });
   if (state.lifecycle === "LOCKED") menu.push({ kind: "SKIP", label: "Skip this trade" });
+  menu.push(state.lifecycle === "LOCKED" || state.lifecycle === "LIVE"
+    ? { kind: "DELETE", label: "Delete trade", destructive: true, disabledReason: DELETION_COPY.trashOpenReason }
+    : { kind: "DELETE", label: "Delete trade", destructive: true });
   menu.push({ kind: "TECHNICAL", label: "Technical details" });
   return { primary, secondary, menu };
 }

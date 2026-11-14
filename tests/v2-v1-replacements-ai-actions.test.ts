@@ -56,7 +56,7 @@ const ACTIONS: { name: string; action: Action; service: () => ReturnType<typeof 
 beforeEach(() => {
   vi.clearAllMocks();
   for (const service of [m.analyze, m.challenge, m.review, m.week, m.recent, m.month]) service.mockResolvedValue({ status: "COMPLETED", message: "Saved." });
-  m.schema.mockResolvedValue({ data: "2.0", error: null });
+  m.schema.mockResolvedValue({ data: "2.1", error: null });
 });
 
 describe.each(ACTIONS)("$name action", ({ action, service, fields, evidence, args, revalidated }) => {

@@ -19,12 +19,12 @@ import { TabLinks } from "@/components/ui/tab-links";
 import type { AccountManage, ExternalLossView, InstrumentVersionView, RiskPlanVersionView } from "@/lib/accounts-data";
 import type { WorkspaceObservation } from "@/lib/workspace";
 import { type ExternalExecution, READ_ONLY_SCOPE } from "@/lib/sync-service";
-import { AccountStatusButton } from "./account-status-actions";
+import { AccountStatusButton, DeleteAccountButton } from "./account-status-actions";
 import { ConfirmUnchangedButton, UpdateValuesForm } from "./account-values-forms";
 import { connectionLabel } from "./accounts-overview";
 import type { ConnectionDetails, LinkedTradeNote } from "./connection-data";
 import {
-  ADD_EXTERNAL_LOSS, ARCHIVE_COPY, ARCHIVED_VALUES_COPY, accountDashboardHref, EXTERNAL_LOSSES_TITLE, MANAGE_TABS, MANUAL_CONNECTION_COPY, type ManageTab, manageHref,
+  ADD_EXTERNAL_LOSS, ARCHIVE_COPY, ARCHIVED_VALUES_COPY, accountDashboardHref, DELETE_ACCOUNT_COPY, EXTERNAL_LOSSES_TITLE, MANAGE_TABS, MANUAL_CONNECTION_COPY, type ManageTab, manageHref,
   RESTORE_COPY, RR_POLICY_LABELS, STARTS_TOMORROW, typeAndBroker, UNMATCHED_LOSS_REMOVE_NOTE, UPDATE_VALUES, VERSIONING_COPY,
 } from "./copy";
 import { LinkExecutionForm, MockConnectButton, MockSyncControls, UnlinkExecutionButton } from "./manage-connection-controls";
@@ -135,14 +135,24 @@ function ProfilePanel({ manage, display }: ManageViewProps) {
             startingBalance={manage.startingBalance}
           />
         </PanelCard>
-        <PanelCard id="status-heading" title={status === "ACTIVE" ? "Archive" : "Archived"}>
-          <div className="flex flex-col gap-4">
-            <p className="t-meta">{status === "ACTIVE" ? ARCHIVE_COPY : RESTORE_COPY}</p>
-            <div>
-              <AccountStatusButton accountId={account.id} name={account.name} status={status} />
+        <div className="flex flex-col gap-6">
+          <PanelCard id="status-heading" title={status === "ACTIVE" ? "Archive" : "Archived"}>
+            <div className="flex flex-col gap-4">
+              <p className="t-meta">{status === "ACTIVE" ? ARCHIVE_COPY : RESTORE_COPY}</p>
+              <div>
+                <AccountStatusButton accountId={account.id} name={account.name} status={status} />
+              </div>
             </div>
-          </div>
-        </PanelCard>
+          </PanelCard>
+          <PanelCard id="delete-heading" title="Delete trading account">
+            <div className="flex flex-col gap-4">
+              <p className="t-meta">{DELETE_ACCOUNT_COPY.description}</p>
+              <div>
+                <DeleteAccountButton accountId={account.id} name={account.name} status={status} />
+              </div>
+            </div>
+          </PanelCard>
+        </div>
       </div>
       {manage.profileHistory.length > 0 && (
         <Disclosure summary={`Profile history · ${plural(manage.profileHistory.length, "version")}`} bodyClassName="pt-1">

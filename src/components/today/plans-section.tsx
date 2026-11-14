@@ -1,6 +1,7 @@
 import { ArrowRight, ClipboardList, OctagonX } from "lucide-react";
 import Link from "next/link";
 import { StatusPill } from "@/components/ui/badge";
+import { TradeRowMenu } from "@/components/trade/trade-row-menu";
 import { buttonClasses } from "@/components/ui/button";
 import { cx } from "@/components/ui/cx";
 import { Disclosure } from "@/components/ui/disclosure";
@@ -81,13 +82,12 @@ function PlanRow({ row, showAccount }: { row: PlanRowView; showAccount: boolean 
         <p className="t-meta num">{row.meta}</p>
         {row.reason && <Reason reason={row.reason} />}
       </div>
-      {row.actions.length > 0 && (
-        <div className="flex flex-none flex-wrap items-start gap-2">
-          {row.actions.map(action => (
-            <PlanAction key={`${action.kind}-${action.label}`} action={action} title={row.title} />
-          ))}
-        </div>
-      )}
+      <div className="flex flex-none flex-wrap items-start gap-2">
+        {row.actions.map(action => (
+          <PlanAction key={`${action.kind}-${action.label}`} action={action} title={row.title} />
+        ))}
+        <TradeRowMenu tradeId={row.id} href={row.href} label={row.title} open={row.menu.open} duplicate={row.menu.duplicate} />
+      </div>
     </li>
   );
 }

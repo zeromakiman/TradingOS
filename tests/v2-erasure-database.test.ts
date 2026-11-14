@@ -376,7 +376,9 @@ async function upgradedDatabase(beforeErasure = ""): Promise<{ db: TestDatabase;
   const other = await seedV2(db, OTHER, histories[1]);
   await db.admin();
   if (beforeErasure) await db.exec(beforeErasure);
-  expect(await db.applyMigrations()).toEqual(["0019_account_erasure.sql"]);
+  expect(await db.applyMigrations({ upTo: "0019" })).toEqual(["0019_account_erasure.sql"]);
+  // Later migrations (0020: deleted trades, account deletion, custom models) run after the erasure migration, as in production.
+  expect(await db.applyMigrations()).toEqual(migrationFiles().filter((name) => name > "0019_account_erasure.sql"));
   return { db, owner, other };
 }
 

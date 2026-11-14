@@ -78,7 +78,7 @@ async function entryRecords(db: Db, trades: readonly LedgerTrade[]): Promise<Ent
   const records: EntryRecord[] = [];
   for (const ids of inBatches(accountIds)) {
     for (let after: string | null = null; ;) {
-      let query = db.from("trade_ledger").select("id,account_id,entered_at").in("account_id", ids)
+      let query = db.from("trade_ledger").select("id,account_id,entered_at").in("account_id", ids).is("trashed_at", null)
         .gte("entered_at", dayStart(days[0])).lt("entered_at", dayStart(addDays(days[days.length - 1], 1)));
       if (after !== null) query = query.gt("id", after);
       const { data, error } = await query.order("id", { ascending: true }).limit(PAGE);

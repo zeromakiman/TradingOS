@@ -26,7 +26,7 @@ class UserDb {
   readonly auth = { getUser: vi.fn(async () => ({ data: { user: this.user }, error: null })) };
   async rpc(fn: string) {
     if (fn !== "trading_os_schema") throw new Error(`unexpected rpc ${fn}`);
-    return { data: "2.0", error: null };
+    return { data: "2.1", error: null };
   }
   from(table: string) {
     const filters: string[] = [table];

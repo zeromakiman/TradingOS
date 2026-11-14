@@ -14,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } fro
 import type { AccountsOverview, AccountSummary } from "@/lib/accounts-data";
 import { MAX_LEDGER_ROWS } from "@/lib/performance-data";
 import type { AccountConnectionState } from "@/lib/sync-service";
-import { AccountRowMenu } from "./account-status-actions";
+import { AccountRowMenu, type KnownTrades } from "./account-status-actions";
 import { ContextSwitchScope } from "./context-switch-scope";
 import { ACTIVE_ACCOUNTS_HEADING, R_UNITS_NOTE, typeAndBroker } from "./copy";
 import { KnownValue, Money, RValue, SignedMoney, sumDecimals, UnknownValue } from "./values";
@@ -111,6 +111,11 @@ function TotalMoney({ total, period }: { total: CurrencyTotals; period: "todayPn
   return <SignedMoney value={value} currency={total.currency} className="font-semibold" />;
 }
 
+/** Closed and live trade counts for the delete confirmation, when they are known. */
+function knownTrades(metrics: AccountMetrics): KnownTrades | null {
+  return metrics.tradesUnknown !== null || metrics.closedCount === null || metrics.openCount === null ? null : { closed: metrics.closedCount, live: metrics.openCount };
+}
+
 function TradesCell({ metrics }: { metrics: AccountMetrics }) {
   if (metrics.tradesUnknown !== null) return <UnknownValue reason={metrics.tradesUnknown} />;
   return (
@@ -192,7 +197,7 @@ function AccountsTable({ rows, caption, today, display, totals }: { rows: Accoun
               <StatusCell summary={summary} />
             </TableCell>
             <TableCell align="end" className="w-12">
-              <AccountRowMenu accountId={summary.account.id} name={summary.account.name} status={summary.account.status} />
+              <AccountRowMenu accountId={summary.account.id} name={summary.account.name} status={summary.account.status} trades={knownTrades(summary.metrics)} />
             </TableCell>
           </TableRow>
         ))}
@@ -286,7 +291,7 @@ function AccountCards({ rows, label, today, display }: { rows: AccountSummary[];
               </div>
               <div className="flex flex-none items-center gap-1">
                 {account.status === "ARCHIVED" && <StatusCell summary={summary} />}
-                <AccountRowMenu accountId={account.id} name={account.name} status={account.status} />
+                <AccountRowMenu accountId={account.id} name={account.name} status={account.status} trades={knownTrades(metrics)} />
               </div>
             </div>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">

@@ -20,6 +20,7 @@ export const LEDGER_COLUMNS = [
   "lifecycle", "draft_check", "review_completed_at",
   "setup_grade", "liquidity_context", "mss_timeframe", "tags", "tag_source",
   "evidence_count", "cover_evidence_id", "cover_evidence_kind", "journal_count", "ai_review_count",
+  "trashed_at", "custom_model_id", "custom_model_name",
 ] as const;
 export type LedgerColumn = (typeof LEDGER_COLUMNS)[number];
 
@@ -121,6 +122,12 @@ export const ledgerRow = z.object({
   cover_evidence_kind: z.enum(["V2", "LEGACY"]).nullable(),
   journal_count: count,
   ai_review_count: count,
+
+  /** 0020: set while the trade is in Deleted trades (hidden from every screen but Deleted trades and its own page). */
+  trashed_at: instant.nullable(),
+  /** 0020: the custom model of a live-first or imported trade whose entry model is OTHER or unknown. */
+  custom_model_id: z.uuid().nullable(),
+  custom_model_name: z.string().min(1).nullable(),
 }).strict();
 
 export type LedgerTrade = z.output<typeof ledgerRow>;

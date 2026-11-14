@@ -74,7 +74,7 @@ class Chain {
 
 class ActionDb {
   readonly results: Record<string, (args: Row) => { data: unknown; error: { message: string; code?: string } | null }> = {
-    trading_os_schema: () => ({ data: "2.0", error: null }),
+    trading_os_schema: () => ({ data: "2.1", error: null }),
   };
   readonly rpc = vi.fn(async (fn: string, args: Row = {}) => this.results[fn]?.(args) ?? { data: null, error: { message: `unexpected rpc ${fn}` } });
   constructor(readonly tables: Record<string, Row[]> = {}) {}
@@ -96,7 +96,7 @@ const PROPOSAL = {
   instrumentId: INSTRUMENT, direction: "LONG", model: "OB_FIRST_TOUCH", entry: "1.10000", stop: "1.09800", target: "1.10600", riskPercent: "0.5",
   narrative: "Sweep of Asia low into H4 order block.", contractConfirmed: true, news: "CLEAR", contradiction: false,
 };
-const SCHEMA_OUTDATED = "Database update required — this deployment expects Trading OS database version 2.0. No changes were made.";
+const SCHEMA_OUTDATED = "Database update required — this deployment expects Trading OS database version 2.1. No changes were made.";
 const FAILED = "The request failed. Nothing was changed. Please try again.";
 
 function report(proposal: Row = PROPOSAL) {

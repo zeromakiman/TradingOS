@@ -12,7 +12,8 @@ exit_price, exited_at, close_recorded_at, fees, gross_pnl, net_pnl, realized_r, 
 disposition, disposition_reason, legacy_decision, discarded_at,
 lifecycle, draft_check, review_completed_at,
 setup_grade, liquidity_context, mss_timeframe, tags, tag_source,
-evidence_count, cover_evidence_id, cover_evidence_kind, journal_count, ai_review_count`.split(",").map(column => column.trim());
+evidence_count, cover_evidence_id, cover_evidence_kind, journal_count, ai_review_count,
+trashed_at, custom_model_id, custom_model_name`.split(",").map(column => column.trim());
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -29,6 +30,7 @@ const plannedRow = {
   lifecycle: "CLOSED", draft_check: null, review_completed_at: null,
   setup_grade: "A", liquidity_context: "PDH", mss_timeframe: "M5", tags: ["london"], tag_source: "V2",
   evidence_count: 2, cover_evidence_id: uuid(9), cover_evidence_kind: "V2", journal_count: 3, ai_review_count: 1,
+  trashed_at: null, custom_model_id: null, custom_model_name: null,
 };
 
 /** A live-first trade: no plan, nothing fabricated in the planned columns, unknown entry time. */
@@ -44,7 +46,7 @@ const liveFirstRow = {
 
 describe("trade_ledger row contract (spec §3.12)", () => {
   it("names exactly the normative columns, in order", () => {
-    expect(SPEC_COLUMNS).toHaveLength(68);
+    expect(SPEC_COLUMNS).toHaveLength(71);
     expect([...LEDGER_COLUMNS]).toEqual(SPEC_COLUMNS);
     expect(Object.keys(ledgerRow.shape)).toEqual(SPEC_COLUMNS);
   });

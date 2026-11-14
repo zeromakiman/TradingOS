@@ -87,7 +87,7 @@ const UNPREFIXED: readonly [RegExp, string][] = [
 
 /** PostgREST / PostgreSQL codes of a function the database does not have (an older schema). */
 const MISSING_FUNCTION = new Set(["PGRST202", "42883"]);
-export const SCHEMA_ERROR_COPY = "Database update required — this deployment expects Trading OS database version 2.0. No changes were made.";
+export const SCHEMA_ERROR_COPY = "Database update required — this deployment expects Trading OS database version 2.1. No changes were made.";
 
 export interface RpcErrorLike {
   message?: string | null;

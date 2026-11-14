@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { ACCOUNT_COOKIE, ALL_ACCOUNTS_VALUE, LAST_ACCOUNT_COOKIE, setContextCookie } from "@/lib/account-context";
+import { deletionStorageSchema, removeDeletedTradeStorage } from "@/lib/deletion-storage";
 import { operationalFailure } from "@/lib/operational-log";
 import { SCHEMA_OUTDATED_MESSAGE, writableSession } from "@/lib/schema-gate";
 import { loadLatestObservation } from "@/lib/workspace";
@@ -363,6 +364,49 @@ export async function createRiskPolicyVersion(_prev: ActionState<{ effective: "T
         : "New risk plan version starts on the next trading day (UTC−5). Today's checks keep the current version.",
       { effective: immediate ? "TODAY" : "NEXT_DAY" },
     );
+  } catch (error) {
+    return unexpected(error);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Trading-account deletion (0020). The typed account name must match; an account with trades also needs the explicit
+// "delete its trades" confirmation, and the database refuses while any trade is open, counts toward today's limits or
+// an AI request is in flight, or when the account has AI history (archive it instead). Afterwards the trusted server
+// removes the returned screenshots and the context falls back to All Accounts.
+// ---------------------------------------------------------------------------------------------------------
+const ACCOUNT_DELETION_COPY: Readonly<Record<string, string>> = Object.freeze({
+  CONFIRMATION_REQUIRED: "Type the account name exactly as shown to confirm.",
+  ACCOUNT_HAS_TRADES: "This account has trades. Confirm that its trades are deleted too, or archive the account instead.",
+  ACCOUNT_HAS_OPEN_TRADES: "This account has open trades. Close, skip or cancel them first, or archive the account now.",
+  TRADE_COUNTS_TODAY: "Some of its trades count toward today's limits. Archive the account now, or delete it from 00:00 UTC−5 tomorrow.",
+  AI_REQUEST_IN_PROGRESS: "An AI request for this account is still running. Try again once it has finished (at most 30 minutes).",
+  ACCOUNT_HAS_AI_HISTORY: "This account has AI usage history, which is kept for accounting. Archive the account instead.",
+  DELETE_INCOMPLETE: "The deletion did not finish, so nothing was deleted. Please try again.",
+});
+
+const accountDeletionResult = z.object({ accountId: z.uuid(), tradeIds: z.array(z.uuid()), storagePaths: deletionStorageSchema });
+
+export async function deleteTradingAccount(_prev: ActionState<{ deleted: true }>, form: FormData): Promise<ActionState<{ deleted: true }>> {
+  try {
+    const session = await writableSession();
+    if (!session) return actionError(SCHEMA_OUTDATED_MESSAGE);
+    const accountId = uuid.safeParse(formText(form, "accountId")?.toLowerCase());
+    if (!accountId.success) return actionError(INVALID_COPY, { accountId: COPY.accountId });
+    const confirmName = formText(form, "confirmName") ?? "";
+    if (!confirmName.trim()) return actionError(ACCOUNT_DELETION_COPY.CONFIRMATION_REQUIRED, { confirmName: ACCOUNT_DELETION_COPY.CONFIRMATION_REQUIRED });
+    const { data, error } = await session.db.rpc("delete_trading_account", {
+      p_account_id: accountId.data, p_confirm_name: confirmName.trim(), p_delete_trades: formFlag(form, "deleteTrades"),
+    });
+    if (error) return rpcFailure(error, [], ACCOUNT_DELETION_COPY);
+    const result = accountDeletionResult.parse(data);
+    const cleaned = await removeDeletedTradeStorage(session.user.id, result.tradeIds, result.storagePaths).catch(() => false);
+    if (!cleaned) operationalFailure("storage_cleanup_failed", 503);
+    const jar = await cookies();
+    if (jar.get(ACCOUNT_COOKIE)?.value === accountId.data) await setContextCookie(ACCOUNT_COOKIE, ALL_ACCOUNTS_VALUE);
+    if (jar.get(LAST_ACCOUNT_COOKIE)?.value === accountId.data) jar.delete(LAST_ACCOUNT_COOKIE);
+    revalidatePath("/", "layout");
+    return actionSuccess("Trading account deleted.", { deleted: true });
   } catch (error) {
     return unexpected(error);
   }

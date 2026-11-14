@@ -192,6 +192,15 @@ export interface LiveTradeView {
   instrument: { tickSize: string; quantityStep: string | null } | null;
   /** Idempotency key of the composer's first entry. */
   requestKey: string;
+  menu: TradeMenuView;
+}
+
+/** The trade's menu (Open, Duplicate as draft, Delete trade; 0020). */
+export interface TradeMenuView {
+  /** Locked or live: Delete trade is unavailable until the trade is closed, skipped or cancelled. */
+  open: boolean;
+  /** A planned trade with a draft or a plan: Duplicate as draft is offered. */
+  duplicate: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -228,6 +237,7 @@ export interface PlanRowView {
    * Record entry for a plan locked earlier; Edit draft with Recheck risk for a block found earlier).
    */
   actions: PlanActionView[];
+  menu: TradeMenuView;
 }
 
 export interface PlansView {
@@ -264,6 +274,7 @@ export interface ClosedTradeView {
   pnl: ValueText | null;
   state: { label: string; tone: PillTone };
   action: LinkAction | null;
+  menu: TradeMenuView;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

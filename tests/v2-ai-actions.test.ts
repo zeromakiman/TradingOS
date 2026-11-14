@@ -44,11 +44,11 @@ const libs = () => [m.analyze, m.challenge, m.review, m.week, m.recent, m.month]
 beforeEach(() => {
   vi.clearAllMocks();
   for (const lib of libs()) lib.mockResolvedValue({ status: "COMPLETED", message: "Saved." });
-  m.schema.mockResolvedValue({ data: "2.0", error: null });
+  m.schema.mockResolvedValue({ data: "2.1", error: null });
 });
 
 describe("schema gate (spec §13.10)", () => {
-  const SCHEMA_OUTDATED = "Database update required — this deployment expects Trading OS database version 2.0. No changes were made.";
+  const SCHEMA_OUTDATED = "Database update required — this deployment expects Trading OS database version 2.1. No changes were made.";
   const requests: [string, (state: AiActionState, data: FormData) => Promise<AiActionState>, () => FormData][] = [
     ["analyze", requestTradeAnalyzeSetup, () => form({ tradeId: ids.trade, requestKey: ids.key })],
     ["challenge", requestTradeBiasChallenge, () => form({ tradeId: ids.trade, requestKey: ids.key })],

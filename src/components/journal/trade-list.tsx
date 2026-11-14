@@ -1,3 +1,4 @@
+import { TradeRowMenu } from "@/components/trade/trade-row-menu";
 import { cx } from "@/components/ui/cx";
 import { JOURNAL_COLUMNS, TradeRow } from "./trade-row";
 import type { TradeGroupView } from "./types";
@@ -9,7 +10,7 @@ import type { TradeGroupView } from "./types";
 
 function ColumnHeader() {
   return (
-    <div aria-hidden="true" className={cx("hidden px-4 pb-1.5 text-xs font-medium text-3 @min-[60rem]:grid @min-[60rem]:gap-x-3", JOURNAL_COLUMNS)}>
+    <div aria-hidden="true" className={cx("hidden pr-14 pl-4 pb-1.5 text-xs font-medium text-3 @min-[60rem]:grid @min-[60rem]:gap-x-3", JOURNAL_COLUMNS)}>
       <span className="col-span-2">Trade</span>
       <span>Model</span>
       <span className="text-right">Planned risk</span>
@@ -51,8 +52,14 @@ export function TradeList({ groups }: { groups: TradeGroupView[] }) {
           <GroupHeader group={group} />
           <ol className="card divide-y divide-border overflow-hidden">
             {group.rows.map(row => (
-              <li key={row.key}>
-                <TradeRow row={row} />
+              <li key={row.key} className="flex items-stretch">
+                <div className="min-w-0 flex-1">
+                  <TradeRow row={row} />
+                </div>
+                {/* Open and Delete trade (0020); the row itself links to the trade. */}
+                <div className="flex w-10 flex-none items-start justify-center pt-2 pr-1 @min-[60rem]:items-center @min-[60rem]:pt-0">
+                  <TradeRowMenu tradeId={row.tradeId} href={row.href} label={[row.symbol, row.direction].filter(Boolean).join(" · ")} open={row.open} />
+                </div>
               </li>
             ))}
           </ol>

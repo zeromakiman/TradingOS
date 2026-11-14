@@ -269,7 +269,7 @@ describe("V1 → V2 backfill (0015)", () => {
     expect((await db.query<Json>("select phase, state_at_creation from public.trade_journal_entries where id = $1", [note])).rows[0]).toEqual({ phase: "LIVE", state_at_creation: "LIVE" });
     const fresh = await db.bootstrapAccount(OWNER, { name: "After upgrade" });
     expect(fresh.strategyId).toBeTruthy();
-    expect(await value<string>("select public.trading_os_schema() as value")).toBe("2.0");
+    expect(await value<string>("select public.trading_os_schema() as value")).toBe("2.1");
   });
 });
 

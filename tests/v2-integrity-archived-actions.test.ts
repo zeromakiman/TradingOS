@@ -54,7 +54,7 @@ class Chain {
 }
 
 class ActionDb {
-  readonly results: Record<string, (args: Row) => RpcResult> = { trading_os_schema: () => ({ data: "2.0", error: null }) };
+  readonly results: Record<string, (args: Row) => RpcResult> = { trading_os_schema: () => ({ data: "2.1", error: null }) };
   readonly rpc = vi.fn(async (fn: string, args: Row = {}) => this.results[fn]?.(args) ?? { data: null, error: { message: `unexpected rpc ${fn}` } });
   constructor(readonly tables: Record<string, Row[]> = {}) {}
   from(table: string): Chain { return new Chain(this.tables[table] ?? []); }

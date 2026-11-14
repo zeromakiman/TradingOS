@@ -129,3 +129,10 @@ export function planTradeHref(accountId: string): string {
 export function recordLiveTradeHref(accountId: string): string {
   return `/trades/live/new?account=${accountId}`;
 }
+
+/** Delete trading account (0020). */
+export const DELETE_ACCOUNT_COPY = Object.freeze({
+  description: "This permanently deletes the trading account with its profile, risk plans, instruments, account values, losses and, when you confirm it, its trades. It can't be undone.",
+  warning: "Trades that are open or count toward today's limits block the deletion; so does AI usage history, which is kept for accounting.",
+  archiveAlternative: "To keep its history, archive the account instead: it leaves the selector and takes no new trades, and you can restore it at any time.",
+});

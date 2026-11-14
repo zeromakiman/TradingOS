@@ -82,6 +82,11 @@ export const EXPORT_TABLES: Readonly<Record<JsonExportPart, readonly ExportTable
     table("external_executions", ["id"], ["volume", "entry_price", "exit_price", "commission", "swap", "realized_pnl"]),
     table("external_execution_closes", ["external_execution_id"], ["exit_price", "commission", "swap", "realized_pnl"]),
     table("trade_execution_links"),
+    // 0020: Deleted-trades events and custom models.
+    table("trade_trash_events"),
+    table("custom_models"),
+    table("custom_model_revisions"),
+    table("trade_custom_models"),
   ],
   ai: [
     table("ai_preference_events"),

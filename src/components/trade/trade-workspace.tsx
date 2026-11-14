@@ -5,9 +5,11 @@ import { TradeReviewAiPanel } from "@/components/ai/trade-review-ai-panel";
 import { toGalleryItems } from "@/components/evidence/gallery-model";
 import { EvidenceSelectionProvider } from "@/components/evidence/selection";
 import { cx } from "@/components/ui/cx";
+import { formatDay } from "@/domain/time-display";
 import { LoadingState, Skeleton, SkeletonText } from "@/components/ui/skeleton";
 import type { TimeDisplay } from "@/domain/time-display";
 import type { TradeDetail } from "@/lib/trades-data";
+import { TrashedTradeBanner } from "./delete-dialogs";
 import { EvidenceSection } from "./evidence-section";
 import { ExecutionSection } from "./execution-section";
 import { TradeHashFocus } from "./journal-focus";
@@ -143,10 +145,16 @@ export function TradeWorkspace({ detail, extras, now, display, developerMode, ke
     journal: <JournalSection detail={detail} display={display} developerMode={developerMode} mode={mode} gallery={gallery} composerKey={keys.composer} sticky={layout.stickyComposer} />,
     evidence: <EvidenceSection detail={detail} mode={mode} gallery={gallery} developerMode={developerMode} />,
   };
+  // A trade in Deleted trades stays readable but takes no changes until it is restored (0020).
+  const trashedAt = detail.technical.ledger.trashed_at;
   // Side blocks take the right column's rows in their DOM order.
   let row = 0;
   const grid = (
-    <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_28rem] xl:grid-rows-[auto_1fr] xl:gap-6" data-blocks={layout.blocks.join(" ")}>
+    <div
+      className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[minmax(0,1fr)_28rem] xl:grid-rows-[auto_1fr] xl:gap-6"
+      data-blocks={layout.blocks.join(" ")}
+      inert={trashedAt !== null}
+    >
       {layout.blocks.map(block => {
         const sideRow = block === "main" ? null : ++row;
         return (
@@ -160,6 +168,7 @@ export function TradeWorkspace({ detail, extras, now, display, developerMode, ke
 
   return (
     <div className="flex flex-col gap-5 lg:gap-6" data-trade-workspace={lifecycle.toLowerCase()}>
+      {trashedAt !== null && <TrashedTradeBanner tradeId={detail.tradeId} trashedOn={formatDay(trashedAt, display)} />}
       <TradeHeader
         detail={detail}
         now={now}

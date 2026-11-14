@@ -52,7 +52,7 @@ class UserDb {
   readonly filters: string[] = [];
   readonly failing = new Set<string>();
   readonly objects = new Map<string, Uint8Array>();
-  schema: { data: unknown; error: { code?: string; message: string } | null } = { data: "2.0", error: null };
+  schema: { data: unknown; error: { code?: string; message: string } | null } = { data: "2.1", error: null };
   user: { id: string } | null = { id: USER };
   readonly auth = { getUser: vi.fn(async () => ({ data: { user: this.user }, error: null })) };
   readonly storage = {
@@ -269,7 +269,7 @@ describe("POST /api/trades/[id]/evidence", () => {
     user.schema = { data: null, error: { code: "PGRST202", message: "missing" } };
     const outdated = await POST(upload(), context());
     expect(outdated.status).toBe(503);
-    expect((await outdated.json()).error).toBe("Database update required — this deployment expects Trading OS database version 2.0. No changes were made.");
+    expect((await outdated.json()).error).toBe("Database update required — this deployment expects Trading OS database version 2.1. No changes were made.");
     expect(trusted.upload).not.toHaveBeenCalled();
   });
 });

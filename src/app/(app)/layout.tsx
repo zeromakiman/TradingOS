@@ -14,7 +14,7 @@ import { loadPaletteTrades } from "@/lib/trades-data";
  * Authenticated application layout (docs/V2_ARCHITECTURE.md §1.2, §13.3, §13.10). Once per request it loads the
  * schema gate, the signed-in user, the trading accounts and the selected context, the display preferences and the
  * command palette index (accounts, live trades, the last 50 trades), then renders the presentational shell. On a
- * database without the 2.0 schema marker it renders only the "Database update required" page: no page below it
+ * database without the 2.1 schema marker it renders only the "Database update required" page: no page below it
  * renders, and every server action refuses to write.
  */
 

@@ -83,6 +83,8 @@ export interface TradeFilters {
   states?: Lifecycle[];
   origin?: TradeOrigin;
   model?: EntryModel;
+  /** A custom model (0020) of the trade's account: only trades recorded with it match. */
+  customModel?: string;
   /** Session of the entry time (fixed UTC−5); only executed trades match. */
   session?: Session;
   /** Weekday of the entry day; only executed trades match. */
@@ -249,6 +251,11 @@ export function parseTradeFilters(params: FilterParams): { filters: TradeFilters
   id("strategy", value => { filters.strategyVersionId = value; });
   id("riskPlan", value => { filters.riskPlanVersionId = value; });
   id("accountFilter", value => { filters.accountFilter = value; });
+  const customModel = readOne(params, "customModel")?.toLowerCase();
+  if (customModel !== undefined) {
+    if (UUID.test(customModel)) filters.customModel = customModel;
+    else invalid.push("customModel");
+  }
   const bound = (key: "rFrom" | "rTo") => {
     const raw = readOne(params, key);
     if (raw === undefined) return;
@@ -276,6 +283,7 @@ export function tradeFilterParams(filters: TradeFilters): URLSearchParams {
   if (filters.states?.length) params.set("state", filters.states.map(state => state.toLowerCase()).join(","));
   set("origin", filters.origin?.toLowerCase().replace(/_/g, "-"));
   set("model", filters.model);
+  set("customModel", filters.customModel);
   set("session", filters.session);
   set("weekday", filters.weekday);
   set("direction", filters.direction?.toLowerCase());
@@ -462,7 +470,7 @@ export async function openLedgerRows(db: Db, userId: string, scope: TradeScope, 
     if (error) throw new Error("Trades are unavailable.");
     return parseLedger(data);
   });
-  return batches.flat().filter(trade => wanted.has(trade.lifecycle)).sort(newestCreatedFirst);
+  return batches.flat().filter(trade => wanted.has(trade.lifecycle) && trade.trashed_at === null).sort(newestCreatedFirst);
 }
 
 interface Stream {
@@ -496,7 +504,8 @@ export type LedgerSelect = ReturnType<typeof ledgerSelect>;
  * trades matched by journal text or tags for `filters.q`.
  */
 export function applyLedgerFilters(query: LedgerSelect, scope: TradeScope, filters: TradeFilters, searchIds: readonly string[] | null): LedgerSelect {
-  let q = query;
+  // Trades in Deleted trades (0020) are hidden from every list, count, calendar and figure.
+  let q = query.is("trashed_at", null);
   const reads = filteredScope(scope, filters);
   if (reads.mode === "account") q = q.eq("account_id", reads.accountId);
   if (filters.currency) q = q.eq("currency", filters.currency);
@@ -508,6 +517,7 @@ export function applyLedgerFilters(query: LedgerSelect, scope: TradeScope, filte
   if (filters.reviewed !== undefined) q = q.eq("lifecycle", filters.reviewed ? "REVIEWED" : "CLOSED");
   if (filters.origin) q = q.eq("origin", filters.origin);
   if (filters.model) q = q.eq("entry_model", filters.model);
+  if (filters.customModel) q = q.eq("custom_model_id", filters.customModel);
   if (filters.direction) q = q.eq("direction", filters.direction);
   if (filters.aiReviewed !== undefined) q = filters.aiReviewed ? q.gt("ai_review_count", 0) : q.eq("ai_review_count", 0);
   if (filters.tags?.length) q = q.contains("tags", filters.tags);
@@ -1039,7 +1049,7 @@ async function paletteRecentRows(deps: ListDeps): Promise<LedgerTrade[]> {
   if (ids.error) throw new Error("Trades are unavailable.");
   const tradeIds = z.array(z.object({ id: z.uuid() })).parse(ids.data ?? []).map(row => row.id);
   if (!tradeIds.length) return [];
-  const { data, error } = await ledgerSelect(deps.db).in("id", tradeIds).order("created_at", { ascending: false }).order("id", { ascending: false });
+  const { data, error } = await ledgerSelect(deps.db).in("id", tradeIds).is("trashed_at", null).order("created_at", { ascending: false }).order("id", { ascending: false });
   if (error) throw new Error("Trades are unavailable.");
   return parseLedger(data);
 }
@@ -1762,3 +1772,75 @@ export const getTradeDetail = cache(async (tradeId: string): Promise<TradeDetail
     },
   }, tradeId);
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Deleted trades (0020): the trades of the context whose latest trash event is TRASHED, newest deletion first.
+// ---------------------------------------------------------------------------------------------------------
+export const DELETED_TRADES_LIMIT = 200;
+
+export interface DeletedTradeEntry {
+  id: string;
+  title: string;
+  accountName: string;
+  dateLabel: string;
+  stateLabel: string;
+  deletedLabel: string;
+  resultLabel: string | null;
+  /** It counts toward today's limits (mirrors private.trade_counts_today), so permanent deletion waits until tomorrow. */
+  countsToday: boolean;
+}
+
+export interface DeletedTradesView {
+  contextLabel: string;
+  trades: DeletedTradeEntry[];
+  truncated: boolean;
+}
+
+/**
+ * Whether a trade counts toward the usage of the strategy day of `now`, as private.trade_counts_today decides: its plan
+ * was locked for that day, it is still open, or its entry or exit falls on that day.
+ */
+export function countsTowardToday(
+  trade: Pick<LedgerTrade, "origin" | "plan_trading_day" | "lifecycle" | "entered_at" | "entry_recorded_at" | "exited_at">,
+  now: string,
+): boolean {
+  const today = strategyDay(now);
+  if (trade.lifecycle === "LIVE" || trade.lifecycle === "LOCKED") return true;
+  if (trade.plan_trading_day === today) return true;
+  if (trade.exited_at !== null && strategyDay(trade.exited_at) === today) return true;
+  if (trade.origin !== "PLANNED") {
+    const entry = trade.entered_at ?? trade.entry_recorded_at;
+    if (entry !== null && strategyDay(entry) === today) return true;
+  }
+  return false;
+}
+
+export async function loadDeletedTrades(): Promise<DeletedTradesView> {
+  const [{ db }, context, preferences] = await Promise.all([currentSession(), getAccountContext(), getPreferences()]);
+  const display = preferences.timeDisplay;
+  const now = new Date().toISOString();
+  let query = ledgerSelect(db).not("trashed_at", "is", null);
+  if (context.selected.mode === "account") query = query.eq("account_id", context.selected.account.id);
+  const { data, error } = await query.order("trashed_at", { ascending: false }).order("id", { ascending: false }).limit(DELETED_TRADES_LIMIT + 1);
+  if (error) throw new Error("Deleted trades are unavailable.");
+  const rows = parseLedger(data);
+  const directory = accountDirectory(context.accounts);
+  const trades = rows.slice(0, DELETED_TRADES_LIMIT).map((trade): DeletedTradeEntry => {
+    const account = accountLabel(directory, trade);
+    return {
+      id: trade.id,
+      title: [trade.symbol ?? "Unknown instrument", trade.direction === "LONG" ? "Long" : trade.direction === "SHORT" ? "Short" : null].filter(Boolean).join(" · "),
+      accountName: account.name,
+      dateLabel: formatDay(tradeDate(trade).at, display),
+      stateLabel: deriveTradeState(trade, { now, checkCurrent: false, accountArchived: account.status === "ARCHIVED" }).label,
+      deletedLabel: trade.trashed_at ? formatDay(trade.trashed_at, display) : "",
+      resultLabel: trade.realized_r !== null ? formatR(trade.realized_r) : null,
+      countsToday: countsTowardToday(trade, now),
+    };
+  });
+  return {
+    contextLabel: context.selected.mode === "account" ? context.selected.account.name : "All Accounts",
+    trades,
+    truncated: rows.length > DELETED_TRADES_LIMIT,
+  };
+}

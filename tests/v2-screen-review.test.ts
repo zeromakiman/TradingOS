@@ -83,6 +83,12 @@ const m = vi.hoisted(() => {
     gte(column: string, value: unknown) { return this.bound(column, value, order => order >= 0); }
     lt(column: string, value: unknown) { return this.bound(column, value, order => order < 0); }
     lte(column: string, value: unknown) { return this.bound(column, value, order => order <= 0); }
+    /** `is(column, null)`: a fixture row without the column (trashed_at, 0020) reads as null. */
+    is(column: string, operand: unknown) {
+      if (operand !== null) throw new Error(`Unexpected is(${String(operand)})`);
+      this.filters.push(row => field(row, column) === null || field(row, column) === undefined);
+      return this;
+    }
     not(column: string, operator: string, operand: unknown) {
       if (operator !== "is" || operand !== null) throw new Error(`Unexpected not(${operator})`);
       this.filters.push(row => field(row, column) !== null && field(row, column) !== undefined);

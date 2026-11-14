@@ -306,7 +306,7 @@ async function closedTrades(db: Db, accountIds: readonly string[], from: string,
   const rows: ClosedRow[] = [];
   let after: string | null = null;
   for (;;) {
-    let query = db.from("trade_ledger").select("id,account_id,origin,exited_at").in("account_id", [...accountIds]).gte("exited_at", from);
+    let query = db.from("trade_ledger").select("id,account_id,origin,exited_at").in("account_id", [...accountIds]).is("trashed_at", null).gte("exited_at", from);
     if (to !== null) query = query.lt("exited_at", to);
     if (after !== null) query = query.gt("id", after);
     const { data, error } = await query.order("id", { ascending: true }).limit(PAGE);
@@ -358,7 +358,7 @@ async function reviewedPeriods(db: Db, userId: string, accountIds: readonly stri
  * say what the analysis leaves out.
  */
 async function closedCount(db: Db, accountId: string, origin: TradeOrigin, nowIso: string): Promise<number> {
-  const base = db.from("trade_ledger").select("id", { count: "exact" }).eq("account_id", accountId).eq("origin", origin).not("exited_at", "is", null).lte("exited_at", nowIso);
+  const base = db.from("trade_ledger").select("id", { count: "exact" }).eq("account_id", accountId).eq("origin", origin).is("trashed_at", null).not("exited_at", "is", null).lte("exited_at", nowIso);
   const filtered = origin === "PLANNED" ? base.filter("realized_r", "not.is", null) : base;
   const { count, error } = await filtered.limit(1);
   if (error || count === null) throw new Error("Trades are unavailable.");

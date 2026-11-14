@@ -5,14 +5,14 @@ import { currentSession, type Session } from "./account-context";
 
 /**
  * Schema gate (docs/V2_ARCHITECTURE.md §3.11, §13.10). `public.trading_os_schema()` names the database version the
- * deployment runs against. When the marker is missing or older than 2.0, every app page renders the "Database update
+ * deployment runs against. When the marker is missing or older than 2.1, every app page renders the "Database update
  * required" state and no server action writes anything. The check uses the signed-in user's session: the marker is
  * granted to `authenticated` only.
  */
 
-export const REQUIRED_SCHEMA_VERSION = "2.0";
+export const REQUIRED_SCHEMA_VERSION = "2.1";
 export const SCHEMA_OUTDATED_TITLE = "Database update required";
-export const SCHEMA_OUTDATED_MESSAGE = "Database update required — this deployment expects Trading OS database version 2.0. No changes were made.";
+export const SCHEMA_OUTDATED_MESSAGE = "Database update required — this deployment expects Trading OS database version 2.1. No changes were made.";
 
 export type SchemaStatus =
   | { ready: true; version: string }
@@ -65,7 +65,7 @@ export const getSchemaStatus = cache(async (): Promise<SchemaStatus> => {
 
 /**
  * Server actions start here: the verified session when the database schema is current, null when it is missing or
- * older than 2.0 (the action then returns SCHEMA_OUTDATED_MESSAGE and writes nothing). Throws SchemaUnavailableError
+ * older than 2.1 (the action then returns SCHEMA_OUTDATED_MESSAGE and writes nothing). Throws SchemaUnavailableError
  * when the marker cannot be read; redirects to sign-in without a session.
  */
 export async function writableSession(): Promise<Session | null> {

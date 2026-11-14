@@ -57,7 +57,7 @@ vi.mock("@/lib/account-context", () => ({
     },
   }),
 }));
-vi.mock("@/lib/schema-gate", () => ({ getSchemaStatus: async () => (m.schemaReady ? { ready: true, version: "2.0" } : { ready: false, reason: "MISSING", version: null }) }));
+vi.mock("@/lib/schema-gate", () => ({ getSchemaStatus: async () => (m.schemaReady ? { ready: true, version: "2.1" } : { ready: false, reason: "MISSING", version: null }) }));
 // The AI panels load their own data (tested in v2-ui-ai-panels); here they are stubs that show what the page gives them.
 vi.mock("@/components/ai/pre-trade-ai-panel", () => ({
   PreTradeAiPanel: (props: Record<string, unknown>) => {

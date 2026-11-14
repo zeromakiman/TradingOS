@@ -8,7 +8,9 @@ import { explainReport, INVALID_INPUT_FIELD_COPY } from "@/domain/risk-explain";
 import { storedRiskSchema } from "@/domain/risk-report";
 import { isInstant, strategyDay } from "@/domain/time-display";
 import { sizeDeviationWarning } from "@/domain/plan-vs-reality";
+import { DELETE_TRADE_WORD } from "@/components/trade/copy";
 import { type Db, LAST_ACCOUNT_COOKIE, loadAccount, type Session, setContextCookie } from "@/lib/account-context";
+import { deletionStorageSchema, removeDeletedTradeStorage } from "@/lib/deletion-storage";
 import { copyEvidenceForDuplicate, EVIDENCE_LABELS, EVIDENCE_TIMEFRAMES } from "@/lib/evidence";
 import { operationalFailure } from "@/lib/operational-log";
 import { SCHEMA_OUTDATED_MESSAGE, writableSession } from "@/lib/schema-gate";
@@ -829,6 +831,80 @@ export async function relabelEvidence(_prev: ActionState, form: FormData): Promi
     if (error) return rpcFailure(error, {}, ["label", "timeframe", "caption"]);
     revalidateTrade(tradeId);
     return actionSuccess("Label saved. The screenshot keeps its original timing.");
+  } catch (error) {
+    return unexpected(error);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Deleted trades and permanent deletion (0020). Trash and restore change only what the screens show; the daily
+// usage and the Risk Engine count the trade exactly as before. A permanent deletion needs the typed word DELETE, is
+// refused while the trade counts toward today's limits, and is followed by the trusted server's storage cleanup.
+// ---------------------------------------------------------------------------------------------------------
+
+const DELETION_COPY: Readonly<Record<string, string>> = Object.freeze({
+  TRADE_OPEN: "Close, skip or cancel this trade first.",
+  TRADE_NOT_DELETED: "This trade isn't in Deleted trades. Reload the page.",
+  TRADE_COUNTS_TODAY: "It counts toward today's limits; delete it permanently from 00:00 UTC−5 tomorrow.",
+  TRADE_HAS_COPIES: "Another trade was duplicated from this one. Delete that copy permanently first.",
+  AI_REQUEST_IN_PROGRESS: "An AI request for this trading account is still running. Try again once it has finished (at most 30 minutes).",
+  CONFIRMATION_REQUIRED: `Type ${DELETE_TRADE_WORD} in capital letters to confirm.`,
+  DELETE_INCOMPLETE: "The deletion did not finish, so nothing was deleted. Please try again.",
+});
+
+function revalidateDeletion(tradeId: string): void {
+  revalidateTrade(tradeId, ["/trades/deleted", "/edge", "/accounts", "/review"]);
+  revalidatePath("/", "layout");
+}
+
+export async function trashTrade(_prev: ActionState, form: FormData): Promise<ActionState> {
+  try {
+    const session = await writableSession();
+    if (!session) return actionError(SCHEMA_OUTDATED_MESSAGE);
+    const tradeId = uuid.safeParse(formText(form, "tradeId")?.toLowerCase());
+    if (!tradeId.success) return actionError(INVALID_COPY, { tradeId: FIELD_COPY.tradeId });
+    const { error } = await session.db.rpc("trash_trade", { p_trade_id: tradeId.data });
+    if (error) return rpcFailure(error, DELETION_COPY);
+    revalidateDeletion(tradeId.data);
+    return actionSuccess("Trade moved to Deleted trades. Restore it there at any time.");
+  } catch (error) {
+    return unexpected(error);
+  }
+}
+
+export async function restoreTrade(_prev: ActionState, form: FormData): Promise<ActionState> {
+  try {
+    const session = await writableSession();
+    if (!session) return actionError(SCHEMA_OUTDATED_MESSAGE);
+    const tradeId = uuid.safeParse(formText(form, "tradeId")?.toLowerCase());
+    if (!tradeId.success) return actionError(INVALID_COPY, { tradeId: FIELD_COPY.tradeId });
+    const { error } = await session.db.rpc("restore_trade", { p_trade_id: tradeId.data });
+    if (error) return rpcFailure(error, DELETION_COPY);
+    revalidateDeletion(tradeId.data);
+    return actionSuccess("Trade restored. It shows in the Journal and every figure again.");
+  } catch (error) {
+    return unexpected(error);
+  }
+}
+
+const permanentResult = z.object({ tradeId: z.uuid(), storagePaths: deletionStorageSchema });
+
+export async function deleteTradePermanently(_prev: ActionState, form: FormData): Promise<ActionState> {
+  try {
+    const session = await writableSession();
+    if (!session) return actionError(SCHEMA_OUTDATED_MESSAGE);
+    const tradeId = uuid.safeParse(formText(form, "tradeId")?.toLowerCase());
+    if (!tradeId.success) return actionError(INVALID_COPY, { tradeId: FIELD_COPY.tradeId });
+    if (formText(form, "confirm")?.trim() !== DELETE_TRADE_WORD) {
+      return actionError(DELETION_COPY.CONFIRMATION_REQUIRED, { confirm: DELETION_COPY.CONFIRMATION_REQUIRED });
+    }
+    const { data, error } = await session.db.rpc("delete_trade_permanently", { p_trade_id: tradeId.data, p_confirm: DELETE_TRADE_WORD });
+    if (error) return rpcFailure(error, DELETION_COPY);
+    const result = permanentResult.parse(data);
+    const cleaned = await removeDeletedTradeStorage(session.user.id, [result.tradeId], result.storagePaths).catch(() => false);
+    if (!cleaned) operationalFailure("storage_cleanup_failed", 503);
+    revalidateDeletion(tradeId.data);
+    return actionSuccess("Trade deleted permanently.");
   } catch (error) {
     return unexpected(error);
   }

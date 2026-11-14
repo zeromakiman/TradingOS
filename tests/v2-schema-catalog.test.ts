@@ -235,7 +235,9 @@ describe("functions", () => {
 
   it("exposes the V2 RPCs to authenticated users only", () => {
     const v2 = ["create_trading_account", "create_planned_trade", "lock_trade", "record_live_trade", "close_live_trade", "add_journal_entry",
-      "set_trade_tags", "add_external_loss", "create_risk_policy_version", "trading_os_schema"];
+      "set_trade_tags", "add_external_loss", "create_risk_policy_version", "trading_os_schema",
+      "trash_trade", "restore_trade", "delete_trade_permanently", "delete_trading_account", "create_custom_model", "revise_custom_model",
+      "delete_custom_model", "set_trade_custom_model"];
     for (const name of v2) {
       const fn = functions.find((f) => f.schema === "public" && f.name === name);
       expect(fn, name).toMatchObject({ authenticated: true, anon: false, service: false, public_execute: false });

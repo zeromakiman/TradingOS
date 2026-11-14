@@ -14,6 +14,7 @@ import type { TradeAction } from "@/domain/trade-state";
 import { useNotify } from "./action-message";
 import type { HeaderActionsModel, LockSummary, MenuKind } from "./model";
 import { focusComposer, keepFocusOnTrade, returnFocusTo, reveal, revealTechnicalDetails, TRADE_TARGETS } from "./reveal";
+import { TrashTradeDialog } from "./delete-dialogs";
 import { DiscardDialog, DuplicateDialog, LockPlanDialog, ReopenReviewDialog, SkipTradeDialog } from "./trade-dialogs";
 import { formOf, useTradeAction } from "./use-trade-action";
 
@@ -141,11 +142,12 @@ const MENU_ICONS: Readonly<Record<MenuKind, ReactNode>> = {
   DUPLICATE: <Copy aria-hidden="true" />,
   DISCARD: <Trash2 aria-hidden="true" />,
   SKIP: <Ban aria-hidden="true" />,
+  DELETE: <Trash2 aria-hidden="true" />,
   TECHNICAL: <FileCode2 aria-hidden="true" />,
 };
 
-type DialogKind = "DUPLICATE" | "DISCARD" | "SKIP" | "REOPEN_REVIEW";
-const DIALOGS: ReadonlySet<MenuKind> = new Set<MenuKind>(["DUPLICATE", "DISCARD", "SKIP", "REOPEN_REVIEW"]);
+type DialogKind = "DUPLICATE" | "DISCARD" | "SKIP" | "REOPEN_REVIEW" | "DELETE";
+const DIALOGS: ReadonlySet<MenuKind> = new Set<MenuKind>(["DUPLICATE", "DISCARD", "SKIP", "REOPEN_REVIEW", "DELETE"]);
 
 /** Overflow menu; items that are buttons from the small breakpoint up are listed on phones only. */
 export function TradeMenu({ model, context }: { model: HeaderActionsModel; context: TradeActionContext }) {
@@ -219,10 +221,14 @@ export function TradeMenu({ model, context }: { model: HeaderActionsModel; conte
               <DropdownMenuItem
                 key={entry.kind}
                 icon={MENU_ICONS[entry.kind]}
-                className={cx(entry.compactOnly && "sm:hidden", entry.destructive && "text-neg")}
+                className={cx(entry.compactOnly && "sm:hidden", entry.destructive && !entry.disabledReason && "text-neg")}
+                disabled={entry.disabledReason !== undefined}
                 onSelect={() => select(entry.kind)}
               >
-                {DIALOGS.has(entry.kind) ? `${entry.label}…` : entry.label}
+                <span className="flex min-w-0 flex-col">
+                  <span>{DIALOGS.has(entry.kind) && !entry.disabledReason ? `${entry.label}…` : entry.label}</span>
+                  {entry.disabledReason && <span className="t-caption">{entry.disabledReason}</span>}
+                </span>
               </DropdownMenuItem>
             ),
           )}
@@ -242,6 +248,7 @@ export function TradeMenu({ model, context }: { model: HeaderActionsModel; conte
       {model.menu.some(entry => entry.kind === "DISCARD") && <DiscardDialog tradeId={context.tradeId} requestKey={context.keys.discard} {...dialogProps("DISCARD")} />}
       {model.menu.some(entry => entry.kind === "SKIP") && <SkipTradeDialog tradeId={context.tradeId} slotNote={context.skipNote} {...dialogProps("SKIP")} />}
       {model.menu.some(entry => entry.kind === "REOPEN_REVIEW") && <ReopenReviewDialog tradeId={context.tradeId} requestKey={context.keys.reopen} {...dialogProps("REOPEN_REVIEW")} />}
+      {model.menu.some(entry => entry.kind === "DELETE" && !entry.disabledReason) && <TrashTradeDialog tradeId={context.tradeId} {...dialogProps("DELETE")} />}
     </>
   );
 }

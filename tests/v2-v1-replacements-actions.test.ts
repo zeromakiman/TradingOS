@@ -25,7 +25,7 @@ function form(fields: Record<string, string>): FormData {
 }
 
 function reply(rpcAnswer: { data: unknown; error: unknown }) {
-  m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.0", error: null } : rpcAnswer));
+  m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.1", error: null } : rpcAnswer));
 }
 
 beforeEach(() => vi.clearAllMocks());

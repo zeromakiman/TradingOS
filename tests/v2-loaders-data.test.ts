@@ -282,7 +282,7 @@ function ledger(id: string, overrides: Partial<LedgerTrade> = {}): LedgerTrade {
     disposition: null, disposition_reason: null, legacy_decision: null, discarded_at: null,
     lifecycle: "DRAFT", draft_check: "UNCHECKED", review_completed_at: null,
     setup_grade: null, liquidity_context: null, mss_timeframe: null, tags: [], tag_source: null,
-    evidence_count: 0, cover_evidence_id: null, cover_evidence_kind: null, journal_count: 0, ai_review_count: 0,
+    evidence_count: 0, cover_evidence_id: null, cover_evidence_kind: null, journal_count: 0, ai_review_count: 0, trashed_at: null, custom_model_id: null, custom_model_name: null,
   };
   return { ...base, ...overrides };
 }
@@ -362,7 +362,7 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------------------------------------------------
 describe("schema gate (§3.11, §13.10)", () => {
   it.each([
-    ["2.0", true, undefined],
+    ["2.0", false, "OUTDATED"],
     ["2.1", true, undefined],
     ["10.0", true, undefined],
     ["1.9", false, "OUTDATED"],
@@ -383,15 +383,15 @@ describe("schema gate (§3.11, §13.10)", () => {
   });
 
   it("reads the marker through the user's session and gates writes", async () => {
-    const db = new FakeDb({}, { trading_os_schema: () => ({ data: "2.0", error: null }) });
+    const db = new FakeDb({}, { trading_os_schema: () => ({ data: "2.1", error: null }) });
     m.session = { db, user: { id: USER } };
-    expect(await checkSchema(asDb(db))).toEqual({ ready: true, version: "2.0" });
+    expect(await checkSchema(asDb(db))).toEqual({ ready: true, version: "2.1" });
     expect(db.rpcCalls).toEqual([{ fn: "trading_os_schema", args: {} }]);
     expect(await writableSession()).toEqual({ db, user: { id: USER } });
     const outdated = new FakeDb({}, { trading_os_schema: () => ({ data: "1.0", error: null }) });
     m.session = { db: outdated, user: { id: USER } };
     expect(await writableSession()).toBeNull();
-    expect(SCHEMA_OUTDATED_MESSAGE).toBe("Database update required — this deployment expects Trading OS database version 2.0. No changes were made.");
+    expect(SCHEMA_OUTDATED_MESSAGE).toBe("Database update required — this deployment expects Trading OS database version 2.1. No changes were made.");
   });
 });
 

@@ -259,14 +259,20 @@ describe("header actions (§2.4)", () => {
 
   it("puts Duplicate, Discard, Skip and Technical details in the menu, and the visible secondary actions there for phones", () => {
     const draftMenu = headerActions(detail(ledger()).state).menu;
-    expect(draftMenu.map(entry => [entry.kind, entry.compactOnly ?? false])).toEqual([["EDIT_DRAFT", true], ["DUPLICATE", false], ["DISCARD", false], ["TECHNICAL", false]]);
+    expect(draftMenu.map(entry => [entry.kind, entry.compactOnly ?? false])).toEqual([["EDIT_DRAFT", true], ["DUPLICATE", false], ["DISCARD", false], ["DELETE", false], ["TECHNICAL", false]]);
     expect(draftMenu.find(entry => entry.kind === "DISCARD")).toMatchObject({ label: "Discard draft", destructive: true });
-    expect(headerActions(detail(ledger({ ...LOCKED, lifecycle: "LOCKED" })).state).menu.map(entry => entry.kind)).toEqual(["DUPLICATE", "SKIP", "TECHNICAL"]);
-    expect(headerActions(detail(ledger(LIVE)).state).menu.map(entry => entry.kind)).toEqual(["CLOSE_TRADE", "DUPLICATE", "TECHNICAL"]);
+    expect(headerActions(detail(ledger({ ...LOCKED, lifecycle: "LOCKED" })).state).menu.map(entry => entry.kind)).toEqual(["DUPLICATE", "SKIP", "DELETE", "TECHNICAL"]);
+    expect(headerActions(detail(ledger(LIVE)).state).menu.map(entry => entry.kind)).toEqual(["CLOSE_TRADE", "DUPLICATE", "DELETE", "TECHNICAL"]);
     const reviewed = headerActions(detail(ledger({ ...CLOSED, lifecycle: "REVIEWED", review_completed_at: "2026-10-23T18:50:00Z" })).state);
     expect(reviewed.secondary.map(action => action.label)).toEqual(["Reopen review"]);
-    expect(reviewed.menu.map(entry => entry.kind)).toEqual(["DUPLICATE", "TECHNICAL"]);
-    expect(headerActions(detail(ledger({ ...LIVE_FIRST, entry_model: null })).state).menu.map(entry => entry.kind)).toEqual(["ADD_ENTRY_DETAILS", "CLOSE_TRADE", "TECHNICAL"]);
+    expect(reviewed.menu.map(entry => entry.kind)).toEqual(["DUPLICATE", "DELETE", "TECHNICAL"]);
+    expect(headerActions(detail(ledger({ ...LIVE_FIRST, entry_model: null })).state).menu.map(entry => entry.kind)).toEqual(["ADD_ENTRY_DETAILS", "CLOSE_TRADE", "DELETE", "TECHNICAL"]);
+    // Delete trade (0020) is listed on a locked or live trade but unavailable, with the reason; a trashed trade offers nothing.
+    expect(headerActions(detail(ledger(LIVE)).state).menu.find(entry => entry.kind === "DELETE")).toEqual({
+      kind: "DELETE", label: "Delete trade", destructive: true, disabledReason: "Close, skip or cancel the trade first",
+    });
+    expect(reviewed.menu.find(entry => entry.kind === "DELETE")).toEqual({ kind: "DELETE", label: "Delete trade", destructive: true });
+    expect(headerActions(detail(ledger()).state, { trashed: true })).toEqual({ primary: null, secondary: [], menu: [{ kind: "TECHNICAL", label: "Technical details" }] });
   });
 
   it("offers nothing on an archived account's draft but Discard, says why, and never Duplicate on its trades (§3.2, §9)", () => {
@@ -274,7 +280,10 @@ describe("header actions (§2.4)", () => {
     const frozen = detail(approved, { checkCurrent: true, aiAvailable: true, archived: true });
     expect(frozen.state).toMatchObject({ label: "Account archived", tone: "muted", nextAction: null, checkCurrent: false });
     expect(headerActions(frozen.state)).toEqual({
-      primary: null, secondary: [], menu: [{ kind: "DISCARD", label: "Discard draft", destructive: true }, { kind: "TECHNICAL", label: "Technical details" }],
+      primary: null, secondary: [], menu: [
+        { kind: "DISCARD", label: "Discard draft", destructive: true }, { kind: "DELETE", label: "Delete trade", destructive: true },
+        { kind: "TECHNICAL", label: "Technical details" },
+      ],
     });
     expect(nextStepHint(frozen, NOW, STRATEGY_TIME)).toEqual({ tone: "warning", text: ARCHIVED_DRAFT_HINT });
     // No pre-trade AI selection either (the AI review of a closed trade stays).
@@ -283,9 +292,9 @@ describe("header actions (§2.4)", () => {
     expect(ARCHIVED_DRAFT_HINT).toBe("This trading account is archived, so this draft can't be edited, checked or locked. Restore the account in Manage account to continue it.");
     // Trades the account already holds are finished as usual; none can be duplicated into the archived account.
     expect(headerActions(detail(ledger({ ...LOCKED, lifecycle: "LOCKED" }), { archived: true }).state)).toMatchObject({
-      primary: { kind: "RECORD_ENTRY" }, menu: [{ kind: "SKIP" }, { kind: "TECHNICAL" }],
+      primary: { kind: "RECORD_ENTRY" }, menu: [{ kind: "SKIP" }, { kind: "DELETE" }, { kind: "TECHNICAL" }],
     });
-    expect(headerActions(detail(ledger(LIVE), { archived: true }).state).menu.map(entry => entry.kind)).toEqual(["CLOSE_TRADE", "TECHNICAL"]);
+    expect(headerActions(detail(ledger(LIVE), { archived: true }).state).menu.map(entry => entry.kind)).toEqual(["CLOSE_TRADE", "DELETE", "TECHNICAL"]);
     expect(nextStepHint(detail(ledger({ ...LOCKED, lifecycle: "LOCKED" }), { archived: true }), NOW, STRATEGY_TIME)?.text).toBe(
       "Record the entry when you take the trade, or skip it with a reason.",
     );
@@ -567,7 +576,7 @@ describe("a block recorded on an earlier trading day (§2.4, §6.3)", () => {
     const actions = headerActions(pageState(stale));
     expect(actions.primary).toEqual({ kind: "RECHECK_RISK", label: "Recheck risk" });
     expect(actions.secondary.map(action => action.label)).toEqual(["Edit draft"]);
-    expect(actions.menu.map(entry => [entry.kind, entry.compactOnly ?? false])).toEqual([["EDIT_DRAFT", true], ["DUPLICATE", false], ["DISCARD", false], ["TECHNICAL", false]]);
+    expect(actions.menu.map(entry => [entry.kind, entry.compactOnly ?? false])).toEqual([["EDIT_DRAFT", true], ["DUPLICATE", false], ["DISCARD", false], ["DELETE", false], ["TECHNICAL", false]]);
     // A block from today that an edit can clear keeps Edit draft as the next action with the exact reason (§2.4).
     const today = blockedAt("2026-10-23T18:44:00Z", [RISK_LIMIT]);
     expect(blockedOnEarlierDay(today)).toBe(false);

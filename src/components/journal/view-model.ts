@@ -425,7 +425,7 @@ export function rowView(row: TradeListRow, context: JournalContext, display: Tim
     direction: trade.direction ? DIRECTION_LABELS[trade.direction] : null,
     timeLabel: timeLabel(row, display),
     accountName: context.mode === "all" ? row.account.name : null,
-    model: trade.entry_model ? MODEL_LABELS[trade.entry_model] : null,
+    model: trade.custom_model_name ?? (trade.entry_model ? MODEL_LABELS[trade.entry_model] : null),
     plannedRisk: trade.requested_risk_percent !== null
       ? { text: formatPercent(trade.requested_risk_percent), tone: "neutral" }
       : { text: "—", tone: "muted", srText: planned ? (ended ? "No planned risk" : "No planned risk yet") : "No pre-trade plan recorded" },
@@ -443,6 +443,9 @@ export function rowView(row: TradeListRow, context: JournalContext, display: Tim
     aiReviewed: row.ai.reviews > 0,
     thumbnail: row.thumbnail ? { src: row.thumbnail.thumbSrc, extra: Math.max(0, trade.evidence_count - 1) } : null,
     evidenceCount: trade.evidence_count,
+    tradeId: trade.id,
+    open: trade.lifecycle === "LOCKED" || trade.lifecycle === "LIVE",
+    customModel: trade.custom_model_name !== null,
   };
 }
 

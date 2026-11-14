@@ -66,7 +66,7 @@ class Chain {
 
 class ActionDb {
   readonly results: Record<string, (args: Row) => { data: unknown; error: { message: string; code?: string } | null }> = {
-    trading_os_schema: () => ({ data: "2.0", error: null }),
+    trading_os_schema: () => ({ data: "2.1", error: null }),
   };
   readonly rpc = vi.fn(async (fn: string, args: Row = {}) => this.results[fn]?.(args) ?? { data: null, error: { message: `unexpected rpc ${fn}` } });
   readonly auth = { signOut: vi.fn(async () => ({ error: null })) };
@@ -159,7 +159,7 @@ describe("trading accounts (§3.2)", () => {
   it("refuses to write without the 2.0 schema", async () => {
     db.results.trading_os_schema = () => ({ data: "1.0", error: null });
     expect(await createTradingAccount(idleState, form(valid))).toEqual({
-      status: "error", message: "Database update required — this deployment expects Trading OS database version 2.0. No changes were made.",
+      status: "error", message: "Database update required — this deployment expects Trading OS database version 2.1. No changes were made.",
     });
     expect(db.writes()).toEqual([]);
   });

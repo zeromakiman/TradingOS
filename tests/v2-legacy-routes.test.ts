@@ -20,7 +20,7 @@ const OTHER = "10000000-0000-4000-8000-000000000002";
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/schema-gate", () => ({
-  getSchemaStatus: async () => (m.ready ? { ready: true, version: "2.0" } : { ready: false, reason: "OUTDATED", version: "1.4" }),
+  getSchemaStatus: async () => (m.ready ? { ready: true, version: "2.1" } : { ready: false, reason: "OUTDATED", version: "1.4" }),
 }));
 vi.mock("@/lib/account-context", () => ({
   currentSession: async () => ({

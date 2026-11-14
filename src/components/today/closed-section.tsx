@@ -1,6 +1,7 @@
 import { ArrowRight, CircleCheckBig } from "lucide-react";
 import Link from "next/link";
 import { Badge, StatusPill } from "@/components/ui/badge";
+import { TradeRowMenu } from "@/components/trade/trade-row-menu";
 import { buttonClasses } from "@/components/ui/button";
 import { CLOSED_EMPTY_DESCRIPTION, CLOSED_EMPTY_TITLE, CLOSED_TITLE, NO_R_COPY } from "./copy";
 import { AccountName, InlineEmpty, TodaySection, Value } from "./section";
@@ -58,6 +59,7 @@ function ClosedRow({ trade, showAccount }: { trade: ClosedTradeView; showAccount
             <ArrowRight aria-hidden="true" />
           </Link>
         )}
+        <TradeRowMenu tradeId={trade.id} href={trade.href} label={trade.title} open={trade.menu.open} duplicate={trade.menu.duplicate} />
       </div>
     </li>
   );

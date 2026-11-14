@@ -120,7 +120,7 @@ export function TradeHeader({ detail, now, display, lock, keys, duplicateNotes }
           </div>
         </div>
         {/* A draft blocked today only by what no edit clears leads with the step that does (`pageState`). */}
-        <TradeHeaderActions model={headerActions(pageState(detail, current))} context={context} />
+        <TradeHeaderActions model={headerActions(pageState(detail, current), { trashed: detail.technical.ledger.trashed_at !== null })} context={context} />
       </div>
       {hint && HintIcon && (
         <p className={cx("flex max-w-3xl items-start gap-2 text-sm leading-5", HINT_STYLE[hint.tone].className)} data-tone={hint.tone}>

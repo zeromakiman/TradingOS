@@ -2,6 +2,7 @@ import { ArrowRight, NotebookText, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import { Fragment } from "react";
 import { Badge, StatusPill } from "@/components/ui/badge";
+import { TradeRowMenu } from "@/components/trade/trade-row-menu";
 import { cx } from "@/components/ui/cx";
 import { LIVE_DESCRIPTION, LIVE_EMPTY_JOURNAL, LIVE_TITLE, RISK_NOT_RECORDED_HINT } from "./copy";
 import { liveCardId } from "./dom-ids";
@@ -97,12 +98,15 @@ function LiveTradeCard({ trade, nowIso, showAccount }: { trade: LiveTradeView; n
             {trade.screenshots && <span className="whitespace-nowrap"> · {trade.screenshots}</span>}
           </p>
         </div>
-        <p className="flex flex-none flex-col items-end">
-          <span className="text-lg leading-6 font-semibold text-1 num">
-            <LiveDuration since={trade.since} nowIso={nowIso} />
-          </span>{" "}
-          <span className="t-caption">live</span>
-        </p>
+        <div className="flex flex-none items-start gap-1">
+          <p className="flex flex-col items-end">
+            <span className="text-lg leading-6 font-semibold text-1 num">
+              <LiveDuration since={trade.since} nowIso={nowIso} />
+            </span>{" "}
+            <span className="t-caption">live</span>
+          </p>
+          <TradeRowMenu tradeId={trade.id} href={trade.href} label={trade.title} open={trade.menu.open} duplicate={trade.menu.duplicate} />
+        </div>
       </header>
       {/* A wide card (a single live trade) puts the last journal item beside the facts. */}
       <div className="grid gap-3 @3xl:grid-cols-2 @3xl:gap-x-6">

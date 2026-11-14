@@ -110,7 +110,7 @@ function plan(overrides: Partial<PlanDraft> = {}): PlanDraft {
 beforeEach(() => {
   vi.clearAllMocks();
   m.session.mockResolvedValue({ db: {}, user: { id: USER } });
-  m.schema.mockResolvedValue({ ready: true, version: "2.0" });
+  m.schema.mockResolvedValue({ ready: true, version: "2.1" });
 });
 
 describe("formAccount (what the forms send to the browser)", () => {

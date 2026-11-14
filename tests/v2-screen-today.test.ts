@@ -1068,7 +1068,7 @@ describe("Today · saveDailyContext", () => {
   });
 
   beforeEach(() => {
-    m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.0", error: null } : { data: uuid(900), error: null }));
+    m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.1", error: null } : { data: uuid(900), error: null }));
   });
 
   it("saves the notes as a new revision with plain line breaks and refreshes Today", async () => {
@@ -1098,14 +1098,14 @@ describe("Today · saveDailyContext", () => {
 
   it("maps database errors to human copy and never shows them raw", async () => {
     m.tables = accountRows();
-    m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.0", error: null } : { data: null, error: { message: "Account not found" } }));
+    m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.1", error: null } : { data: null, error: { message: "Account not found" } }));
     expect(await saveDailyContext(idleState, form({ accountId: FTMO, narrative: "x" }))).toEqual({ status: "error", message: "That trading account isn't available." });
   });
 
   it("gives the archived-account copy when the database refuses an account archived after the page's check", async () => {
     // Active when the action read it, archived by the time save_daily_context ran (another tab): the RPC refuses (0015).
     m.tables = accountRows();
-    m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.0", error: null }
+    m.rpc.mockImplementation(async (name: string) => (name === "trading_os_schema" ? { data: "2.1", error: null }
       : { data: null, error: { message: "ACCOUNT_ARCHIVED: This trading account is archived; restore it to add new trades or records" } }));
     expect(await saveDailyContext(idleState, form({ accountId: FTMO, narrative: "x" })))
       .toEqual({ status: "error", message: NOTES_ARCHIVED_COPY, fieldErrors: { accountId: NOTES_ARCHIVED_COPY } });

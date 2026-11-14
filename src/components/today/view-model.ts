@@ -32,7 +32,7 @@ import { NOT_RECORDED, RISK_NOT_RECORDED } from "./copy";
 import type { LiveManagement, PartialClose, StopMove } from "./management";
 import type {
   AccountStatusView, AccountValuesView, ClosedTradeView, DaySummaryView, LiveFactView, LiveTradeView, LossesView, NotesView, PillTone, PlanActionView,
-  PlanReasonView, PlanRowView, PlansView, ReasonAction, ReasonView, StatView, TodayView, ValueText, ValueTone,
+  PlanReasonView, PlanRowView, PlansView, ReasonAction, ReasonView, StatView, TodayView, TradeMenuView, ValueText, ValueTone,
 } from "./types";
 
 /**
@@ -424,6 +424,11 @@ function riskFact(trade: LedgerTrade, currency: string): LiveFactView {
   return { label: "Initial risk", value: riskMoney(trade.initial_risk, currency), tone: "default", hints: [`1R${planned}`] };
 }
 
+/** Open and Duplicate as draft of a trade's menu (Delete trade is unavailable while it is locked or live). */
+function menuView(row: TradeListRow): TradeMenuView {
+  return { open: row.trade.lifecycle === "LOCKED" || row.trade.lifecycle === "LIVE", duplicate: row.trade.origin === "PLANNED" && row.state.canDuplicate };
+}
+
 function liveView(card: LiveTradeCard, instrument: Instrument | null, management: LiveManagement | null, format: Formatter, requestKey: string): LiveTradeView {
   const { row } = card;
   const trade = row.trade;
@@ -459,6 +464,7 @@ function liveView(card: LiveTradeCard, instrument: Instrument | null, management
     screenshots: trade.evidence_count > 0 ? plural(trade.evidence_count, "screenshot") : null,
     instrument: instrument ? { tickSize: instrument.tickSize, quantityStep: instrument.quantityStep } : null,
     requestKey,
+    menu: menuView(row),
   };
 }
 
@@ -581,6 +587,7 @@ function planRow(group: PlanGroup, row: TradeListRow, instrument: Instrument | n
     meta: planMeta(group, row.trade, instrument, format),
     reason: planReason(group, row, reasons, day),
     actions: planActions(group, row, day),
+    menu: menuView(row),
   };
 }
 
@@ -644,6 +651,7 @@ function closedView(row: TradeListRow, format: Formatter): ClosedTradeView {
     pnl: trade.net_pnl !== null ? { text: formatSignedMoney(trade.net_pnl, row.account.currency), tone: signTone(trade.net_pnl) } : null,
     state: { label: row.state.label, tone: pillTone(row.state.tone) },
     action: row.state.lifecycle === "CLOSED" ? { label: row.state.nextAction?.label ?? "Write review", href: tradeTarget(row.href, TRADE_TARGETS.review) } : null,
+    menu: menuView(row),
   };
 }
 
