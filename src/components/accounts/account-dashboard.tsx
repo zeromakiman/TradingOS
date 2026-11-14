@@ -591,6 +591,7 @@ function breakdownData(dashboard: AccountDashboard, groups: AccountDashboard["br
 function BreakdownSection({ dashboard, metrics }: { dashboard: AccountDashboard; metrics: KnownFigures }) {
   const empty = { title: "No closed trades yet.", description: "Groups appear once trades on this account are closed." };
   const sample = breakdownSample({ closed: metrics.closedCount, excludedNoRiskBasis: metrics.excludedNoRiskBasis });
+  const customGroups = dashboard.breakdowns.customModel ?? [];
   return (
     <section aria-labelledby="account-breakdowns" className="flex flex-col">
       <SectionHeader
@@ -621,6 +622,23 @@ function BreakdownSection({ dashboard, metrics }: { dashboard: AccountDashboard;
             empty={empty}
           />
         </ChartCard>
+        {/* 0020: only once a closed trade was recorded with a custom model; "By model" above is unchanged. */}
+        {customGroups.length > 0 && (
+          <ChartCard>
+            <HBarChart
+              title="By custom model"
+              question="Which custom model performs? Custom models are journal labels, not validated by the Risk Engine."
+              sample={breakdownSample({
+                closed: customGroups.reduce((sum, group) => sum + group.metrics.closed, 0),
+                excludedNoRiskBasis: customGroups.reduce((sum, group) => sum + group.metrics.excludedNoRiskBasis, 0),
+              })}
+              data={breakdownData(dashboard, customGroups, "Custom model")}
+              categoryLabel="Custom model"
+              valueName="Net R"
+              empty={empty}
+            />
+          </ChartCard>
+        )}
       </div>
     </section>
   );

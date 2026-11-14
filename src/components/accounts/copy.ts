@@ -95,6 +95,7 @@ export const MANAGE_TABS = [
   { key: "external-losses", label: "External losses" },
   { key: "risk-policy", label: "Risk policy" },
   { key: "instruments", label: "Instruments" },
+  { key: "models", label: "Models" },
   { key: "connection", label: "Connection" },
 ] as const;
 export type ManageTab = (typeof MANAGE_TABS)[number]["key"];

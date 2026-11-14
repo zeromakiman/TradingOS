@@ -1376,7 +1376,7 @@ describe("trade extras loader", () => {
   it("degrades to empty extras on a failed read, logging a fixed event only", async () => {
     m.workspaceError = new Error("db down");
     const extras = await loadTradeExtras(detail(ledger()));
-    expect(extras).toEqual({ strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null });
+    expect(extras).toEqual({ strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null, customModels: [] });
     expect(m.failures).toEqual(["data_read_failed"]);
   });
 

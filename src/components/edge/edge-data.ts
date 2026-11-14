@@ -15,7 +15,7 @@ import { type EdgeQuery, type EdgeVersionNames, edgeFilters, parseEdgeQuery } fr
  */
 
 /** Breakdowns shown on EDGE (account contribution is added in All Accounts). */
-export const EDGE_PAGE_BREAKDOWNS: readonly BreakdownKey[] = ["model", "session", "weekday", "origin", "riskPercent", "strategyVersion", "riskPlanVersion"];
+export const EDGE_PAGE_BREAKDOWNS: readonly BreakdownKey[] = ["model", "customModel", "session", "weekday", "origin", "riskPercent", "strategyVersion", "riskPlanVersion"];
 
 export interface EdgeData {
   /** Server time of the request (presets, "today" on the calendar). */

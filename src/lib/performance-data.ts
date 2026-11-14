@@ -202,6 +202,7 @@ export function breakdownFilters(key: BreakdownKey, value: string | null, base: 
     case "strategyVersion": return { ...closed, strategyVersionId: value };
     case "riskPlanVersion": return { ...closed, riskPlanVersionId: value };
     case "account": return closed;
+    case "customModel": return { ...closed, customModel: value };
   }
 }
 

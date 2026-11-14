@@ -8,7 +8,10 @@ import type { TradeDetail } from "@/lib/trades-data";
 import { unitWord } from "./copy";
 import { EntryDetailsForm } from "./entry-details-form";
 import type { DetailField } from "./form-model";
-import { entryDefaults, entryLine, missingEntryFields, type PositionFact, positionFacts, positionRecordedLine, skipSlotNote, whenLabel } from "./model";
+import { CustomModelPicker } from "./custom-model-picker";
+import {
+  entryDefaults, entryLine, missingEntryFields, type PositionFact, positionFacts, positionRecordedLine, skipSlotNote, takesCustomModel, whenLabel,
+} from "./model";
 import { RecordEntryForm } from "./record-entry-form";
 import { TRADE_TARGETS } from "./reveal";
 import { SkipTradeButton } from "./review-controls";
@@ -234,6 +237,18 @@ function LiveFirstExecution({ detail, extras, now, display, entryDetailsKey }: E
         </div>
       )}
       {!live && missing.length > 0 && <p className="t-caption">Entry details can't be added after the close.</p>}
+      {takesCustomModel(detail) && (extras.customModels.length > 0 || detail.technical.ledger.custom_model_id !== null) && (
+        <CustomModelPicker
+          tradeId={detail.tradeId}
+          current={
+            detail.technical.ledger.custom_model_id && detail.technical.ledger.custom_model_name
+              ? { id: detail.technical.ledger.custom_model_id, name: detail.technical.ledger.custom_model_name }
+              : null
+          }
+          models={extras.customModels}
+          manageHref={`/accounts/${detail.account.id}/manage?tab=models`}
+        />
+      )}
     </WorkspaceSection>
   );
 }

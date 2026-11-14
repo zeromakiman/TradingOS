@@ -69,6 +69,14 @@ export interface FormAccount {
   strategyVersion: string | null;
   usage: FormUsage | null;
   gaps: FormGap[];
+  /** The account's active custom models (0020), by name: Record Live Trade offers them; Plan Trade never does. */
+  customModels: FormCustomModel[];
+}
+
+/** A custom model as Record Live Trade offers it: a journal label, never validated by the Risk Engine. */
+export interface FormCustomModel {
+  id: string;
+  name: string;
 }
 
 /** Plan Trade (`/trades/new`) and Record Live Trade (`/trades/live/new`). */

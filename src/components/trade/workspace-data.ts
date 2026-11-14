@@ -4,10 +4,11 @@ import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { type StrategyCard, strategyCard } from "@/domain/strategy-card";
 import { currentSession } from "@/lib/account-context";
+import { loadCustomModels } from "@/lib/custom-models-data";
 import { operationalFailure } from "@/lib/operational-log";
 import type { ProposalView, TradeDetail } from "@/lib/trades-data";
 import { type AccountWorkspace, getAccountWorkspace, parseRiskPlanRow, RISK_PLAN_SELECT, type WorkspaceRiskPlan } from "@/lib/workspace";
-import type { LockUsage, PositionDetail, PositionRecord } from "./model";
+import { type LockUsage, type PositionDetail, type PositionRecord, takesCustomModel } from "./model";
 
 /**
  * What the trade workspace needs beyond `getTradeDetail` (docs/V2_ARCHITECTURE.md §3.5, §8.1, §8.2, §12.1):
@@ -43,9 +44,17 @@ export interface TradeExtras {
    * the newer one, while the draft's own checks and lock still size with the values it was confirmed with. Null otherwise.
    */
   contractUpdated: { symbol: string } | null;
+  /**
+   * The account's active custom models (0020) a live-first or imported trade recorded with Other or no model can take;
+   * empty for every other trade.
+   */
+  customModels: { id: string; name: string }[];
 }
 
-export const EMPTY_EXTRAS: TradeExtras = Object.freeze({ strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null });
+export const EMPTY_EXTRAS: TradeExtras = Object.freeze({
+  strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null, customModels: [],
+});
+
 const D = Decimal.clone({ precision: 60 });
 
 const strategyRow = z.object({ id: z.uuid(), version: z.string(), rules: z.unknown() });
@@ -157,6 +166,19 @@ function instrumentOptions(workspace: AccountWorkspace, symbol: string | null): 
     .map(instrument => ({ id: instrument.id, label: `${instrument.symbol} · tick ${instrument.tickSize} · ${instrument.quantityUnit.split(" (")[0]}` }));
 }
 
+/** The account's active custom models; none when they can't be read (the picker then offers only clearing). */
+async function activeModels(accountId: string): Promise<{ id: string; name: string }[]> {
+  try {
+    const { db, user } = await currentSession();
+    const models = await loadCustomModels(db, user.id, { accountIds: [accountId] });
+    return models.filter(model => model.status === "ACTIVE").map(model => ({ id: model.id, name: model.name }));
+  } catch (error) {
+    unstable_rethrow(error);
+    operationalFailure("data_read_failed");
+    return [];
+  }
+}
+
 export async function loadTradeExtras(detail: TradeDetail): Promise<TradeExtras> {
   const { lifecycle } = detail.state;
   const planned = detail.origin === "PLANNED";
@@ -170,8 +192,12 @@ export async function loadTradeExtras(detail: TradeDetail): Promise<TradeExtras>
       return { ...EMPTY_EXTRAS, strategy, lockUsage: lockUsageOf(workspace), contractUpdated: contractUpdateOf(detail, workspace) };
     }
     if (!planned) {
-      const [records, workspace] = await Promise.all([positionRecords(detail), liveFirstWithoutContract ? getAccountWorkspace(detail.account.id) : null]);
-      return { ...EMPTY_EXTRAS, positionRecords: records, instruments: workspace ? instrumentOptions(workspace, detail.symbol) : [] };
+      const [records, workspace, customModels] = await Promise.all([
+        positionRecords(detail),
+        liveFirstWithoutContract ? getAccountWorkspace(detail.account.id) : null,
+        takesCustomModel(detail) ? activeModels(detail.account.id) : [],
+      ]);
+      return { ...EMPTY_EXTRAS, positionRecords: records, instruments: workspace ? instrumentOptions(workspace, detail.symbol) : [], customModels };
     }
     if (detail.plan) return { ...EMPTY_EXTRAS, strategy: await lockedStrategy(detail) };
     return { ...EMPTY_EXTRAS, lastProposal: await latestProposal(detail) };

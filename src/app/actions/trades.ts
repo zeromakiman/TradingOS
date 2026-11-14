@@ -35,7 +35,7 @@ import {
  * - recordEntry: tradeId, entry, quantity, enteredAt? (ISO with zone, or "now"; now when empty), confirmOversize
  * - closePlannedTrade: tradeId, exit, exitedAt? (ISO or "now"; now when empty), fees? (default 0)
  * - setDisposition: tradeId, status (SKIPPED|CANCELLED), reason
- * - recordLiveTrade: accountId, requestKey, instrumentId? | symbol?, direction, entryModel?, entryPrice?,
+ * - recordLiveTrade: accountId, requestKey, instrumentId? | symbol?, direction, entryModel?, customModelId? (with entryModel OTHER), entryPrice?,
  *   enteredAt? ("now", ISO with zone, or empty = unknown), quantity?, initialStop?, riskAmount?
  * - completeLiveEntry: tradeId, requestKey, instrumentId?, entryModel?, entryPrice?, enteredAt?, quantity?, initialStop?, riskAmount?
  * - closeLiveTrade: tradeId, exitPrice?, exitedAt? (ISO or "now"; now when empty), fees?, netPnl?
@@ -608,6 +608,11 @@ export async function recordLiveTrade(_prev: ActionState<LiveTradeResult>, form:
     const errors: Record<string, string> = { ...(ids.success ? {} : fieldErrors(ids.error, "accountId")), ...(fields.ok ? {} : fields.fieldErrors) };
     if (fields.ok && !fields.input.direction) errors.direction = FIELD_COPY.direction;
     if (fields.ok && !fields.input.instrumentId && !fields.input.symbol) errors.instrumentId = "Choose an instrument or enter the symbol.";
+    // A custom model (0020) is recorded as entry model OTHER, then set on the trade by its own idempotent RPC.
+    const customRaw = formText(form, "customModelId")?.trim().toLowerCase() ?? "";
+    const customModel = customRaw === "" ? null : uuid.safeParse(customRaw);
+    if (customModel !== null && !customModel.success) errors.entryModel = FIELD_COPY.entryModel;
+    if (customModel?.success && fields.ok && fields.input.entryModel !== "OTHER") errors.entryModel = FIELD_COPY.entryModel;
     if (!ids.success || !fields.ok || Object.keys(errors).length) return actionError(INVALID_COPY, errors);
     const blocked = await writableAccount(session, ids.data.accountId);
     if (blocked) return blocked;
@@ -623,8 +628,16 @@ export async function recordLiveTrade(_prev: ActionState<LiveTradeResult>, form:
     if (error) return rpcFailure(error, { IDEMPOTENCY_CONFLICT: LIVE_TRADE_CONFLICT_COPY }, LIVE_SQL_FIELDS);
     const tradeId = uuid.parse(data);
     await setContextCookie(LAST_ACCOUNT_COOKIE, ids.data.accountId);
+    let modelNote = "";
+    if (customModel?.success) {
+      const assigned = await db.rpc("set_trade_custom_model", { p_trade_id: tradeId, p_model_id: customModel.data });
+      if (assigned.error) {
+        if (rpcErrorCopy(assigned.error) === FAILED_COPY) operationalFailure("database_write_failed");
+        modelNote = " Its custom model could not be saved; choose it again on the trade page.";
+      }
+    }
     revalidateTrade(tradeId, ["/accounts"]);
-    return actionSuccess("Live trade recorded. Add notes and screenshots while it runs.", { tradeId });
+    return actionSuccess(`Live trade recorded. Add notes and screenshots while it runs.${modelNote}`, { tradeId });
   } catch (error) {
     return unexpected(error);
   }

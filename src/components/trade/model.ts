@@ -28,7 +28,7 @@ import {
 } from "@/domain/trade-state";
 import type { CheckView, ProposalView, TradeDetail } from "@/lib/trades-data";
 import {
-  DELETION_COPY, directionLabel, gradeLabel, liquidityLabel, MSS_TIMEFRAMES, modelLabel, NEWS_LABELS, OUTCOME_LABELS, PNL_SOURCE_LABELS, RISK_BASIS_LABELS,
+  CUSTOM_MODEL_BADGE, DELETION_COPY, directionLabel, gradeLabel, liquidityLabel, MSS_TIMEFRAMES, modelLabel, NEWS_LABELS, OUTCOME_LABELS, PNL_SOURCE_LABELS, RISK_BASIS_LABELS,
   unitWord,
 } from "./copy";
 
@@ -301,7 +301,7 @@ export function headerFacts(detail: TradeDetail, now: Instant, display: TimeDisp
   const ledger = detail.technical.ledger;
   const when = (instant: Instant) => whenLabel(instant, now, display);
   const facts: HeaderFact[] = [];
-  const model = modelLabel(detail.model);
+  const model = tradeModelText(detail);
   if (model) facts.push({ text: model });
   switch (detail.state.lifecycle) {
     case "DRAFT":
@@ -1029,7 +1029,9 @@ export function positionFacts(detail: TradeDetail, now: Instant, display: TimeDi
     : [];
   return [
     { label: "Instrument", value: [detail.symbol, directionLabel(detail.direction)].filter(Boolean).join(" · ") || null, ...contractHint },
-    { label: "Model", value: modelLabel(ledger.entry_model), ...addedHint("model") },
+    ledger.custom_model_name
+      ? { label: "Model", value: ledger.custom_model_name, hint: CUSTOM_MODEL_BADGE }
+      : { label: "Model", value: modelLabel(ledger.entry_model), ...addedHint("model") },
     { label: "Entry", value: ledger.entry_price === null ? null : formatPrice(ledger.entry_price, tick), ...addedHint("entryPrice") },
     { label: "Entry time", value: ledger.entered_at === null ? null : whenLabel(ledger.entered_at, now, display), ...addedHint("enteredAt") },
     { label: "Size", value: ledger.quantity === null ? null : `${formatQuantity(ledger.quantity, step)}${unit ? ` ${unit}` : ""}`, ...addedHint("quantity") },
@@ -1138,4 +1140,20 @@ export function entryDefaults(detail: TradeDetail): { entry: string; quantity: s
 /** Origin words for the badge; the live-first tooltip is the §15 sentence. */
 export function originBadge(origin: TradeOrigin, state: TradeState): { label: string; tooltip: string | null } {
   return { label: state.originLabel, tooltip: origin === "PLANNED" ? null : state.originTooltip ?? state.banner };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Custom models (0020).
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Whether the trade can take a custom model: live-first or imported, recorded with Other or no model. */
+export function takesCustomModel(detail: Pick<TradeDetail, "origin" | "technical">): boolean {
+  const model = detail.technical.ledger.entry_model;
+  return detail.origin !== "PLANNED" && (model === null || model === "OTHER");
+}
+
+/** "TSP + IFVG + CISD (Custom model · not validated by the Risk Engine)", or the entry model's own label. */
+export function tradeModelText(detail: Pick<TradeDetail, "model" | "technical">): string | null {
+  const custom = detail.technical.ledger.custom_model_name;
+  return custom ? `${custom} (${CUSTOM_MODEL_BADGE})` : modelLabel(detail.model);
 }

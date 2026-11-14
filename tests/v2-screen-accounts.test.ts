@@ -877,7 +877,7 @@ describe("Accounts loaders", () => {
     expect([...dashboard.curve, ...dashboard.drawdown, ...(dashboard.balanceCurve ?? [])].filter(point => point.tradeId !== null)).toEqual([]);
     expect(dashboard.daily).toEqual([]);
     expect(dashboard.calendar.closed).toBe(0);
-    expect(dashboard.breakdowns).toEqual({ model: [], session: [] });
+    expect(dashboard.breakdowns).toEqual({ model: [], session: [], customModel: [] });
     expect(dashboard.recentTrades).toHaveLength(dashboardTrades.length);
     // Complete reads keep every figure and series.
     m.ledgerRows.mockResolvedValue({ rows: partial, truncated: false });

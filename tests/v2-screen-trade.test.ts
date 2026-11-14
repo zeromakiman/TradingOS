@@ -274,7 +274,7 @@ function detailOf(s: Scenario): TradeDetail {
   };
 }
 
-const EXTRAS: TradeExtras = { strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null };
+const EXTRAS: TradeExtras = { strategy: null, lockUsage: null, instruments: [], lastProposal: null, positionRecords: [], contractUpdated: null, customModels: [] };
 
 // Scenarios ------------------------------------------------------------------------------------------------------------
 const LOCKED_FIELDS: Partial<LedgerTrade> = {

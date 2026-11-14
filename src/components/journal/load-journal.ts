@@ -68,9 +68,11 @@ async function versionNames(filters: TradeFilters, page: TradeListPage | null): 
   };
   let strategy = filters.strategyVersionId ? fromRows(row => (row.trade.strategy_version_id === filters.strategyVersionId ? row.trade.strategy_version : null)) : null;
   let riskPlan = filters.riskPlanVersionId ? fromRows(row => (row.trade.risk_plan_version_id === filters.riskPlanVersionId ? row.trade.risk_plan_version : null)) : null;
+  // A custom model's name comes from the page's own rows (every row of a customModel filter carries it).
+  const customModel = filters.customModel ? fromRows(row => (row.trade.custom_model_id === filters.customModel ? row.trade.custom_model_name : null)) : null;
   const needStrategy = filters.strategyVersionId !== undefined && strategy === null;
   const needRiskPlan = filters.riskPlanVersionId !== undefined && riskPlan === null;
-  if (!needStrategy && !needRiskPlan) return { strategy, riskPlan };
+  if (!needStrategy && !needRiskPlan) return { strategy, riskPlan, customModel };
   const { db, user } = await currentSession();
   const [strategies, riskPlans] = await Promise.all([
     needStrategy ? db.from("strategy_versions").select("id,version").eq("user_id", user.id).eq("id", filters.strategyVersionId as string).limit(1) : null,
@@ -79,7 +81,7 @@ async function versionNames(filters: TradeFilters, page: TradeListPage | null): 
   // A name is a nicety: when it cannot be read the chip says "selected version".
   if (strategies && !strategies.error) strategy = z.array(versionRow).safeParse(strategies.data).data?.[0]?.version ?? null;
   if (riskPlans && !riskPlans.error) riskPlan = z.array(versionRow).safeParse(riskPlans.data).data?.[0]?.version ?? null;
-  return { strategy, riskPlan };
+  return { strategy, riskPlan, customModel };
 }
 
 /**

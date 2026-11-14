@@ -19,7 +19,9 @@ import { TabLinks } from "@/components/ui/tab-links";
 import type { AccountManage, ExternalLossView, InstrumentVersionView, RiskPlanVersionView } from "@/lib/accounts-data";
 import type { WorkspaceObservation } from "@/lib/workspace";
 import { type ExternalExecution, READ_ONLY_SCOPE } from "@/lib/sync-service";
+import type { CustomModel } from "@/domain/custom-models";
 import { AccountStatusButton, DeleteAccountButton } from "./account-status-actions";
+import { CreateModelForm, CUSTOM_MODEL_NOTE, ModelList } from "./manage-models";
 import { ConfirmUnchangedButton, UpdateValuesForm } from "./account-values-forms";
 import { connectionLabel } from "./accounts-overview";
 import type { ConnectionDetails, LinkedTradeNote } from "./connection-data";
@@ -48,6 +50,8 @@ export interface ManageViewProps {
   connection: ConnectionDetails | null;
   /** Prefill of the instrument form (`?symbol=` of an existing instrument). */
   instrumentDraft: InstrumentDraft | null;
+  /** Models tab only: the account's custom models (0020). */
+  models?: readonly CustomModel[] | null;
 }
 
 function ManageHeader({ manage }: { manage: AccountManage }) {
@@ -835,12 +839,29 @@ function ConnectionPanel({ manage, display, connection }: ManageViewProps) {
   );
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Models (0020).
+// ---------------------------------------------------------------------------------------------------------
+function ModelsPanel({ manage, models }: ManageViewProps) {
+  return (
+    <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
+      <PanelCard id="models-heading" title="Models" description={CUSTOM_MODEL_NOTE}>
+        {models ? <ModelList models={models} /> : <p className="t-meta">Models couldn't be loaded. Reload the page to try again.</p>}
+      </PanelCard>
+      <PanelCard id="add-model-heading" title="Add model" description="Custom models appear in Record Live Trade's Model field, marked as not validated by the Risk Engine.">
+        <CreateModelForm accountId={manage.account.id} />
+      </PanelCard>
+    </div>
+  );
+}
+
 const PANELS: Readonly<Record<ManageTab, (props: ManageViewProps) => ReactNode>> = {
   profile: ProfilePanel,
   "account-values": ValuesPanel,
   "external-losses": ExternalLossesPanel,
   "risk-policy": RiskPolicyPanel,
   instruments: InstrumentsPanel,
+  models: ModelsPanel,
   connection: ConnectionPanel,
 };
 

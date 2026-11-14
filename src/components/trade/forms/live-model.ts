@@ -43,6 +43,27 @@ export interface LiveDraft {
   initialStop: string;
   riskAmount: string;
   entryModel: LiveModel | "";
+  /** A custom model of the account (0020); with it, the entry model is OTHER. Empty for none. */
+  customModelId: string;
+}
+
+/** Model select values that are not a model: a custom model is `custom:<id>`, and "Manage models…" opens Manage. */
+export const CUSTOM_MODEL_PREFIX = "custom:";
+export const MANAGE_MODELS_VALUE = "manage-models";
+
+/** The Model select's value of a draft: a Risk Engine model, Other, a custom model, or empty. */
+export function liveModelValue(draft: Pick<LiveDraft, "entryModel" | "customModelId">): string {
+  return draft.customModelId !== "" ? `${CUSTOM_MODEL_PREFIX}${draft.customModelId}` : draft.entryModel;
+}
+
+/** The draft's model fields for a Model select value; null for a value that is not a model choice. */
+export function liveModelChoice(value: string, account: FormAccount | null): Pick<LiveDraft, "entryModel" | "customModelId"> | null {
+  if (value === "" || value === "OB_FIRST_TOUCH" || value === "OTE" || value === "OTHER") return { entryModel: value, customModelId: "" };
+  if (value.startsWith(CUSTOM_MODEL_PREFIX)) {
+    const id = value.slice(CUSTOM_MODEL_PREFIX.length);
+    return account?.customModels.some(model => model.id === id) ? { entryModel: "OTHER", customModelId: id } : null;
+  }
+  return null;
 }
 
 export type LiveField = "accountId" | "instrumentId" | "symbol" | "direction" | "entryPrice" | "enteredAt" | "quantity" | "initialStop" | "riskAmount" | "entryModel";
@@ -65,11 +86,14 @@ export function newLiveDraft(account: FormAccount | null): LiveDraft {
     initialStop: "",
     riskAmount: "",
     entryModel: "",
+    customModelId: "",
   };
 }
 
 /** Moves the form to another account, keeping the symbol (as that account's instrument, or as "Other symbol"). */
-export function switchLiveAccount(draft: LiveDraft, next: FormAccount, accounts: readonly FormAccount[]): LiveDraft {
+export function switchLiveAccount(current: LiveDraft, next: FormAccount, accounts: readonly FormAccount[]): LiveDraft {
+  // Custom models belong to their account: the choice goes back to no model.
+  const draft = current.customModelId !== "" ? { ...current, entryModel: "" as const, customModelId: "" } : current;
   const previous = accounts.find(account => account.id === draft.accountId);
   const symbol = draft.instrumentId === OTHER_SYMBOL ? draft.symbol.trim().toUpperCase() : previous?.instruments.find(item => item.id === draft.instrumentId)?.symbol ?? "";
   const match = symbol ? next.instruments.find(item => item.symbol === symbol) : undefined;
@@ -132,7 +156,12 @@ export function validateLive(
   } else if (account) errors.instrumentId = LIVE_FIELD_COPY.instrumentId;
   if (draft.direction === "") errors.direction = LIVE_FIELD_COPY.direction;
   else fields.direction = draft.direction;
-  if (draft.entryModel !== "") fields.entryModel = draft.entryModel;
+  if (draft.customModelId !== "") {
+    if (account?.customModels.some(model => model.id === draft.customModelId)) {
+      fields.entryModel = "OTHER";
+      fields.customModelId = draft.customModelId;
+    } else errors.entryModel = LIVE_FIELD_COPY.customModel;
+  } else if (draft.entryModel !== "") fields.entryModel = draft.entryModel;
 
   const entryKnown = !draft.priceLater && isPositiveDecimal(draft.entryPrice);
   if (!draft.priceLater) {

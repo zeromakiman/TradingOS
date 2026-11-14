@@ -55,6 +55,8 @@ import {
 } from "@/components/trade/forms/copy";
 import { blocksPlainEnter, formKeyDown } from "@/components/trade/forms/form-parts";
 import { LIMIT_REACHED_BODY, LiveTradeForm, limitReachedTitle, liveUsageText } from "@/components/trade/forms/live-trade-form";
+import { CUSTOM_MODEL_PREFIX, liveModelChoice, liveModelValue } from "@/components/trade/forms/live-model";
+import { MODEL_GROUP_CUSTOM, MODEL_GROUP_VALIDATED } from "@/components/trade/forms/copy";
 import {
   derivedLiveRisk, type LiveDraft, liveTradeForm, newLiveDraft, OTHER_SYMBOL, strategyWallTime, switchLiveAccount, validateLive, wallTimeToInstant, withPriceLater,
 } from "@/components/trade/forms/live-model";
@@ -140,8 +142,9 @@ function account({ rrPolicy = "BLOCK", observationDay = DAY, usageOverrides = {}
     strategyVersion: "ICT V1.0",
     usage: { day: day.day, used: day.plannedSlots + day.unplannedTrades, planned: day.plannedSlots, unplanned: day.unplannedTrades, max: 2 },
     gaps: [],
+    customModels: [],
     ...overrides,
-  };
+  } as FormAccount;
 }
 
 const demo = () => account({ id: DEMO, name: "Demo 100K", description: "Demo", instruments: [DEMO_EURUSD] });
@@ -161,7 +164,7 @@ function planForm(props: Partial<PlanTradeFormProps> = {}) {
 function live(overrides: Partial<LiveDraft> = {}): LiveDraft {
   return {
     accountId: FTMO, instrumentId: EURUSD.id, symbol: "", direction: "LONG", entryPrice: "1.08500", priceLater: false, timing: "now", enteredAt: "", quantity: "",
-    initialStop: "", riskAmount: "", entryModel: "", ...overrides,
+    initialStop: "", riskAmount: "", entryModel: "", customModelId: "", ...overrides,
   };
 }
 
@@ -899,5 +902,52 @@ describe("legacy routes (spec §1.2)", () => {
 
   it("/preview opens sign-in", async () => {
     expect(await digestOf(() => LegacyPreviewPage())).toBe("NEXT_REDIRECT;replace;/login;307;");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Custom models (0020): journal labels of live-first trades, never validated by the Risk Engine.
+// ---------------------------------------------------------------------------------------------------------------------
+describe("Record Live Trade custom models", () => {
+  const TSP = { id: "c0000000-0000-4000-8000-000000000001", name: "TSP + IFVG + CISD" };
+  const withModels = () => account({ customModels: [TSP] });
+
+  it("sends entry model OTHER with the custom model, and refuses a model of another account", () => {
+    const choice = liveModelChoice(`${CUSTOM_MODEL_PREFIX}${TSP.id}`, withModels());
+    expect(choice).toEqual({ entryModel: "OTHER", customModelId: TSP.id });
+    expect(liveModelValue({ entryModel: "OTHER", customModelId: TSP.id })).toBe(`${CUSTOM_MODEL_PREFIX}${TSP.id}`);
+    expect(liveModelChoice("OTE", withModels())).toEqual({ entryModel: "OTE", customModelId: "" });
+    expect(liveModelChoice(`${CUSTOM_MODEL_PREFIX}${TSP.id}`, account())).toBeNull();
+    expect(liveModelChoice("manage-models", withModels())).toBeNull();
+    expect(validateLive(live({ entryModel: "OTHER", customModelId: TSP.id }), withModels(), NOW)).toEqual({
+      ok: true, fields: { accountId: FTMO, instrumentId: EURUSD.id, direction: "LONG", entryModel: "OTHER", customModelId: TSP.id, entryPrice: "1.08500", enteredAt: "now" },
+    });
+    expect(validateLive(live({ entryModel: "OTHER", customModelId: TSP.id }), account(), NOW)).toMatchObject({ ok: false, fieldErrors: { entryModel: LIVE_FIELD_COPY.customModel } });
+  });
+
+  it("drops the custom model when the account changes or the model is gone from restored entries", () => {
+    expect(switchLiveAccount(live({ entryModel: "OTHER", customModelId: TSP.id }), demo(), [withModels(), demo()])).toMatchObject({ entryModel: "", customModelId: "" });
+    const stored = { ...live({ entryModel: "OTHER", customModelId: TSP.id }) };
+    expect(restoreLiveDraft(stored, [withModels()], newLiveDraft(withModels()))).toMatchObject({ entryModel: "OTHER", customModelId: TSP.id });
+    expect(restoreLiveDraft(stored, [account()], newLiveDraft(account()))).toMatchObject({ entryModel: "", customModelId: "" });
+    // Entries kept before custom models existed have no customModelId.
+    const { customModelId: _omitted, ...older } = stored;
+    expect(restoreLiveDraft(older, [account()], newLiveDraft(account()))).toMatchObject({ customModelId: "" });
+  });
+
+  it("lists the Risk Engine's models, Other, the account's custom models and Manage models in one Model field", () => {
+    const markup = render(createElement(LiveTradeForm, { now: NOW, accounts: [withModels()], initial: newLiveDraft(withModels()) }));
+    expectClean(markup);
+    const text = visibleText(markup);
+    for (const words of ["Model", "No model", "OB first touch", "OTE", "Other", TSP.name, "Manage models…", "Add model"]) expect(text).toContain(words);
+    expect(decode(markup)).toContain(`label="${MODEL_GROUP_VALIDATED}"`);
+    expect(decode(markup)).toContain(`label="${MODEL_GROUP_CUSTOM}"`);
+  });
+
+  it("keeps Plan Trade to OB first touch and OTE, with no Add model", () => {
+    const text = visibleText(render(planForm({ accounts: [withModels()] })));
+    expect(text).not.toContain(TSP.name);
+    expect(text).not.toContain("Add model");
+    expect(text).not.toContain("Manage models");
   });
 });

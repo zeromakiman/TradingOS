@@ -72,7 +72,12 @@ export const DIRECTION_OPTIONS = [
 
 export const MODEL_LABELS: Readonly<Record<LiveModel, string>> = Object.freeze({ OB_FIRST_TOUCH: "OB first touch", OTE: "OTE", OTHER: "Other" });
 export const PLAN_MODELS: readonly PlanModel[] = Object.freeze(["OB_FIRST_TOUCH", "OTE"]);
-export const LIVE_MODELS: readonly LiveModel[] = Object.freeze(["OB_FIRST_TOUCH", "OTE", "OTHER"]);
+
+/** Record Live Trade's Model field (0020): the Risk Engine's models, Other, the account's custom models. */
+export const MODEL_GROUP_VALIDATED = "Risk Engine-validated";
+export const MODEL_GROUP_CUSTOM = "Custom · not validated by the Risk Engine";
+export const ADD_MODEL = "Add model";
+export const MANAGE_MODELS = "Manage models…";
 
 export const NEWS_LABELS: Readonly<Record<NewsStatus, string>> = Object.freeze({ UNKNOWN: "Not checked", CLEAR: "Checked · clear", RESTRICTED: "Restricted window" });
 export const NEWS_ORDER: readonly NewsStatus[] = Object.freeze(["UNKNOWN", "CLEAR", "RESTRICTED"]);
@@ -112,6 +117,7 @@ export const LIVE_FIELD_COPY = Object.freeze({
   symbol: "Use 1 to 20 capital letters, digits or . _ / - for the symbol.",
   direction: "Choose a direction: long or short.",
   entryModel: "Choose an entry model.",
+  customModel: "Choose a model of this trading account.",
   entryPrice: "Entry price must be a positive number with up to 8 decimals.",
   enteredAt: "Enter the entry date and time.",
   enteredAtFuture: "The entry time can't be in the future.",

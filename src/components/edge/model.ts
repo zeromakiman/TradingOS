@@ -290,6 +290,7 @@ const BREAKDOWN_COPY: Record<Exclude<BreakdownKey, "instrument" | "direction" | 
   riskPercent: { title: "Net R by planned risk", category: "Planned risk" },
   strategyVersion: { title: "Net R by strategy version", category: "Strategy version" },
   riskPlanVersion: { title: "Net R by risk plan version", category: "Risk plan version" },
+  customModel: { title: "Net R by custom model", category: "Custom model" },
 };
 
 const NULL_LABELS: Partial<Record<BreakdownKey, string>> = {
@@ -409,8 +410,22 @@ export function breakdownSections(view: PerformanceView, rows: readonly LedgerTr
     return accountId ? (names.get(accountId) ?? "Trading account") : null;
   };
   const sections: BreakdownSection[] = [];
-  for (const key of ["model", "session", "weekday", "origin", "riskPercent", "strategyVersion", "riskPlanVersion"] as const) {
+  for (const key of ["model", "customModel", "session", "weekday", "origin", "riskPercent", "strategyVersion", "riskPlanVersion"] as const) {
     const groups = view.breakdowns[key] ?? [];
+    // "By custom model" appears only once a closed trade was recorded with one (0020); "By model" stays as it was.
+    if (key === "customModel") {
+      if (groups.length === 0) continue;
+      const copy = BREAKDOWN_COPY.customModel;
+      sections.push({
+        key, title: copy.title, question: `${QUESTION} Custom models are journal labels, not validated by the Risk Engine.`, categoryLabel: copy.category,
+        sample: breakdownSample({
+          closed: groups.reduce((sum, group) => sum + group.metrics.closed, 0),
+          excludedNoRiskBasis: groups.reduce((sum, group) => sum + group.metrics.excludedNoRiskBasis, 0),
+        }),
+        data: groups.map(group => groupDatum(group, group.label)),
+      });
+      continue;
+    }
     if (key === "origin") {
       sections.push(originSection(groups, view.metrics, originFilter));
       if (view.contribution) sections.push(contributionSection(view));
@@ -540,7 +555,7 @@ function calendarTrade(trade: LedgerTrade, now: string, names: Map<string, strin
     href: `/trades/${trade.id}`,
     title: tradeTitle(trade),
     account: multi ? (names.get(trade.account_id) ?? "Trading account") : null,
-    model: trade.entry_model ? MODEL_LABELS[trade.entry_model] : null,
+    model: trade.custom_model_name ? `${trade.custom_model_name} (custom model)` : trade.entry_model ? MODEL_LABELS[trade.entry_model] : null,
     origin: state.originLabel,
     originNote: state.originTooltip,
     state: { label: state.label, tone: state.tone },

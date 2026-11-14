@@ -229,7 +229,8 @@ export interface AccountDashboard {
   calendar: LinkedCalendar;
   recentTrades: TradeListRow[];
   liveTrades: TradeListRow[];
-  breakdowns: { model: LinkedBreakdownGroup[]; session: LinkedBreakdownGroup[] };
+  /** `customModel` (0020) groups only the trades recorded with a custom model; empty when none was. */
+  breakdowns: { model: LinkedBreakdownGroup[]; session: LinkedBreakdownGroup[]; customModel?: LinkedBreakdownGroup[] };
   riskPlans: RiskPlanVersionView[];
   links: { journal: string; edge: string; manage: string };
   /**
@@ -301,6 +302,7 @@ export async function loadAccountDashboard(db: Db, userId: string, context: Acco
     breakdowns: {
       model: breakdown(closed, "model", { accountNames: names }).map(group => ({ ...group, href: breakdownHref(group, drill) })),
       session: breakdown(closed, "session", { accountNames: names }).map(group => ({ ...group, href: breakdownHref(group, drill) })),
+      customModel: breakdown(closed, "customModel", { accountNames: names }).map(group => ({ ...group, href: breakdownHref(group, drill) })),
     },
     riskPlans: riskPlanTimeline(riskPlans, strategyDay(now)),
     links: { journal: journalHref({}, { account: account.id }), edge: `/edge?account=${account.id}`, manage: `/accounts/${account.id}/manage` },

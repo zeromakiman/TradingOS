@@ -3,8 +3,10 @@ import { typeAndBroker } from "@/components/accounts/copy";
 import { evidenceTagText } from "@/components/evidence/labels";
 import { isEvidenceLabel, isTimeframe } from "@/components/evidence/types";
 import { LOCKED_PLAN_NOTE } from "@/domain/trade-state";
+import type { CustomModel } from "@/domain/custom-models";
 import type { DuplicateCandidate } from "@/domain/risk";
 import { type ContextAccount, currentSession, getAccountContext } from "@/lib/account-context";
+import { loadCustomModels } from "@/lib/custom-models-data";
 import { operationalFailure } from "@/lib/operational-log";
 import { getTradeDetail, type TradeDetail } from "@/lib/trades-data";
 import { type AccountWorkspace, getAccountWorkspace, loadAccountWorkspace, riskContextFor } from "@/lib/workspace";
@@ -43,8 +45,8 @@ function riskBase(workspace: AccountWorkspace): AccountRiskBase | null {
   };
 }
 
-/** A workspace as the forms read it. */
-export function formAccount(workspace: AccountWorkspace): FormAccount {
+/** A workspace as the forms read it; `customModels` are the account's active custom models (Record Live Trade). */
+export function formAccount(workspace: AccountWorkspace, customModels: readonly CustomModel[] = []): FormAccount {
   const { account, riskPlan, observation, strategy, usage } = workspace;
   return {
     id: account.id,
@@ -71,6 +73,9 @@ export function formAccount(workspace: AccountWorkspace): FormAccount {
       ? { day: usage.day, used: usage.plannedSlots + usage.unplannedTrades, planned: usage.plannedSlots, unplanned: usage.unplannedTrades, max: riskPlan.maxDailyTrades }
       : null,
     gaps: workspace.gaps,
+    customModels: customModels
+      .filter(model => model.accountId === account.id && model.status === "ACTIVE")
+      .map(model => ({ id: model.id, name: model.name })),
   };
 }
 
@@ -79,7 +84,7 @@ function unavailableAccount(account: ContextAccount): FormAccount {
   return {
     id: account.id, name: account.name, currency: account.currency, description: typeAndBroker(account.type, account.broker), instruments: [], riskPlan: null,
     risk: null, todaysPlans: [], riskPlanId: null, observationId: null, balance: null, equity: null, observationDay: null, strategyVersion: null, usage: null,
-    gaps: ["UNAVAILABLE"],
+    gaps: ["UNAVAILABLE"], customModels: [],
   };
 }
 
@@ -87,9 +92,14 @@ function unavailableAccount(account: ContextAccount): FormAccount {
 export async function loadTradeFormData(): Promise<TradeFormData> {
   const [{ db, user }, context] = await Promise.all([currentSession(), getAccountContext()]);
   const now = new Date().toISOString();
+  // Custom models only label live-first trades: a failed read leaves the picker with the Risk Engine's models.
+  const models = await loadCustomModels(db, user.id, { accountIds: context.active.map(account => account.id) }).catch(() => {
+    operationalFailure("data_read_failed");
+    return [];
+  });
   const accounts = await Promise.all(context.active.map(async account => {
     try {
-      return formAccount(await loadAccountWorkspace(db, user.id, account, now));
+      return formAccount(await loadAccountWorkspace(db, user.id, account, now), models);
     } catch {
       operationalFailure("data_read_failed");
       return unavailableAccount(account);

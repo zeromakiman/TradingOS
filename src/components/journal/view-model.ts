@@ -64,7 +64,8 @@ export interface JournalInput {
   /** Validated cursors of the previous pages, oldest first (`FIRST_PAGE_TOKEN` for page 1). */
   trail: readonly string[];
   /** Names for the version filters of drill-down links (never the ids). */
-  versionNames: { strategy: string | null; riskPlan: string | null };
+  /** `customModel` (0020): the name of the custom model a `customModel=<id>` link filters by, when known. */
+  versionNames: { strategy: string | null; riskPlan: string | null; customModel?: string | null };
 }
 
 type FilterKey = keyof TradeFilters;
@@ -290,6 +291,9 @@ export function extraChips(filters: TradeFilters, today: string, names: JournalI
     const text = filters.closedFrom && filters.closedTo ? `Closed ${closed}` : `Closed ${closed.charAt(0).toLowerCase()}${closed.slice(1)}`;
     chips.push({ key: "closed", label: text, removeHref: href(omit(filters, "closedFrom", "closedTo")) });
   }
+  if (filters.customModel) {
+    chips.push({ key: "custom-model", label: `Custom model: ${names.customModel ?? "selected model"}`, removeHref: href(omit(filters, "customModel")) });
+  }
   if (filters.weekday) chips.push({ key: "weekday", label: `Entry weekday: ${filters.weekday}`, removeHref: href(omit(filters, "weekday")) });
   if (filters.direction) chips.push({ key: "direction", label: `Direction: ${DIRECTION_LABELS[filters.direction]}`, removeHref: href(omit(filters, "direction")) });
   if (filters.riskPercent) chips.push({ key: "risk", label: `Planned risk: ${formatPercent(filters.riskPercent)}`, removeHref: href(omit(filters, "riskPercent")) });
@@ -315,6 +319,7 @@ export function extraChips(filters: TradeFilters, today: string, names: JournalI
 /** Filters the sheet does not edit; kept as hidden fields so applying the sheet never drops them. */
 const SHEET_KEPT: FilterKey[] = [
   "q", "closedFrom", "closedTo", "weekday", "direction", "riskPercent", "strategyVersionId", "riskPlanVersionId", "rFrom", "rTo", "accountFilter", "currency",
+  "customModel",
 ];
 
 function sheetView(filters: TradeFilters, today: string, activeCount: number): SheetView {

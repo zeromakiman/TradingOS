@@ -3,7 +3,7 @@
 import { ArrowDownRight, ArrowUpRight, ChevronLeft, Plus, Radio, RotateCcw } from "lucide-react";
 import Link from "next/link";
 import { unstable_rethrow, useRouter } from "next/navigation";
-import { type FormEvent, useRef, useState, useTransition } from "react";
+import { type FormEvent, useMemo, useRef, useState, useTransition } from "react";
 import { type ActionState, INVALID_COPY, idleState } from "@/app/actions/state";
 import { type LiveTradeResult, recordLiveTrade } from "@/app/actions/trades";
 import { manageHref } from "@/components/accounts/copy";
@@ -26,17 +26,20 @@ import { strategyClock } from "@/domain/session";
 import { formatTime, STRATEGY_ZONE_LABEL } from "@/domain/time-display";
 import { restoreLiveDraft, sameDraft } from "./autosave";
 import {
-  ADD_INSTRUMENT, DIRECTION_OPTIONS, DISCARD_RESTORED, GAP_COPY, LIVE_DESCRIPTION, LIVE_MODELS, LIVE_NO_PLAN_NOTE, LIVE_TITLE, MODEL_LABELS, OTHER_SYMBOL_LABEL,
+  ADD_INSTRUMENT, DIRECTION_OPTIONS, DISCARD_RESTORED, GAP_COPY, LIVE_DESCRIPTION, LIVE_NO_PLAN_NOTE, LIVE_TITLE, MANAGE_MODELS, MODEL_GROUP_CUSTOM, MODEL_GROUP_VALIDATED,
+  MODEL_LABELS, OTHER_SYMBOL_LABEL, PLAN_MODELS,
   PRICE_LATER, RESTORED_LIVE_BODY, RESTORED_TITLE, START_LIVE_JOURNAL, strategyTimeHint, TIMING_LABELS, TIMING_NOW_HINT, TIMING_UNKNOWN_HINT, UNREACHABLE_COPY,
 } from "./copy";
 import { AccountChip, focusField, FormSection, formKeyDown, GroupError, RequiredLegend, SEGMENTED_FULL_ON_PHONE } from "./form-parts";
 import { useLeaveGuard } from "./leave-guard";
 import {
-  derivedLiveRisk, ENTRY_TIMINGS, LIVE_FIELD_ORDER, type LiveDraft, type LiveField, type LiveFieldErrors, liveInstrument, liveServerErrors, liveTradeForm,
-  OTHER_SYMBOL, strategyWallTime, switchLiveAccount, validateLive, wallTimeToInstant, withPriceLater,
+  CUSTOM_MODEL_PREFIX, derivedLiveRisk, ENTRY_TIMINGS, LIVE_FIELD_ORDER, type LiveDraft, type LiveField, type LiveFieldErrors, liveInstrument, liveModelChoice,
+  liveModelValue, liveServerErrors, liveTradeForm, MANAGE_MODELS_VALUE, OTHER_SYMBOL, strategyWallTime, switchLiveAccount, validateLive, wallTimeToInstant,
+  withPriceLater,
 } from "./live-model";
+import { AddModelDialog } from "./add-model-dialog";
 import { pricePlaceholder } from "./plan-model";
-import type { FormAccount, FormUsage, LiveModel } from "./types";
+import type { FormAccount, FormCustomModel, FormUsage } from "./types";
 import { useFormAutosave } from "./use-autosave";
 import { useServerClock } from "./use-server-clock";
 import { ZonedTimeInput } from "../zoned-time-input";
@@ -69,9 +72,6 @@ const FIELD_IDS: Readonly<Record<LiveField, string>> = Object.freeze({
 const OPTIONAL_FIELDS: readonly LiveField[] = ["quantity", "initialStop", "riskAmount", "entryModel"];
 const TIMING_OPTIONS = ENTRY_TIMINGS.map(value => ({ value, label: TIMING_LABELS[value] }));
 
-function isLiveModel(value: string): value is LiveModel {
-  return (LIVE_MODELS as readonly string[]).includes(value);
-}
 
 /** `Today: 1 of 2 trades used. Live-first trades count toward the daily limits.` */
 export function liveUsageText(usage: FormUsage): string {
@@ -85,8 +85,17 @@ export function limitReachedTitle(usage: FormUsage): string {
 
 export const LIMIT_REACHED_BODY = "Record it anyway: an open position belongs in the journal, and it counts toward today's limits.";
 
-export function LiveTradeForm({ now: serverNow, accounts, initial, action = recordLiveTrade, autosaveKey = null }: LiveTradeFormProps) {
+export function LiveTradeForm({ now: serverNow, accounts: accountsProp, initial, action = recordLiveTrade, autosaveKey = null }: LiveTradeFormProps) {
   const router = useRouter();
+  // Models added with "+ Add model" on this page join their account's list at once (the page itself is not reloaded).
+  const [addedModels, setAddedModels] = useState<readonly (FormCustomModel & { accountId: string })[]>([]);
+  const accounts = useMemo(
+    () => accountsProp.map(item => {
+      const extra = addedModels.filter(model => model.accountId === item.id && !item.customModels.some(known => known.id === model.id));
+      return extra.length ? { ...item, customModels: [...item.customModels, ...extra.map(({ id, name }) => ({ id, name }))].sort((a, b) => a.name.localeCompare(b.name)) } : item;
+    }),
+    [accountsProp, addedModels],
+  );
   const toast = useOptionalToast();
   const modifier = useModifierKeyLabel();
   const format = useTimeFormat();
@@ -128,6 +137,7 @@ export function LiveTradeForm({ now: serverNow, accounts, initial, action = reco
   const strategyNow = formatTime(now);
   const earlierInstant = draft.timing === "earlier" ? wallTimeToInstant(draft.enteredAt) : null;
   const optionalErrors = OPTIONAL_FIELDS.some(field => errors[field]);
+  const selectedCustom = draft.customModelId !== "" ? (account?.customModels.find(model => model.id === draft.customModelId) ?? null) : null;
   const unit = instrument?.quantityUnit;
 
   const update = (change: Partial<LiveDraft> | ((current: LiveDraft) => LiveDraft), fields: readonly LiveField[]) => {
@@ -437,18 +447,67 @@ export function LiveTradeForm({ now: serverNow, accounts, initial, action = reco
             >
               <DecimalInput value={draft.riskAmount} readOnly={busy} endAdornment={account ? <span aria-hidden="true">{account.currency}</span> : undefined} onValueChange={riskAmount => update({ riskAmount }, ["riskAmount"])} />
             </Field>
-            <div id={FIELD_IDS.entryModel}>
-              <SegmentedControl
-                name="entryModel"
-                legend="Model"
-                legendHidden={false}
-                className={SEGMENTED_FULL_ON_PHONE}
-                options={LIVE_MODELS.map(model => ({ value: model, label: MODEL_LABELS[model] }))}
-                value={draft.entryModel}
+            <Field
+              label="Model"
+              optional
+              id={FIELD_IDS.entryModel}
+              error={errors.entryModel}
+              className="sm:max-w-[calc(50%-0.5rem)]"
+              hint={
+                <span className="flex flex-col gap-1">
+                  <span>{selectedCustom ? `${selectedCustom.name}: ${MODEL_GROUP_CUSTOM}. Recorded as Other.` : "OB first touch and OTE are validated by the Risk Engine; custom models are journal labels."}</span>
+                  {account && !unavailable && (
+                    <span className="flex flex-wrap items-center gap-x-3">
+                      <AddModelDialog
+                        accountId={account.id}
+                        disabled={busy}
+                        onCreated={model => {
+                          setAddedModels(current => [...current, { ...model, accountId: account.id }]);
+                          update({ entryModel: "OTHER", customModelId: model.id }, ["entryModel"]);
+                        }}
+                      />
+                      <Link href={manageHref(account.id, "models")} className="font-medium text-accent hover:underline">
+                        {MANAGE_MODELS}
+                      </Link>
+                    </span>
+                  )}
+                </span>
+              }
+            >
+              <Select
+                value={liveModelValue(draft)}
                 disabled={busy}
-                onValueChange={value => isLiveModel(value) && update({ entryModel: value }, ["entryModel"])}
-              />
-            </div>
+                onChange={event => {
+                  const value = event.target.value;
+                  if (value === MANAGE_MODELS_VALUE) {
+                    if (account) router.push(manageHref(account.id, "models"));
+                    return;
+                  }
+                  const choice = liveModelChoice(value, account);
+                  if (choice) update(choice, ["entryModel"]);
+                }}
+              >
+                <option value="">No model</option>
+                <optgroup label={MODEL_GROUP_VALIDATED}>
+                  {PLAN_MODELS.map(model => (
+                    <option key={model} value={model}>
+                      {MODEL_LABELS[model]}
+                    </option>
+                  ))}
+                </optgroup>
+                <option value="OTHER">{MODEL_LABELS.OTHER}</option>
+                {account && account.customModels.length > 0 && (
+                  <optgroup label={MODEL_GROUP_CUSTOM}>
+                    {account.customModels.map(model => (
+                      <option key={model.id} value={`${CUSTOM_MODEL_PREFIX}${model.id}`}>
+                        {model.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {account && !unavailable && <option value={MANAGE_MODELS_VALUE}>{MANAGE_MODELS}</option>}
+              </Select>
+            </Field>
           </Disclosure>
         </div>
 

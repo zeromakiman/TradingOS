@@ -167,6 +167,8 @@ const liveDraftSchema = z.object({
   initialStop: field(64),
   riskAmount: field(64),
   entryModel: z.enum(["", "OB_FIRST_TOUCH", "OTE", "OTHER"]),
+  // 0020: entries kept before custom models existed have none.
+  customModelId: field(64).default(""),
 });
 
 /**
@@ -209,5 +211,7 @@ export function restoreLiveDraft(stored: unknown, accounts: readonly FormAccount
     return fallback ? switchLiveAccount(draft, fallback, accounts) : { ...draft, accountId: "", instrumentId: "" };
   }
   const known = draft.instrumentId === "" || draft.instrumentId === OTHER_SYMBOL || account.instruments.some(item => item.id === draft.instrumentId);
-  return known ? draft : { ...draft, instrumentId: "" };
+  // A custom model that is gone or archived is not restored (the model goes back to no choice).
+  const model = draft.customModelId === "" || account.customModels.some(item => item.id === draft.customModelId) ? {} : { customModelId: "", entryModel: "" as const };
+  return { ...draft, ...model, ...(known ? {} : { instrumentId: "" }) };
 }

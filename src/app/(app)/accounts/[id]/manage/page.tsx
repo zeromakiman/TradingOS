@@ -4,7 +4,10 @@ import { loadConnectionDetails } from "@/components/accounts/connection-data";
 import { parseManageTab } from "@/components/accounts/copy";
 import type { InstrumentDraft } from "@/components/accounts/manage-instrument-form";
 import { ManageView } from "@/components/accounts/manage-view";
-import { getAccountContext, getPreferences } from "@/lib/account-context";
+import type { CustomModel } from "@/domain/custom-models";
+import { currentSession, getAccountContext, getPreferences } from "@/lib/account-context";
+import { loadCustomModels } from "@/lib/custom-models-data";
+import { operationalFailure } from "@/lib/operational-log";
 import { type AccountManage, getAccountManage } from "@/lib/accounts-data";
 
 type Params = Promise<{ id: string }>;
@@ -31,6 +34,17 @@ function instrumentDraft(manage: AccountManage, symbol: string | undefined): Ins
     : null;
 }
 
+/** The account's custom models with whether each was recorded on a trade; null when they couldn't be read. */
+async function loadAccountModels(accountId: string): Promise<CustomModel[] | null> {
+  const { db, user } = await currentSession();
+  try {
+    return await loadCustomModels(db, user.id, { accountIds: [accountId], withUse: true });
+  } catch {
+    operationalFailure("data_read_failed");
+    return null;
+  }
+}
+
 /** Manage a trading account (docs/V2_ARCHITECTURE.md §14.9); `?tab=` selects the section. */
 export default async function ManageAccountPage({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
   const [{ id }, query, preferences] = await Promise.all([params, searchParams, getPreferences()]);
@@ -38,6 +52,7 @@ export default async function ManageAccountPage({ params, searchParams }: { para
   const manage = await getAccountManage(id);
   if (!manage) notFound();
   const connection = tab === "connection" ? await loadConnectionDetails(manage.account.id) : null;
+  const models = tab === "models" ? await loadAccountModels(manage.account.id) : null;
   return (
     <ManageView
       manage={manage}
@@ -45,6 +60,7 @@ export default async function ManageAccountPage({ params, searchParams }: { para
       tab={tab}
       connection={connection}
       instrumentDraft={tab === "instruments" ? instrumentDraft(manage, first(query.symbol)) : null}
+      models={models}
     />
   );
 }

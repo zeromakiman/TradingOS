@@ -22,7 +22,9 @@ const M = Decimal.clone({ precision: 100 });
 export type PerformanceTrade = Pick<LedgerTrade,
   | "id" | "account_id" | "origin" | "currency" | "symbol" | "direction" | "entry_model" | "entered_at" | "exited_at"
   | "realized_r" | "net_pnl" | "fees" | "outcome" | "requested_risk_percent"
-  | "strategy_version_id" | "strategy_version" | "risk_plan_version_id" | "risk_plan_version">;
+  | "strategy_version_id" | "strategy_version" | "risk_plan_version_id" | "risk_plan_version">
+  // 0020: the custom model of a live-first or imported trade ("By custom model"); absent reads as none.
+  & Partial<Pick<LedgerTrade, "custom_model_id" | "custom_model_name">>;
 
 export type SampleBand = "NO DATA" | "VERY SMALL SAMPLE" | "SMALL SAMPLE" | "DEVELOPING SAMPLE" | "LARGER SAMPLE";
 
@@ -458,7 +460,10 @@ export function distributionR(trades: readonly PerformanceTrade[]): Distribution
   return { bins, count: withR.length, excludedNoRiskBasis: excluded };
 }
 
-export type BreakdownKey = "model" | "session" | "weekday" | "origin" | "account" | "riskPercent" | "strategyVersion" | "riskPlanVersion" | "instrument" | "direction";
+export type BreakdownKey =
+  | "model" | "session" | "weekday" | "origin" | "account" | "riskPercent" | "strategyVersion" | "riskPlanVersion" | "instrument" | "direction"
+  // 0020: only trades recorded with a custom model; "By model" (entry_model) is unchanged.
+  | "customModel";
 
 export interface BreakdownGroup {
   key: BreakdownKey;
@@ -504,6 +509,7 @@ function groupValue(trade: PerformanceTrade, key: BreakdownKey): string | null {
     case "riskPlanVersion": return trade.risk_plan_version_id;
     case "instrument": return trade.symbol;
     case "direction": return trade.direction;
+    case "customModel": return trade.custom_model_id ?? null;
   }
 }
 
@@ -518,6 +524,7 @@ function groupLabel(key: BreakdownKey, value: string | null, sampleTrade: Perfor
     case "riskPercent": return formatPercent(value);
     case "strategyVersion": return sampleTrade.strategy_version ?? "Strategy version";
     case "riskPlanVersion": return sampleTrade.risk_plan_version ?? "Risk plan version";
+    case "customModel": return sampleTrade.custom_model_name ?? "Custom model";
     default: return value;
   }
 }
@@ -537,7 +544,9 @@ function compareGroups(key: BreakdownKey, a: BreakdownGroup, b: BreakdownGroup):
 /** "Which conditions perform?" — closed trades grouped by one dimension, each group with its own N. */
 export function breakdown(trades: readonly PerformanceTrade[], key: BreakdownKey, options: BreakdownOptions = {}): BreakdownGroup[] {
   const groups = new Map<string, PerformanceTrade[]>();
-  for (const trade of trades.filter(isClosed)) {
+  // "By custom model" groups only the trades recorded with one: there is no "unknown" group.
+  const pool = key === "customModel" ? trades.filter(trade => isClosed(trade) && (trade.custom_model_id ?? null) !== null) : trades.filter(isClosed);
+  for (const trade of pool) {
     const value = groupValue(trade, key);
     const groupKey = value === null ? "\u0000unknown" : value;
     const members = groups.get(groupKey) ?? [];
