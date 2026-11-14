@@ -107,7 +107,7 @@ function ledger(changes: Row = {}): Row {
     exit_price: null, exited_at: null, close_recorded_at: null, fees: null, gross_pnl: null, net_pnl: null, realized_r: null, outcome: null, calculation_version: null, pnl_source: null,
     disposition: null, disposition_reason: null, legacy_decision: null, discarded_at: null, lifecycle: "DRAFT", draft_check: "BLOCKED", review_completed_at: null,
     setup_grade: null, liquidity_context: null, mss_timeframe: null, tags: [], tag_source: null,
-    evidence_count: 4, cover_evidence_id: ids.shotM5, cover_evidence_kind: "V2", journal_count: 0, ai_review_count: 0, ...changes,
+    evidence_count: 4, cover_evidence_id: ids.shotM5, cover_evidence_kind: "V2", journal_count: 0, ai_review_count: 0, trashed_at: null, custom_model_id: null, custom_model_name: null, ...changes,
   };
 }
 

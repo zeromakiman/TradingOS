@@ -231,7 +231,8 @@ describe("Journal URL filters", () => {
   it("matches nothing for a search without an instrument part or a matching record, instead of everything", () => {
     const { calls, query } = recorder();
     applyLedgerFilters(query, { mode: "all" }, { q: "%%%" }, []);
-    expect(calls).toEqual([["in", ["id", []]]]);
+    // Trades in Deleted trades (0020) are left out of every ledger read first.
+    expect(calls).toEqual([["is", ["trashed_at", null]], ["in", ["id", []]]]);
   });
 });
 

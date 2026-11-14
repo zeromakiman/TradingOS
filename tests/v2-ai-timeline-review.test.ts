@@ -122,7 +122,7 @@ function ledger(changes: Row = {}): Row {
     fees: "0", gross_pnl: "150", net_pnl: "150", realized_r: "3", outcome: "WIN", calculation_version: "FULL_CLOSE_V1", pnl_source: "CALCULATED",
     disposition: null, disposition_reason: null, legacy_decision: null, discarded_at: null, lifecycle: "CLOSED", draft_check: null, review_completed_at: null,
     setup_grade: "A", liquidity_context: null, mss_timeframe: null, tags: ["patient"], tag_source: "V2",
-    evidence_count: 4, cover_evidence_id: ids.preEntryShot, cover_evidence_kind: "V2", journal_count: 3, ai_review_count: 0, ...changes,
+    evidence_count: 4, cover_evidence_id: ids.preEntryShot, cover_evidence_kind: "V2", journal_count: 3, ai_review_count: 0, trashed_at: null, custom_model_id: null, custom_model_name: null, ...changes,
   };
 }
 

@@ -70,6 +70,8 @@ function detailOf({ lifecycle, origin = "PLANNED", archived = false, requests = 
     revisionCount: 2,
     draft: lifecycle === "DRAFT" ? { revision: 2 } : null,
     evidence: { items: [] },
+    // Not in Deleted trades (0020): the workspace shows no trashed banner.
+    technical: { ledger: { trashed_at: null } },
     ai: {
       activity: { reviews: 0, preTradeAnalyses: completed, lastCompletedAt: null },
       history: requests === null ? null : { latestRevision: 2, preTrade: groups, reviews: [], error: null },

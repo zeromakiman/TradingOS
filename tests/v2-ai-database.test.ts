@@ -531,7 +531,8 @@ describe("AI read models: public.trade_ai_activity and trade_ledger.ai_review_co
 
   it("redefines only trade_ledger.ai_review_count and keeps its columns, types and security_invoker", async () => {
     expect(ledgerAfter.columns).toEqual(ledgerBefore.columns);
-    expect(ledgerAfter.columns.map(column => column.split(" ")[0])).toEqual([...LEDGER_COLUMNS]);
+    // 0020 appends trashed_at, custom_model_id and custom_model_name after ai_review_count.
+    expect(ledgerAfter.columns.map(column => column.split(" ")[0])).toEqual(LEDGER_COLUMNS.filter(column => !["trashed_at", "custom_model_id", "custom_model_name"].includes(column)));
     expect(ledgerAfter.columns.at(-1)).toBe("ai_review_count integer");
     expect(ledgerAfter.options).toEqual(ledgerBefore.options);
     expect(ledgerAfter.options).toContain("security_invoker=true");

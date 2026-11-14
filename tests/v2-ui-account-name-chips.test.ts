@@ -67,6 +67,7 @@ function header(name: string): string {
     tradeId: TRADE, href: `/trades/${TRADE}`, title: "EURUSD · Long", origin: "LIVE_FIRST", draft: null,
     state: { lifecycle: "LIVE", label: "Live", tone: "live" },
     account: { id: ACCOUNT, name, currency: "USD", status: "ACTIVE" },
+    technical: { ledger: { trashed_at: null, custom_model_name: null } },
   } as unknown as TradeDetail;
   return renderToStaticMarkup(createElement(TradeHeader, {
     detail, now: "2026-10-23T14:00:00Z", display: { mode: "strategy" }, lock: null, keys: { discard: "k1", reopen: "k2" } as never, duplicateNotes: [],
