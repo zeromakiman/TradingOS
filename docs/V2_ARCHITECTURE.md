@@ -418,7 +418,7 @@ RPCs: `add_external_loss(p_account_id, p_amount text, p_note text, p_request_key
 
 ### 3.11 Schema marker
 
-`public.trading_os_schema() returns text` → `'2.0'` (stable, `security invoker`, granted to authenticated). The app layout calls it once per request; when missing, the app renders a full-page "Database update required" state and performs no writes (§13.10).
+`public.trading_os_schema() returns text` → `'2.0'`, `'2.1'` from 0020 (stable, `security invoker`, granted to authenticated). The app requires `'2.1'`. The app layout calls it once per request; when missing, the app renders a full-page "Database update required" state and performs no writes (§13.10).
 
 ### 3.12 Ledger view `public.trade_ledger` (security_invoker, one row per trade)
 
@@ -448,7 +448,8 @@ Planned trades take plan/proposal values from the locked plan when present, else
 | `0016_risk_engine_usage.sql` | §6 (engine/report v1.2, daily usage, precedence in engine paths, canonical decimals) | 0015 |
 | `0017_platform_connections.sql` | §8.6 (connections, external executions, links, ingest) | 0015 |
 | `0018_trade_ai_timeline.sql` | §11.3–11.4 (AI on trade evidence; timeline-aware trade review table + RPCs) | 0015 |
-| `0019_account_erasure.sql` | §10.4 (erasure, TRUNCATE guards on every public table, service_role DML revokes) — **must stay last** | all |
+| `0019_account_erasure.sql` | §10.4 (erasure, TRUNCATE guards on every public table, service_role DML revokes) — last of V2.0 | all |
+| `0020_trade_deletion_journal_models.sql` | V2.1: Deleted trades (`trade_trash_events`, ledger `trashed_at`), guarded permanent trade deletion and trading-account deletion (`trading_os.delete_scope`, `private.trade_counts_today`), per-account custom models (`custom_models`, revisions, `trade_custom_models`, ledger `custom_model_id`/`custom_model_name`), schema marker `'2.1'`. It installs for its own tables what 0019 installed for the earlier ones (RLS, immutability and TRUNCATE triggers, FK indexes, revokes); the erasure path is unchanged. | all |
 
 Every migration must apply cleanly on PGlite (PostgreSQL 18, plpgsql only, no extensions, single multi-statement exec) using the stub in `tests/*-database.test.ts`, and on Supabase PostgreSQL 17.
 
@@ -750,10 +751,13 @@ Settings → Connections UX per account: Manual (active), cTrader ("Read-only sy
 | Trade counts, win/loss/BE counts, win rate | yes | per-trade counts |
 | Realized R (net R, expectancy, R curve, R drawdown) | yes, labelled | R is normalized by each trade's own initial risk, so per-trade R values are comparable across account sizes; label "R is per-trade risk units, not money". R drawdown is computed on the combined exit-ordered trade sequence. Trades without a known risk basis are excluded from R statistics with a visible count. |
 | Money (P&L, fees, gross realized loss) | **only within one currency** | grouped by currency: "+$1,420.00 · +€380.00"; never converted (no FX) |
-| Percent returns, balances, equity | **no** | shown per account only |
+| Percent returns, equity | **no** | shown per account only |
+| Recorded balances | **only within one currency** (V2.1) | Today's All Accounts overview sums each active account's last recorded balance per currency, labelled "Sum of last recorded balances · not live equity · recorded <days>"; never converted, never called equity. Everywhere else balances stay per account. |
 | Account contribution | per account | table of each account's trades, net R, net P&L (own currency), share of total R |
 
 Sample-size protection (§13.8) applies to every aggregate.
+
+V2.1 All Accounts overview (Today, All Accounts context only; `src/domain/all-accounts-overview.ts`): trades closed in a strategy-calendar period of the UTC−5 exit day (`?range=` d today · w this week from Monday · m this month · y this year · all), P&L per currency (no percent), total and average R, win rate with W/L and trade counts across accounts, a cumulative P&L chart per currency (one at a time), and per-account rows whose trades, net R and per-currency P&L add up to the cards. A period whose trades exceed the read limit shows no figure, with the reason. Trades in Deleted trades are never counted on any screen; `private.daily_usage` still counts them.
 
 ### 9.4 Account metrics (deterministic, `src/domain/account-metrics.ts`)
 

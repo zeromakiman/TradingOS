@@ -31,6 +31,9 @@ V1 documents and verification records under `docs/` are kept as dated historical
 - **Advisory AI** (Analyze Setup, Challenge My Bias, timeline-aware Review Trade, Weekly / Recent / Monthly reviews)
   with concise cards, friendly source chips, strict citation validation and per-account budgets. AI never overrides a
   BLOCKED verdict and is never the default next action.
+- **V2.1**: Deleted trades with Restore and guarded permanent deletion, trading-account deletion (typed name; archive
+  stays the alternative), per-account custom models for live-first trades (journal labels, never validated by the Risk
+  Engine), and an All Accounts overview on Today (P&L per currency, R, win rate, P&L by account).
 - **Data rights**: Export my data (a ZIP assembled in the browser from RLS-scoped reads) and Delete Trading OS
   account (typed DELETE and password re-entry, then one atomic purge run by the trusted server).
 
@@ -38,11 +41,11 @@ V1 documents and verification records under `docs/` are kept as dated historical
 
 | Area | Route | Purpose |
 |---|---|---|
-| Today | `/today` | Session ribbon, trading status per account, live trades, plans waiting, today's closed trades |
+| Today | `/today` | All Accounts overview (`?range=` d, w, m, y or all), session ribbon, trading status per account, live trades, plans waiting, today's closed trades |
 | Plan Trade | `/trades/new` | Draft with the live risk preview; Save draft runs the free server check |
 | Record Live Trade | `/trades/live/new` | Minimal live-first form; "Earlier" entry times are typed in strategy time (UTC−5) |
 | Trade | `/trades/[id]`, `/trades/[id]/edit` | Plan, execution, live journal, evidence, result, review, AI, technical details |
-| Journal | `/journal` | Every trade, grouped by trade date, with filters and search |
+| Journal | `/journal`, `/trades/deleted` | Every trade, grouped by trade date, with filters and search; Deleted trades with Restore and Delete permanently |
 | EDGE | `/edge` | Statistics, charts, calendar and breakdowns; every mark drills down to its trades |
 | Accounts | `/accounts`, `/accounts/new`, `/accounts/[id]`, `/accounts/[id]/manage` | Account workspace, dashboards, profile, values, external losses, risk policy, instruments, connection |
 | Review | `/review/weekly`, `/review/recent`, `/review/monthly`, `/review/history` | Periodic AI reviews per account and AI history |
@@ -120,7 +123,7 @@ instance; `scripts/local-stack/` also verifies the migrations on real PostgreSQL
 
 ## Deployment
 
-Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) first. In short: apply migrations **0015–0019 in order** before deploying
+Read [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) first. In short: apply migrations **0015–0020 in order** before deploying
 V2 (until then every app page shows "Database update required" and nothing is written), keep `AI_ENABLED=false` on
 Preview and production until real-provider acceptance after the independent audit, and never set
 `TRADING_OS_ENABLE_MOCK_SYNC` outside local development. V2 has not been deployed.

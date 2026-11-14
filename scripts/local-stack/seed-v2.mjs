@@ -411,6 +411,18 @@ async function seedUser(ctx, user, variant) {
     await rpc("close_live_trade", { p_trade_id: closedId, p_input: plan.demoClosed.close });
     await rpc("add_journal_entry", { p_trade_id: closedId, p_kind: "LESSON", p_body: plan.demoClosed.lesson, p_details: {}, p_request_key: key("demo-closed-lesson") });
     marks.todayLiveFirstClosed = closedId;
+    // 0020: synthetic custom models of the demo account (journal labels, never validated by the Risk Engine). The
+    // live-first trade recorded with Other takes one; an archived model stays in Manage → Models only.
+    const models = [];
+    for (const [i, model] of [
+      { name: "TSP + IFVG + CISD", description: "Turtle soup into an inverse FVG, confirmed by a change in state of delivery." },
+      { name: "Breaker block" },
+      { name: "Silver bullet (retired)", description: "Kept for history." },
+    ].entries()) {
+      models.push((await rpc("create_custom_model", { p_account_id: accounts.demo.id, p_input: model, p_request_key: key("demo-custom-model", i) })).modelId);
+    }
+    await rpc("revise_custom_model", { p_model_id: models[2], p_input: { status: "ARCHIVED" } });
+    await rpc("set_trade_custom_model", { p_trade_id: closedId, p_model_id: models[0] });
     await rpc("add_external_loss", { p_account_id: accounts.demo.id, p_amount: plan.externalLoss.amount, p_note: plan.externalLoss.note, p_request_key: key("demo-external-loss") });
     if (marks.duplicateSource) {
       const copy = await rpc("duplicate_trade_draft", { p_trade_id: marks.duplicateSource, p_request_key: key("demo-duplicate"), ...(await expected(accounts.demo.id)) });
@@ -751,7 +763,7 @@ async function main() {
   if ((await httpStatus(`${GATEWAY_URL}/health`)) !== 200) fail(`The local gateway is not healthy at ${GATEWAY_URL}. Run node scripts/local-stack/start.mjs first.`);
   let schema = "";
   try { schema = sqlValue(stack, "select public.trading_os_schema()"); } catch { /* reported below */ }
-  if (schema !== "2.0") fail("The local database is not on schema 2.0 (migrations 0015–0019). Run node scripts/local-stack/start.mjs to apply them.");
+  if (schema !== "2.1") fail("The local database is not on schema 2.1 (migrations 0015–0020). Run node scripts/local-stack/start.mjs to apply them.");
   const emails = (arg("users") ?? DEFAULT_USERS.join(",")).split(",").map(e => e.trim().toLowerCase()).filter(Boolean);
   if (!emails.length) fail("--users needs at least one email address");
   for (const email of emails) if (!SYNTHETIC_EMAIL.test(email)) fail(`${email} is not a synthetic address. Use a reserved domain such as example.test.`);

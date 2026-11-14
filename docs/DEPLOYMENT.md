@@ -15,7 +15,8 @@ Hard rules for every environment:
 - Synthetic data only outside production. Never point a Preview at the production database, and never run test or
   acceptance scripts against a real account.
 - Migrations are additive and applied once, in order. Never edit or re-run an applied file.
-  V2 release note: 0015–0019 have so far been applied only to local development databases, and 0015 and 0017 were
+  V2 release note: 0015–0020 have so far been applied only to local development databases (0020, V2.1, lives on
+  the `feature/v2-ui-improvements` branch only), and 0015 and 0017 were
   edited during development after such local applications (those databases were reset or patched to match; the
   committed files are final, and a fresh apply equals the patched catalog). No hosted database has applied any V2
   file. From the first hosted application on, the rule above holds and every change ships as a new migration.
@@ -74,13 +75,14 @@ remove the key before deploying V2 there.
 | **0016_risk_engine_usage** | Risk Engine 1.1 with report 1.2: `private.daily_usage` and `get_daily_risk_usage` (planned and live-first slots and risk, realized and external losses, open exposure), `private.risk_report_v12`; every engine path evaluates with the active risk plan and today's usage. Stored 1.0/1.1 reports keep their meaning |
 | **0017_platform_connections** | Connection-ready, read-only platform model: connections, external executions deduplicated by `(connection_id, external_id)`, appended closes, connection events, append-only trade/execution links, overview views. Only the MOCK provider is accepted; ingest is service-only; a plan with a linked position cannot be skipped or cancelled (`linked_disposition_guard`) |
 | **0018_trade_ai_timeline** | AI on V2 drafts (latest revision only, V2 evidence), the timeline-aware trade review (`trade_timeline_reviews`, results, service-only RPCs, the `trade_ai_activity` view, AI review counts in `trade_ledger`), periodic reviews accepting the compact V2 facts, and the zero-cost release of dispatched AI requests that never reached the provider (`ai_request_generations` records the generation commit; SQL then refuses a release) |
-| **0019_account_erasure** | Owner-requested erasure (`purge_user_trading_data(p_user_id, p_confirm)`: executable by `service_role` only, called by the trusted server after the typed DELETE and password re-entry, so no user token can call it; one transaction, no AI request in flight, catalog-driven delete order, completeness check, de-identified receipt); statement-level TRUNCATE guards; service-role DML revoked except inserts on `setup_evaluation_passes` and `evaluator_versions` (V2 registers no legacy `setup_screenshots`); foreign-key lookup indexes; the V1 entry points that could bypass the trade model (`lock_trade_plan`, `evaluate_trade_plan`, `import_locked_setup`, `create_risk_version`, `record_observation`, `record_setup_decision`) revoked from `authenticated`. **Must stay the last migration** |
+| **0019_account_erasure** | Owner-requested erasure (`purge_user_trading_data(p_user_id, p_confirm)`: executable by `service_role` only, called by the trusted server after the typed DELETE and password re-entry, so no user token can call it; one transaction, no AI request in flight, catalog-driven delete order, completeness check, de-identified receipt); statement-level TRUNCATE guards; service-role DML revoked except inserts on `setup_evaluation_passes` and `evaluator_versions` (V2 registers no legacy `setup_screenshots`); foreign-key lookup indexes; the V1 entry points that could bypass the trade model (`lock_trade_plan`, `evaluate_trade_plan`, `import_locked_setup`, `create_risk_version`, `record_observation`, `record_setup_decision`) revoked from `authenticated`. Last migration of V2.0 |
+| **0020_trade_deletion_journal_models** (V2.1) | Deleted trades (`trash_trade`, `restore_trade`; hidden from every screen, still counted by `private.daily_usage`); `delete_trade_permanently` (typed `DELETE`, only from Deleted trades, refused while the trade counts toward the current strategy day's usage, has copies or an AI request of its account is in flight; AI spend records are never deleted) and `delete_trading_account` (typed name, every trade guard first, refused with AI history) through the owner-scoped `trading_os.delete_scope` flag; per-account custom models (`create_custom_model`, `revise_custom_model`, `delete_custom_model`, `set_trade_custom_model`) stored apart from the Risk Engine's `entry_model`; ledger columns `trashed_at`, `custom_model_id`, `custom_model_name`; schema marker `2.1`. Installs RLS, immutability and TRUNCATE triggers, FK indexes and revokes for its own tables; the erasure purge is unchanged and covers them. The trusted server removes a deleted trade's storage objects afterwards |
 
 ### Schema gate ("Database update required")
 
 The app reads `public.trading_os_schema()` once per request. While it is missing (any database before 0015) or reports
-a version older than `2.0`, every app page renders **"Database update required — this deployment expects Trading OS
-database version 2.0. No changes were made."** with a sign-out button, and every V2 server action refuses to write.
+a version older than `2.1`, every app page renders **"Database update required — this deployment expects Trading OS
+database version 2.1. No changes were made."** with a sign-out button, and every V2 server action refuses to write.
 Public pages still render. This keeps a V2 build that is pointed at an un-migrated database harmless.
 
 The marker is created by 0015, so the gate distinguishes "before V2" from "V2", not each file: apply **0015 through 0019
@@ -106,10 +108,10 @@ copy, with a synthetic user) what the local gateway emulates:
 1. Back up the database **and both storage buckets** (see below); keep the copy off the project.
 2. Compare the project's migration ledger with `supabase/migrations/`; files already applied are never re-run.
 3. Rehearse on a separate restored copy (or the local stack: `node scripts/local-stack/reset.mjs --through=0014`, seed
-   V1 data, then `start.mjs`): apply 0015–0019 in order, then run the app and the acceptance checks.
-4. Apply 0015, 0016, 0017, 0018 and 0019 in order through a migration workflow that records the ledger. Each file ends
+   V1 data, then `start.mjs`): apply 0015–0020 in order, then run the app and the acceptance checks.
+4. Apply 0015, 0016, 0017, 0018, 0019 and 0020 in order through a migration workflow that records the ledger. Each file ends
    with `notify pgrst, 'reload schema'`.
-5. Verify: `select public.trading_os_schema()` returns `2.0`; the RLS/grants catalogue (`tests/v2-schema-catalog.test.ts`
+5. Verify: `select public.trading_os_schema()` returns `2.1`; the RLS/grants catalogue (`tests/v2-schema-catalog.test.ts`
    describes the expectations); the `trade-evidence` bucket is private; anonymous requests see no table; the
    pre-deployment checks above pass.
 6. Deploy the V2 build with the environment above. Sign in with a synthetic test user on staging and run the smoke

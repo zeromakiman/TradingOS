@@ -233,7 +233,7 @@ Browser acceptance for V2 (docs/V2_ARCHITECTURE.md §16.2) needs realistic data 
 provide them; both use the running local stack only and synthetic users only.
 
 ```sh
-node scripts/local-stack/start.mjs              # stack up; applies 0015–0019 (schema 2.0)
+node scripts/local-stack/start.mjs              # stack up; applies 0015–0020 (schema 2.1)
 node scripts/local-stack/seed-v2.mjs            # v2.trader.a@example.test + v2.trader.b@example.test
 node scripts/local-stack/screenshot.mjs --start-app --user=v2.trader.a@example.test --out=.local/screenshots/v2 login today journal edge dev/ui
 node scripts/local-stack/screenshot.mjs --start-app --user=v2.trader.a@example.test --out=.local/screenshots/v2 --viewport=393x852 --theme=dark today
