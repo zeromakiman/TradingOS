@@ -397,20 +397,24 @@ describe("live-first trades (§3.5, §8.2)", () => {
   it("records a custom model only when it is an active model of the account, and refuses anything else before recording (0020)", async () => {
     const MODEL = "c0000000-0000-4000-8000-000000000001";
     const OTHER_ACCOUNT = "20000000-0000-4000-8000-000000000009";
-    const withModel = (account: string, status: "ACTIVE" | "ARCHIVED") => useDb({
+    const modelTables = (account: string, status: "ACTIVE" | "ARCHIVED") => ({
       ...accountTables(),
       custom_models: [{ id: MODEL, user_id: USER, account_id: account }],
       custom_model_revisions: [{ id: 1, model_id: MODEL, user_id: USER, status: "ACTIVE" }, { id: 2, model_id: MODEL, user_id: USER, status }],
     });
     const fields = { accountId: ACCOUNT, requestKey: KEY, symbol: "EURUSD", direction: "LONG", entryModel: "OTHER", customModelId: MODEL };
     const refused = { status: "error", message: "Choose an active model of this trade's account.", fieldErrors: { entryModel: "Choose an active model of this trade's account." } };
-    for (const [account, status] of [[ACCOUNT, "ARCHIVED"], [OTHER_ACCOUNT, "ACTIVE"]] as const) {
-      withModel(account, status);
-      db.results.record_live_trade = () => ({ data: TRADE, error: null });
-      expect(await recordLiveTrade(idleState, form(fields))).toEqual(refused);
-      expect(db.writes()).toEqual([]);
-    }
-    withModel(ACCOUNT, "ACTIVE");
+    // Archived model of the account.
+    useDb(modelTables(ACCOUNT, "ARCHIVED"));
+    db.results.record_live_trade = () => ({ data: TRADE, error: null });
+    expect(await recordLiveTrade(idleState, form(fields))).toEqual(refused);
+    expect(db.writes()).toEqual([]);
+    // Active model of another account.
+    useDb(modelTables(OTHER_ACCOUNT, "ACTIVE"));
+    db.results.record_live_trade = () => ({ data: TRADE, error: null });
+    expect(await recordLiveTrade(idleState, form(fields))).toEqual(refused);
+    expect(db.writes()).toEqual([]);
+    useDb(modelTables(ACCOUNT, "ACTIVE"));
     db.results.record_live_trade = () => ({ data: TRADE, error: null });
     db.results.set_trade_custom_model = () => ({ data: { tradeId: TRADE, modelId: MODEL }, error: null });
     expect(await recordLiveTrade(idleState, form(fields))).toMatchObject({ status: "success", data: { tradeId: TRADE } });

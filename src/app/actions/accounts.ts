@@ -387,6 +387,24 @@ const ACCOUNT_DELETION_COPY: Readonly<Record<string, string>> = Object.freeze({
 
 const accountDeletionResult = z.object({ accountId: z.uuid(), tradeIds: z.array(z.uuid()), storagePaths: deletionStorageSchema });
 
+/**
+ * Every trade of the account (any origin and state, Deleted trades included): what delete_trading_account would
+ * delete, for its confirmation. Read with the user's session (RLS); null when it can't be read.
+ */
+export async function accountTradeCount(accountId: string): Promise<number | null> {
+  try {
+    const id = uuid.safeParse(typeof accountId === "string" ? accountId.toLowerCase() : null);
+    if (!id.success) return null;
+    const session = await writableSession();
+    if (!session) return null;
+    const { count, error } = await session.db.from("trades").select("id", { count: "exact", head: true }).eq("account_id", id.data).eq("user_id", session.user.id);
+    return error || count === null ? null : count;
+  } catch (error) {
+    unstable_rethrow(error);
+    return null;
+  }
+}
+
 export async function deleteTradingAccount(_prev: ActionState<{ deleted: true }>, form: FormData): Promise<ActionState<{ deleted: true }>> {
   try {
     const session = await writableSession();

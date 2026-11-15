@@ -44,15 +44,18 @@ import {
   addExternalLoss, archiveAccount, confirmAccountValuesUnchanged, createInstrument, createRiskPolicyVersion, createTradingAccount, recordAccountValues,
   removeExternalLoss, restoreAccount, updateProfile,
 } from "@/app/actions/accounts";
+import { accountTradeCount } from "@/app/actions/accounts";
 import { setAccountContext, setDeveloperMode, setTheme, setTimeDisplay, signOut } from "@/app/actions/context";
+import { renameCustomModel } from "@/app/actions/models";
 import { changePassword } from "@/app/actions/settings";
 import { idleState } from "@/app/actions/state";
 
 class Chain {
   private readonly predicates: ((row: Row) => boolean)[] = [];
   private single = false;
+  private counted = false;
   constructor(private readonly rows: Row[]) {}
-  select(): this { return this; }
+  select(_columns?: string, options?: { count?: string }): this { this.counted = options?.count === "exact"; return this; }
   eq(column: string, value: unknown): this { this.predicates.push(row => row[column] === value); return this; }
   order(): this { return this; }
   limit(): this { return this; }
@@ -60,7 +63,7 @@ class Chain {
   // biome-ignore lint/suspicious/noThenProperty: models the thenable PostgREST query builder of supabase-js.
   then<A>(resolve: (value: { data: unknown; error: null }) => A): Promise<A> {
     const rows = this.rows.filter(row => this.predicates.every(predicate => predicate(row)));
-    return Promise.resolve({ data: this.single ? rows[0] ?? null : rows, error: null }).then(resolve);
+    return Promise.resolve({ data: this.single ? rows[0] ?? null : rows, error: null, ...(this.counted ? { count: rows.length } : {}) }).then(resolve);
   }
 }
 
@@ -196,6 +199,30 @@ describe("trading accounts (§3.2)", () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
+describe("trading-account deletion and custom models (0020)", () => {
+  it("counts every trade of the account for the delete confirmation, whatever its state, and only the user's", async () => {
+    useDb({
+      trades: [
+        { id: "a1", account_id: ACCOUNT, user_id: USER }, { id: "a2", account_id: ACCOUNT, user_id: USER }, { id: "a3", account_id: ACCOUNT, user_id: USER },
+        { id: "b1", account_id: ARCHIVED, user_id: USER }, { id: "x1", account_id: ACCOUNT, user_id: "someone-else" },
+      ],
+    });
+    expect(await accountTradeCount(ACCOUNT)).toBe(3);
+    expect(await accountTradeCount("not-an-id")).toBeNull();
+  });
+
+  it("always sends the description when a model is renamed, so emptying it clears it", async () => {
+    const MODEL = "c0000000-0000-4000-8000-000000000001";
+    db.results.revise_custom_model = () => ({ data: 2, error: null });
+    expect(await renameCustomModel(idleState, form({ modelId: MODEL, name: "Breaker block", description: "" }))).toMatchObject({ status: "success" });
+    expect(await renameCustomModel(idleState, form({ modelId: MODEL, name: "Breaker block", description: " Retested " }))).toMatchObject({ status: "success" });
+    expect(db.calls("revise_custom_model")).toEqual([
+      { p_model_id: MODEL, p_input: { name: "Breaker block", description: "" } },
+      { p_model_id: MODEL, p_input: { name: "Breaker block", description: "Retested" } },
+    ]);
+  });
+});
+
 describe("account values and external losses (§8.4)", () => {
   it("records values and confirms unchanged values with the latest observation", async () => {
     useDb({ account_observations: [{ id: OBS, account_id: ACCOUNT, user_id: USER, balance: "10000.00", equity: "9990.50", gross_loss_today: null, trading_day: "2026-10-13", recorded_at: "2026-10-13T12:00:00.000Z" }] });

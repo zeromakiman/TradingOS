@@ -3,8 +3,8 @@
 import { Archive, ArchiveRestore, LayoutDashboard, MoreHorizontal, Scale, Settings2, Trash2 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type ReactElement, useRef, useState } from "react";
-import { archiveAccount, deleteTradingAccount, restoreAccount } from "@/app/actions/accounts";
+import { type ReactElement, useEffect, useRef, useState, useTransition } from "react";
+import { accountTradeCount, archiveAccount, deleteTradingAccount, restoreAccount } from "@/app/actions/accounts";
 import { idleState } from "@/app/actions/state";
 import { Button, IconButton } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
@@ -100,7 +100,7 @@ export function AccountStatusButton({ accountId, name, status }: { accountId: st
  * item that is gone by the time it closes, so focus is given back here (§13.5): to this menu button after Cancel or
  * Escape, or to the Active accounts heading once the account moved between the active and archived groups.
  */
-export function AccountRowMenu({ accountId, name, status, trades = null }: { accountId: string; name: string; status: Status; trades?: KnownTrades | null }) {
+export function AccountRowMenu({ accountId, name, status }: { accountId: string; name: string; status: Status }) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const pendingDelete = useRef(false);
@@ -165,7 +165,6 @@ export function AccountRowMenu({ accountId, name, status, trades = null }: { acc
         accountId={accountId}
         name={name}
         status={status}
-        trades={trades}
         open={deleteOpen}
         onOpenChange={open => {
           setDeleteOpen(open);
@@ -186,36 +185,55 @@ export function AccountRowMenu({ accountId, name, status, trades = null }: { acc
   );
 }
 
-/** What the row knows about the account's trades (closed and live counts), when it knows it. */
-export interface KnownTrades {
-  closed: number;
-  live: number;
-}
-
 export interface DeleteAccountDialogProps {
   accountId: string;
   name: string;
   status: Status;
-  trades?: KnownTrades | null;
   trigger?: ReactElement;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }
 
+/** "12 trades will be deleted": every trade of the account, of any origin and state, Deleted trades included. */
+export function tradeCountTitle(count: number | null | undefined): string {
+  if (count === undefined) return "Counting the account's trades…";
+  if (count === null) return "Every trade of the account is deleted too";
+  return count === 0 ? "This account has no trades" : `${count} trade${count === 1 ? "" : "s"} will be deleted`;
+}
+
 /**
- * Delete trading account (0020): the warning, the Archive alternative, the typed name and, when it has trades, the
- * explicit confirmation that they are deleted too. The database refuses while any trade is open or counts toward today's
- * limits, an AI request is in flight, or AI history exists (archive instead); nothing is deleted then.
+ * Delete trading account (0020): the account's total trade count (every origin and state, Deleted trades included,
+ * read when the dialog opens), the warning, Archive as the alternative (also after a refusal), the typed name and, when
+ * it has trades, the explicit confirmation that they are deleted too. The database refuses while any trade is open or
+ * counts toward today's limits, an AI request is in flight, or AI history exists; nothing is deleted then.
  */
-export function DeleteAccountDialog({ accountId, name, status, trades, trigger, open, onOpenChange }: DeleteAccountDialogProps) {
+export function DeleteAccountDialog({ accountId, name, status, trigger, open, onOpenChange }: DeleteAccountDialogProps) {
   const toast = useOptionalToast();
   const router = useRouter();
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const isOpen = open ?? uncontrolledOpen;
   const [typed, setTyped] = useState("");
   const [withTrades, setWithTrades] = useState(false);
-  const reset = () => {
-    setTyped("");
-    setWithTrades(false);
+  // undefined while it is read; null when it couldn't be read.
+  const [count, setCount] = useState<number | null | undefined>(undefined);
+  const [archiving, startArchive] = useTransition();
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const setOpen = (next: boolean) => {
+    if (!next) {
+      setTyped("");
+      setWithTrades(false);
+      setArchiveError(null);
+    }
+    if (open === undefined) setUncontrolledOpen(next);
+    onOpenChange?.(next);
   };
+  useEffect(() => {
+    if (!isOpen) return;
+    let current = true;
+    setCount(undefined);
+    accountTradeCount(accountId).then(value => { if (current) setCount(value); }, () => { if (current) setCount(null); });
+    return () => { current = false; };
+  }, [isOpen, accountId]);
   const confirm = async () => {
     const form = new FormData();
     form.set("accountId", accountId);
@@ -224,20 +242,25 @@ export function DeleteAccountDialog({ accountId, name, status, trades, trigger, 
     const result = await deleteTradingAccount(idleState, form);
     if (result.status === "success") {
       toast?.toast({ title: result.message ?? "Trading account deleted.", tone: "positive" });
-      reset();
       router.push("/accounts?account=all");
     }
     return result;
   };
-  const count = trades ? trades.closed + trades.live : null;
+  const archive = () => startArchive(async () => {
+    const form = new FormData();
+    form.set("accountId", accountId);
+    const result = await archiveAccount(idleState, form).catch(() => ({ status: "error" as const, message: "The account could not be archived. Please try again." }));
+    if (result.status === "success") {
+      toast?.toast({ title: result.message ?? "Account archived.", tone: "positive" });
+      setOpen(false);
+      router.refresh();
+    } else if (result.status === "error") setArchiveError(result.message);
+  });
   return (
     <ConfirmDialog
       trigger={trigger}
-      open={open}
-      onOpenChange={next => {
-        if (!next) reset();
-        onOpenChange?.(next);
-      }}
+      open={isOpen}
+      onOpenChange={setOpen}
       tone="danger"
       title={`Delete ${name}?`}
       description={DELETE_ACCOUNT_COPY.description}
@@ -247,11 +270,21 @@ export function DeleteAccountDialog({ accountId, name, status, trades, trigger, 
       onConfirm={confirm}
     >
       <div className="flex flex-col gap-4">
-        <Callout tone="warning" title={count === null ? "Its trades are deleted too" : count === 0 ? "No closed or live trades recorded" : `${count} trade${count === 1 ? "" : "s"} will be deleted`}>
-          {trades && trades.live > 0 ? `${trades.live} live trade${trades.live === 1 ? " is" : "s are"} still open: close ${trades.live === 1 ? "it" : "them"} first. ` : ""}
+        <Callout tone="warning" title={tradeCountTitle(count)}>
+          {count ? "Drafts, skipped, cancelled and discarded trades and those in Deleted trades are included. " : ""}
           {DELETE_ACCOUNT_COPY.warning}
         </Callout>
-        {status === "ACTIVE" && <p className="t-meta">{DELETE_ACCOUNT_COPY.archiveAlternative}</p>}
+        {status === "ACTIVE" && (
+          <div className="flex flex-col gap-2 rounded-control border border-border p-3">
+            <p className="t-meta">{DELETE_ACCOUNT_COPY.archiveAlternative}</p>
+            <div>
+              <Button variant="secondary" size="sm" icon={<Archive aria-hidden="true" />} loading={archiving} loadingText="Archiving…" onClick={archive}>
+                Archive instead
+              </Button>
+            </div>
+            {archiveError && <p role="alert" className="t-caption text-neg">{archiveError}</p>}
+          </div>
+        )}
         <Checkbox checked={withTrades} onChange={event => setWithTrades(event.target.checked)} label="Also delete every trade of this account, with its journal, screenshots and AI results" />
         <Field label={`Type the account name (${name}) to confirm`} required>
           <Input value={typed} autoComplete="off" spellCheck={false} onChange={event => setTyped(event.target.value)} />
