@@ -60,7 +60,9 @@ function periodWords(figures: OverviewFigures): string {
 function Cards({ figures }: { figures: OverviewFigures | null }) {
   const unknown = figures === null ? "The overview could not be loaded. Reload the page to try again." : figures.unknownReason;
   const known = figures !== null && unknown === null;
-  const pnl = known ? figures.pnl : [];
+  // A period without closed trades reads zero in each currency of the overview's accounts, never in a guessed one.
+  const zeroCurrencies = figures ? [...new Set(figures.rows.map(row => row.account.currency))].sort() : [];
+  const pnl = !known ? [] : figures.pnl.length > 0 ? figures.pnl : zeroCurrencies.map(currency => ({ currency, netPnl: "0", trades: 0 }));
   const balances = figures?.balances ?? [];
   const excluded = known && figures.excludedNoRiskBasis > 0 ? `${figures.excludedNoRiskBasis} without recorded risk not in R` : null;
   return (
@@ -71,7 +73,7 @@ function Cards({ figures }: { figures: OverviewFigures | null }) {
             size="lg"
             label="Total P&L (All Accounts)"
             value={
-              !known ? "—" : pnl.length === 0 ? formatSignedMoney("0", balances[0]?.currency ?? "USD") : (
+              !known || pnl.length === 0 ? "—" : (
                 <span className="flex flex-col">
                   {pnl.map((entry, index) => (
                     <span key={entry.currency} className={cx("num", toneClass(entry.netPnl))}>

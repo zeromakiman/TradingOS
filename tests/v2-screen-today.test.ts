@@ -662,6 +662,17 @@ describe("Today · All Accounts", () => {
     expect(hrefs(html)).toContain("/today?range=m&currency=EUR");
   });
 
+  it("reads zero in each account currency when nothing closed in the period, never in a guessed currency", async () => {
+    m.loadLedgerRows.mockResolvedValue({ rows: [], truncated: false });
+    expect(visibleText(await render())).toContain("Total P&L (All Accounts) €0.00, $0.00");
+    // EUR accounts only: no dollar figure anywhere on the card.
+    m.context = allContext([PERSONAL_ACCOUNT]);
+    m.getToday.mockResolvedValue(todayData({ context: allContext([PERSONAL_ACCOUNT]), accounts: [status(workspace(PERSONAL_ACCOUNT))] }));
+    const text = visibleText(await render());
+    expect(text).toContain("Total P&L (All Accounts) €0.00");
+    expect(text.slice(text.indexOf("Total P&L (All Accounts)"), text.indexOf("Total R"))).not.toContain("$");
+  });
+
   it("shows no figure from a partial read, and keeps Today when the overview can't be read", async () => {
     m.loadLedgerRows.mockResolvedValue({ rows: [closedWin], truncated: true });
     const partial = visibleText(await render({ range: "all" }));
