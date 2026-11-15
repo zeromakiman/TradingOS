@@ -204,6 +204,92 @@ language sql stable security definer set search_path = '' as $$
   select coalesce((select e.event = 'TRASHED' from public.trade_trash_events e where e.trade_id = p_trade_id order by e.id desc limit 1), false)
 $$;
 
+-- ---------------------------------------------------------------------------------------------------------
+-- Trashed trades are frozen. While a trade is in Deleted trades, nothing about it changes until it is restored: a
+-- hidden trade must never become LOCKED or LIVE (daily_usage would count a trade no screen shows). Every trade RPC of
+-- 0015-0018 takes the trade through private.lock_owned_trade, which now refuses a trashed trade. The RPCs that reach a
+-- trade through its plan, proposal or evidence instead (the V1 plan RPCs, evidence relabel and removal, legacy
+-- screenshot removal, the trusted server's evidence registration and AI request starts) are covered by an insert
+-- guard on every table that records something about one trade. AI results and spend records are keyed by request,
+-- not by trade, so a request already in flight still settles. trash_trade, restore_trade and delete_trade_permanently
+-- use private.lock_owned_trade_any, the unchecked 0015 helper.
+-- ---------------------------------------------------------------------------------------------------------
+create function private.lock_owned_trade_any(p_trade_id uuid, p_lock_account boolean) returns public.trades
+language plpgsql security definer set search_path = '' as $$
+declare t public.trades;
+begin
+  if auth.uid() is null then raise exception 'AUTH_REQUIRED: Authentication required'; end if;
+  select * into t from public.trades where id = p_trade_id and user_id = auth.uid();
+  if not found then raise exception 'TRADE_NOT_FOUND: Trade not found'; end if;
+  if p_lock_account then perform 1 from public.accounts where id = t.account_id for update; end if;
+  select * into t from public.trades where id = t.id for update;
+  return t;
+end $$;
+
+-- create or replace keeps the OID: every 0015-0018 caller gets the trash check.
+create or replace function private.lock_owned_trade(p_trade_id uuid, p_lock_account boolean) returns public.trades
+language plpgsql security definer set search_path = '' as $$
+declare t public.trades;
+begin
+  t := private.lock_owned_trade_any(p_trade_id, p_lock_account);
+  if private.trade_trashed(t.id) then raise exception 'TRADE_DELETED: Restore this trade first'; end if;
+  return t;
+end $$;
+
+-- Insert guard. TG_ARGV[0] names how the row reaches its trade: 'trade' (trade_id), 'plan' (plan_id, through the
+-- plan link) or 'proposal' (proposal_id, through the trade's revisions).
+create function private.refuse_trashed_trade() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_key text := pg_catalog.to_jsonb(new) ->> (tg_argv[0] || '_id');
+  v_trade uuid;
+begin
+  if v_key is null then return new; end if;
+  v_trade := case tg_argv[0]
+    when 'trade' then v_key::uuid
+    when 'plan' then (select l.trade_id from public.trade_plan_links l where l.plan_id = v_key::uuid)
+    else (select r.trade_id from public.trade_revisions r where r.proposal_id = v_key::uuid limit 1)
+  end;
+  if v_trade is not null and private.trade_trashed(v_trade) then
+    raise exception 'TRADE_DELETED: Restore this trade first';
+  end if;
+  return new;
+end $$;
+
+do $$
+declare v_table text; v_kind text;
+begin
+  for v_table, v_kind in values
+    ('trade_revisions', 'trade'), ('trade_plan_links', 'trade'), ('trade_lifecycle_events', 'trade'), ('trade_position_facts', 'trade'),
+    ('trade_unplanned_closes', 'trade'), ('trade_journal_entries', 'trade'), ('trade_evidence', 'trade'), ('trade_evidence_removals', 'trade'),
+    ('trade_evidence_labels', 'trade'), ('trade_tag_sets', 'trade'), ('trade_custom_models', 'trade'), ('trade_execution_links', 'trade'),
+    ('trade_timeline_reviews', 'trade'),
+    ('trade_executions', 'plan'), ('trade_outcomes', 'plan'), ('trade_dispositions', 'plan'), ('trade_events', 'plan'),
+    ('trade_tag_revisions', 'plan'), ('trade_reviews', 'plan'), ('trade_ai_reviews', 'plan'), ('plan_chart_assets', 'plan'),
+    ('setup_risk_checks', 'proposal'), ('setup_human_decisions', 'proposal'), ('setup_locks', 'proposal'), ('setup_screenshots', 'proposal'),
+    ('setup_screenshot_removals', 'proposal'), ('setup_evaluations', 'proposal'), ('bias_challenges', 'proposal')
+  loop
+    execute pg_catalog.format('create trigger trashed_trade_guard before insert on public.%I for each row execute function private.refuse_trashed_trade(%L)',
+      v_table, v_kind);
+  end loop;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Custom model blocks a Risk Engine model: a trade recorded with a custom model is never classified OB first touch or
+-- OTE later (complete_live_entry, imports). Clearing the custom model first lifts the guard.
+-- ---------------------------------------------------------------------------------------------------------
+create function private.refuse_engine_model_with_custom() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if new.entry_model in ('OB_FIRST_TOUCH', 'OTE')
+     and (select a.model_id from public.trade_custom_models a where a.trade_id = new.trade_id order by a.id desc limit 1) is not null then
+    raise exception 'MODEL_CUSTOM_ASSIGNED: Clear the custom model first';
+  end if;
+  return new;
+end $$;
+create trigger custom_model_guard before insert on public.trade_position_facts
+  for each row execute function private.refuse_engine_model_with_custom();
+
 -- Every guard of a permanent deletion except "is in Deleted trades" (account deletion deletes all trades of the account).
 create function private.require_trade_deletable(p_trade public.trades) returns void
 language plpgsql stable security definer set search_path = '' as $$
@@ -392,7 +478,7 @@ create function public.trash_trade(p_trade_id uuid) returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare t public.trades; e public.trade_trash_events;
 begin
-  t := private.lock_owned_trade(p_trade_id, true);
+  t := private.lock_owned_trade_any(p_trade_id, true);
   select * into e from public.trade_trash_events where trade_id = t.id order by id desc limit 1;
   if found and e.event = 'TRASHED' then
     return jsonb_build_object('tradeId', t.id, 'trashedAt', e.recorded_at);
@@ -409,7 +495,7 @@ create function public.restore_trade(p_trade_id uuid) returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare t public.trades;
 begin
-  t := private.lock_owned_trade(p_trade_id, true);
+  t := private.lock_owned_trade_any(p_trade_id, true);
   if not private.trade_trashed(t.id) then
     raise exception 'TRADE_NOT_DELETED: This trade is not in Deleted trades';
   end if;
@@ -422,7 +508,7 @@ create function public.delete_trade_permanently(p_trade_id uuid, p_confirm text)
 language plpgsql security definer set search_path = '' as $$
 declare t public.trades; v_result jsonb;
 begin
-  t := private.lock_owned_trade(p_trade_id, true);
+  t := private.lock_owned_trade_any(p_trade_id, true);
   if p_confirm is distinct from 'DELETE' then
     raise exception 'CONFIRMATION_REQUIRED: Type DELETE to delete this trade permanently';
   end if;
@@ -704,7 +790,9 @@ revoke all on function
   private.reject_mutation(), private.trade_counts_today(uuid, timestamptz), private.account_ai_in_flight(uuid),
   private.trade_trashed(uuid), private.require_trade_deletable(public.trades), private.delete_trade_rows(public.trades),
   private.delete_account_rows(regclass, uuid, uuid), private.reserved_model_name(text), private.model_name_taken(uuid, text, uuid),
-  private.model_name_input(jsonb), private.model_description_input(jsonb), private.lock_owned_model(uuid)
+  private.model_name_input(jsonb), private.model_description_input(jsonb), private.lock_owned_model(uuid),
+  private.lock_owned_trade_any(uuid, boolean), private.lock_owned_trade(uuid, boolean), private.refuse_trashed_trade(),
+  private.refuse_engine_model_with_custom()
   from public, anon, authenticated, service_role;
 
 revoke all on function

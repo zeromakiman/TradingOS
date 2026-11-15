@@ -218,6 +218,7 @@ function detail(overrides: Record<string, unknown> = {}): TradeDetail {
       },
     },
     evidence: { items: [evidenceItem("f1000000-0000-4000-8000-000000000001"), evidenceItem("f1000000-0000-4000-8000-000000000002", { removedAt: "2026-10-23T12:50:00Z" })], activeCount: 1, limit: 24 },
+    technical: { ledger: { trashed_at: null } },
     ai: {
       history: {
         latestRevision: 2,
@@ -274,6 +275,8 @@ describe("loadEditDraft", () => {
       [{ origin: "LIVE_FIRST", draft: null, state: { lifecycle: "LIVE", label: "Live", tone: "live", originLabel: "Live-first", immutableNote: null } }, "Live-first trades have no pre-trade draft to edit. Missing entry details can be added on the trade page."],
       [{ draft: null, state: { lifecycle: "DISCARDED", label: "Discarded", tone: "muted", originLabel: "Planned", immutableNote: null } }, "This draft was discarded, so it can't be edited. Duplicate it from the trade page to plan it again."],
       [{ draft: null, state: { lifecycle: "SKIPPED", label: "Skipped", tone: "muted", originLabel: "Planned", immutableNote: null } }, "This draft was skipped, so it can't be edited. Duplicate it from the trade page to plan it again."],
+      // 0020: a draft in Deleted trades is frozen until it is restored.
+      [{ technical: { ledger: { trashed_at: "2026-10-23T12:55:00Z" } } }, "This draft is in Deleted trades. Restore it first to edit it."],
     ];
     for (const [overrides, reason] of cases) {
       m.detail.mockResolvedValue(detail(overrides));

@@ -599,6 +599,22 @@ export interface LiveTradeResult {
   tradeId: string;
 }
 
+const modelRow = z.object({ id: z.uuid() });
+const modelRevisionRow = z.object({ id: z.number().int(), status: z.enum(["ACTIVE", "ARCHIVED"]) });
+
+/** Whether the custom model is an ACTIVE model of the account (RLS-scoped read); null when it could not be read. */
+async function activeCustomModel(db: Db, userId: string, accountId: string, modelId: string): Promise<boolean | null> {
+  const [model, revisions] = await Promise.all([
+    db.from("custom_models").select("id").eq("id", modelId).eq("user_id", userId).eq("account_id", accountId).maybeSingle(),
+    db.from("custom_model_revisions").select("id,status").eq("model_id", modelId).eq("user_id", userId).order("id", { ascending: false }).limit(1),
+  ]);
+  if (model.error || revisions.error) return null;
+  if (!modelRow.safeParse(model.data).success) return false;
+  const latest = z.array(modelRevisionRow).parse(revisions.data ?? []).reduce<z.output<typeof modelRevisionRow> | null>(
+    (best, row) => (best === null || row.id > best.id ? row : best), null);
+  return latest?.status === "ACTIVE";
+}
+
 export async function recordLiveTrade(_prev: ActionState<LiveTradeResult>, form: FormData): Promise<ActionState<LiveTradeResult>> {
   try {
     const session = await writableSession();
@@ -620,6 +636,12 @@ export async function recordLiveTrade(_prev: ActionState<LiveTradeResult>, form:
     const { symbol, ...withInstrument } = fields.input;
     const input = fields.input.instrumentId ? withInstrument : { ...withInstrument, symbol };
     const { db, user } = session;
+    // An archived model, or one of another account, is refused before anything is recorded (MODEL_NOT_AVAILABLE).
+    if (customModel?.success) {
+      const available = await activeCustomModel(db, user.id, ids.data.accountId, customModel.data);
+      if (available === null) return actionError(FAILED_COPY);
+      if (!available) return actionError(SQL_ERROR_COPY.MODEL_NOT_AVAILABLE, { entryModel: SQL_ERROR_COPY.MODEL_NOT_AVAILABLE });
+    }
     const record = (values: Record<string, string>) => db.rpc("record_live_trade", { p_account_id: ids.data.accountId, p_input: values, p_request_key: ids.data.requestKey });
     const { data, error } = await replayResolvedTime(
       await record(input), { resolved: fields.resolvedTime }, "IDEMPOTENCY_CONFLICT", () => recordedLiveEntryTime(db, user.id, ids.data.requestKey),
@@ -652,6 +674,9 @@ export async function completeLiveEntry(_prev: ActionState, form: FormData): Pro
     if (!ids.success || !fields.ok) return actionError(INVALID_COPY, { ...(ids.success ? {} : fieldErrors(ids.error, "tradeId")), ...(fields.ok ? {} : fields.fieldErrors) });
     if (!Object.keys(fields.input).length) return actionError("Add at least one missing entry detail.");
     const { error } = await session.db.rpc("complete_live_entry", { p_trade_id: ids.data.tradeId, p_input: fields.input, p_request_key: ids.data.requestKey });
+    if (errorCode(error) === "MODEL_CUSTOM_ASSIGNED") {
+      return actionError(SQL_ERROR_COPY.MODEL_CUSTOM_ASSIGNED, { entryModel: SQL_ERROR_COPY.MODEL_CUSTOM_ASSIGNED });
+    }
     if (error) return rpcFailure(error, { ALREADY_CLOSED: "Entry details of a closed trade can't change." }, LIVE_SQL_FIELDS);
     revalidateTrade(ids.data.tradeId, ["/accounts"]);
     return actionSuccess("Entry details added. Recorded details can't be changed later.");

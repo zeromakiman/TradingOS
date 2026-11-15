@@ -247,6 +247,26 @@ describe("Deleted trades (trash and restore)", () => {
     expect((await trash(dropped)).trashedAt).toBeTruthy();
   });
 
+  it("freezes a trashed trade: a draft can't be revised or locked until it is restored, and nothing is added to it", async () => {
+    const id = await draft(a);
+    await trash(id);
+    const ctx = await context(a);
+    expect(await fails("select public.revise_trade_draft($1, $2::jsonb, $3, 1, $4, $5)", [id, proposal(a, prices()), randomUUID(), ctx.risk, ctx.observation]))
+      .toMatch(/^TRADE_DELETED:/);
+    expect(await fails("select public.lock_trade($1, 1)", [id])).toMatch(/^TRADE_DELETED:/);
+    expect(await fails("select public.check_trade_risk($1)", [id])).toMatch(/^TRADE_DELETED:/);
+    expect(await fails("select public.set_trade_tags($1, 'A', 'PDH', 'M5', array['synthetic'])", [id])).toMatch(/^TRADE_DELETED:/);
+    expect(await fails("select public.add_journal_entry($1, 'NOTE', 'Hidden note', '{}'::jsonb, $2)", [id, randomUUID()])).toMatch(/^TRADE_DELETED:/);
+    // A V1 RPC that reaches the trade through its plan is refused as well (insert guard).
+    const closed = await closedPlanned(a);
+    await trash(closed);
+    const plan = (await tradeKeys(closed)).plan;
+    expect(await fails("select public.append_plan_note($1, 'Hidden V1 note', $2)", [plan, randomUUID()])).toMatch(/TRADE_DELETED:/);
+    expect(await asOwner<number>("select count(*)::int as value from public.trade_plan_links where trade_id = $1", [id])).toBe(0);
+    await restore(id);
+    expect((await asOwner<{ planId: string | null }>("select public.lock_trade($1, 1) as value", [id])).planId).toBeTruthy();
+  });
+
   it("isolates owners: another user can neither trash, restore nor delete the trade", async () => {
     const mine = await draft(a);
     await trash(mine);

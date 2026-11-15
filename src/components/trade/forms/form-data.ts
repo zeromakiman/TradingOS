@@ -113,10 +113,13 @@ const NOT_EDITABLE_COPY = {
   DISCARDED: "This draft was discarded, so it can't be edited. Duplicate it from the trade page to plan it again.",
   SKIPPED: "This draft was skipped, so it can't be edited. Duplicate it from the trade page to plan it again.",
   NO_REVISION: "This draft has no saved revision to edit.",
+  TRASHED: "This draft is in Deleted trades. Restore it first to edit it.",
 } as const;
 
 function notEditable(detail: TradeDetail): NotEditable | null {
   const base = { tradeId: detail.tradeId, title: detail.title, stateLabel: detail.state.label, stateTone: detail.state.tone };
+  // A trade in Deleted trades is frozen until it is restored (0020: lock_owned_trade refuses it with TRADE_DELETED).
+  if (detail.technical.ledger.trashed_at !== null) return { ...base, reason: NOT_EDITABLE_COPY.TRASHED };
   if (detail.origin !== "PLANNED") return { ...base, reason: NOT_EDITABLE_COPY.ORIGIN(detail.state.originLabel) };
   if (detail.plan !== null || detail.state.immutableNote) return { ...base, reason: detail.state.immutableNote ?? LOCKED_PLAN_NOTE };
   if (detail.state.lifecycle === "DISCARDED") return { ...base, reason: NOT_EDITABLE_COPY.DISCARDED };

@@ -126,9 +126,16 @@ describe("custom models", () => {
     const draft = (await value<{ tradeId: string }>("select public.create_planned_trade($1, $2::jsonb, $3, $4, $5) as value", [a.accountId,
       JSON.stringify({ ...previewProposal, instrumentId: a.instrumentId, narrative: "Synthetic", contractConfirmed: true, news: "CLEAR" }), randomUUID(), a.riskId, a.observationId])).tradeId;
     expect(await fails("select public.set_trade_custom_model($1, $2)", [draft, modelId])).toMatch(/^MODEL_NOT_APPLICABLE:/);
-    // A trade without a known model that is later classified OB first touch no longer shows its custom model.
+    // A trade without a known model that carries a custom model can't be classified OB first touch or OTE later: the
+    // model would vanish from every screen while it still counts as in use. Clearing it first lifts the guard.
     const unknown = await live(a, null);
     await assign(unknown, modelId);
+    for (const model of ["OB_FIRST_TOUCH", "OTE"]) {
+      expect(await fails("select public.complete_live_entry($1, $2::jsonb, $3)", [unknown, JSON.stringify({ entryModel: model }), randomUUID()]))
+        .toMatch(/^MODEL_CUSTOM_ASSIGNED:/);
+    }
+    expect(await ledger(unknown)).toEqual({ entry_model: null, custom_model_id: modelId, custom_model_name: "Judas swing" });
+    await assign(unknown, null);
     await db.actor(OWNER);
     await db.query("select public.complete_live_entry($1, '{\"entryModel\":\"OB_FIRST_TOUCH\"}'::jsonb, $2)", [unknown, randomUUID()]);
     expect(await ledger(unknown)).toEqual({ entry_model: "OB_FIRST_TOUCH", custom_model_id: null, custom_model_name: null });

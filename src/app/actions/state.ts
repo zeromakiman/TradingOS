@@ -66,6 +66,10 @@ export const SQL_ERROR_COPY: Readonly<Record<string, string>> = Object.freeze({
   EXTERNAL_LOSS_NOT_FOUND: "That external loss isn't available.",
   REASON_REQUIRED: "An immediate change needs a reason of at least 5 characters.",
   STRATEGY_TEMPLATE_UNAVAILABLE: "Trading accounts can't be created until the database update is complete.",
+  // 0020: a trade in Deleted trades takes no changes; a custom model keeps a trade from becoming OB first touch or OTE.
+  TRADE_DELETED: "Restore this trade first.",
+  MODEL_CUSTOM_ASSIGNED: "Clear the custom model first.",
+  MODEL_NOT_AVAILABLE: "Choose an active model of this trade's account.",
 });
 
 /** Exact INVALID_TIME details (stable V1 and 0015 sentences) and their copy. */
