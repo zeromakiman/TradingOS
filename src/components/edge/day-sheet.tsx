@@ -12,6 +12,7 @@ import { cx } from "@/components/ui/cx";
 import { Sheet, SheetContent } from "@/components/ui/dialog";
 import { plural } from "@/domain/format";
 import { toneClass } from "./format";
+import { ModelName } from "@/components/trade/custom-model-label";
 import type { CalendarDayModel, CalendarTrade } from "./model";
 
 export type DaySheetProps = {
@@ -98,7 +99,9 @@ export function DayTrade({ trade, multiAccount }: { trade: CalendarTrade; multiA
             {meta.map((part, index) => (
               <Fragment key={part.key}>
                 {index > 0 && " · "}
-                <span className="whitespace-nowrap">{part.text}</span>
+                <span className="whitespace-nowrap">
+                  {part.key === "model" ? <ModelName name={part.text} custom={trade.customModel} /> : part.text}
+                </span>
               </Fragment>
             ))}
           </span>

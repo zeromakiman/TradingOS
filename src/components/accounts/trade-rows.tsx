@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { formatPercent } from "@/domain/format";
 import { formatDateTime, formatDuration, type TimeDisplay } from "@/domain/time-display";
 import { Badge, StatusPill } from "@/components/ui/badge";
+import { ModelName } from "@/components/trade/custom-model-label";
 import type { TradeListRow } from "@/lib/trades-data";
 import { RValue, SignedMoney } from "./values";
 
@@ -39,8 +40,8 @@ export function TradeRows({ rows, display, now, label }: { rows: TradeListRow[];
   return (
     <ul className="-mx-2 flex flex-col" aria-label={label}>
       {rows.map(row => {
-        // A custom model (0020) is a journal label, never validated by the Risk Engine.
-        const model = row.trade.custom_model_name ? `${row.trade.custom_model_name} (custom)` : row.trade.entry_model ? MODEL[row.trade.entry_model] : null;
+        // A custom model (0020) is a journal label, never validated by the Risk Engine: its name with the Custom badge.
+        const model = row.trade.custom_model_name ?? (row.trade.entry_model ? MODEL[row.trade.entry_model] : null);
         return (
           <li key={row.id} className="border-b border-border last:border-b-0">
             <Link href={row.href} className="group flex min-h-14 items-center gap-3 rounded-control px-2 py-2.5 hover:bg-surface-sunken">
@@ -51,7 +52,12 @@ export function TradeRows({ rows, display, now, label }: { rows: TradeListRow[];
                 </p>
                 <p className="t-caption">
                   {formatDateTime(row.tradeAt, display)}
-                  {model && ` · ${model}`}
+                  {model && (
+                    <>
+                      {" · "}
+                      <ModelName name={model} custom={row.trade.custom_model_name !== null} />
+                    </>
+                  )}
                 </p>
                 <span className="sm:hidden">
                   <StatusPill tone={row.state.tone}>{row.state.label}</StatusPill>

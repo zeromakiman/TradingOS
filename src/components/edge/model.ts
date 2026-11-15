@@ -478,6 +478,8 @@ export interface CalendarTrade {
   /** Account name in All Accounts; null in a single account. */
   account: string | null;
   model: string | null;
+  /** `model` is a custom model (0020): shown with the Custom badge. */
+  customModel: boolean;
   origin: string;
   originNote: string | null;
   state: { label: string; tone: StatusTone };
@@ -555,7 +557,8 @@ function calendarTrade(trade: LedgerTrade, now: string, names: Map<string, strin
     href: `/trades/${trade.id}`,
     title: tradeTitle(trade),
     account: multi ? (names.get(trade.account_id) ?? "Trading account") : null,
-    model: trade.custom_model_name ? `${trade.custom_model_name} (custom model)` : trade.entry_model ? MODEL_LABELS[trade.entry_model] : null,
+    model: trade.custom_model_name ?? (trade.entry_model ? MODEL_LABELS[trade.entry_model] : null),
+    customModel: trade.custom_model_name !== null,
     origin: state.originLabel,
     originNote: state.originTooltip,
     state: { label: state.label, tone: state.tone },

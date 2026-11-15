@@ -2,7 +2,7 @@
 import { ImageOff, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { Badge, StatusPill } from "@/components/ui/badge";
-import { CUSTOM_MODEL_BADGE } from "@/components/trade/copy";
+import { CustomModelBadge, ModelName } from "@/components/trade/custom-model-label";
 import { cx } from "@/components/ui/cx";
 import type { TradeRowView, ValueView } from "./types";
 
@@ -98,7 +98,8 @@ function Tags({ row }: { row: TradeRowView }) {
 }
 
 export function TradeRow({ row }: { row: TradeRowView }) {
-  const metaExtras = [row.model, row.plannedRisk.tone === "muted" ? null : `${row.plannedRisk.text} risk`].filter(Boolean).join(" · ");
+  const riskExtra = row.plannedRisk.tone === "muted" ? null : `${row.plannedRisk.text} risk`;
+  const metaExtras = row.model !== null || riskExtra !== null;
   return (
     <Link
       href={row.href}
@@ -124,10 +125,10 @@ export function TradeRow({ row }: { row: TradeRowView }) {
         </span>
       </span>
 
-      <span className="hidden @min-[60rem]:col-start-3 @min-[60rem]:row-start-1 @min-[60rem]:block @min-[60rem]:truncate @min-[60rem]:text-sm @min-[60rem]:text-2">
+      <span className="hidden @min-[60rem]:col-start-3 @min-[60rem]:row-start-1 @min-[60rem]:flex @min-[60rem]:min-w-0 @min-[60rem]:items-center @min-[60rem]:text-sm @min-[60rem]:text-2">
         <span className="sr-only">Model: </span>
-        {row.model ? <span title={row.customModel ? CUSTOM_MODEL_BADGE : undefined}>{row.model}</span> : <span className="text-3">—</span>}
-        {row.customModel && <span className="sr-only"> ({CUSTOM_MODEL_BADGE})</span>}
+        {row.model ? <span className="min-w-0 truncate" title={row.model}>{row.model}</span> : <span className="text-3">—</span>}
+        {row.customModel && <CustomModelBadge />}
       </span>
       <Value value={row.plannedRisk} label="Planned risk" className="hidden text-sm @min-[60rem]:col-start-4 @min-[60rem]:row-start-1 @min-[60rem]:block @min-[60rem]:text-right" />
 
@@ -139,7 +140,13 @@ export function TradeRow({ row }: { row: TradeRowView }) {
         <span className="flex min-w-0 @min-[60rem]:col-start-7 @min-[60rem]:row-start-1 @min-[60rem]:pl-3">
           <StatusPill tone={row.state.tone}>{row.state.label}</StatusPill>
         </span>
-        {metaExtras && <span className="t-meta @min-[60rem]:hidden">{metaExtras}</span>}
+        {metaExtras && (
+          <span className="t-meta @min-[60rem]:hidden">
+            {row.model && <ModelName name={row.model} custom={row.customModel} />}
+            {row.model && riskExtra && " · "}
+            {riskExtra}
+          </span>
+        )}
         {row.tags.length > 0 && <Tags row={row} />}
         {row.aiReviewed && (
           <span className="ml-auto flex text-accent @min-[60rem]:col-start-9 @min-[60rem]:row-start-1 @min-[60rem]:ml-0 @min-[60rem]:justify-end" title="AI-reviewed">

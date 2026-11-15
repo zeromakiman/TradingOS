@@ -58,6 +58,7 @@ import { SheetForm } from "@/components/journal/filter-sheet";
 import { formHref, isPlainClick, neighbourChip, searchFieldValue } from "@/components/journal/journal-nav";
 import { readCursor, readTrail, trimToPage } from "@/components/journal/load-journal";
 import { INSTRUMENT_PATTERN, OPTIONAL_INSTRUMENT_PATTERN, TAG_LIST_PATTERN, TAG_PATTERN } from "@/components/journal/patterns";
+import { TradeRow } from "@/components/journal/trade-row";
 import type { FilterMenuView, JournalView } from "@/components/journal/types";
 import { buildJournalView, datePresets, dayCountLabel, type JournalInput, rangeText, resultSummary, rowView, splitDays } from "@/components/journal/view-model";
 import type { LedgerTrade } from "@/domain/ledger";
@@ -803,6 +804,17 @@ describe("Journal view model", () => {
     const submitted = parseTradeFilters(paramsOf(formHref(entries))).filters;
     expect(submitted).toEqual({ ...filters, states: ["CLOSED", "REVIEWED"] });
     expect(sheet.activeCount).toBe(12);
+  });
+
+  it("shows a custom model by name with a visible Custom badge whose accessible text says it is not validated (0020)", () => {
+    const trade = { ...liveFirstNoRisk, custom_model_id: uuid(900), custom_model_name: "TSP + IFVG + CISD" };
+    const row = rowView(listRow(trade), { mode: "account", accountName: "Personal 12K", hasAccounts: true }, { mode: "strategy" });
+    expect(row).toMatchObject({ model: "TSP + IFVG + CISD", customModel: true });
+    const html = renderToStaticMarkup(createElement(TradeRow, { row }));
+    expect(html).toContain('<span aria-hidden="true">Custom</span><span class="sr-only">Custom model · not validated by the Risk Engine</span>');
+    expect(html).toContain('title="Custom model · not validated by the Risk Engine"');
+    const plain = rowView(listRow(liveFirstNoRisk), { mode: "account", accountName: "Personal 12K", hasAccounts: true }, { mode: "strategy" });
+    expect(renderToStaticMarkup(createElement(TradeRow, { row: plain }))).not.toContain("Custom");
   });
 
   it("rows never fabricate values: no plan → no planned risk, no close → no result", () => {
