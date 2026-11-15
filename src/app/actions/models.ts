@@ -111,7 +111,8 @@ export async function renameCustomModel(_prev: ActionState, form: FormData): Pro
     return await revise(form, values => {
       const parsed = z.object({ name, description }).safeParse({ name: formText(values, "name"), description: formText(values, "description") });
       if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
-      return { ok: true, input: { name: parsed.data.name, ...(parsed.data.description ? { description: parsed.data.description } : {}) } };
+      // Always sent: an emptied description clears it (model_description_input reads "" as none).
+      return { ok: true, input: { name: parsed.data.name, description: parsed.data.description ?? "" } };
     }, "Model saved. Trades recorded with it show the new name.");
   } catch (error) {
     return unexpected(error);
