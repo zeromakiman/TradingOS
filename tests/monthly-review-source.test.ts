@@ -46,15 +46,15 @@ describe("monthly owner-scoped bounded database selection", () => {
     expect(m.state.queries).toEqual([]);
   });
 
-  it("excludes foreign, prior-month, next-month and open trades in database selection", async () => {
+  it("excludes foreign, prior-month, next-month, open and deleted trades in database selection", async () => {
     const t = m.state.rows.journal_analytics[0];
     m.state.rows.journal_analytics.push({ ...t, id: ids.image, account_id: ids.image }, { ...t, id: ids.event, exited_at: "2026-08-01T04:59:59.999Z" },
-      { ...t, id: ids.review, exited_at: MONTH_END }, { ...t, id: ids.user, status: "TAKEN" });
+      { ...t, id: ids.review, exited_at: MONTH_END }, { ...t, id: ids.user, status: "TAKEN" }, { ...t, id: "f0000000-0000-4000-8000-0000000000aa", trashed_at: "2026-09-02T10:00:00.000Z" });
     const facts = detailed(await load());
     expect(facts.version).toBe("MONTHLY_REVIEW_FACTS_V2");
     expect(facts.trades.map(trade => trade.tradeId)).toEqual([planId(0), planId(1), planId(2)]);
     expect(m.state.queries.find(q => q.table === "journal_analytics")).toMatchObject({
-      limit: 121, filters: [["eq", "account_id", ids.account], ["eq", "status", "CLOSED"], ["gte", "exited_at", MONTH_START], ["lt", "exited_at", MONTH_END]],
+      limit: 121, filters: [["eq", "account_id", ids.account], ["is", "trashed_at", null], ["eq", "status", "CLOSED"], ["gte", "exited_at", MONTH_START], ["lt", "exited_at", MONTH_END]],
     });
   });
 

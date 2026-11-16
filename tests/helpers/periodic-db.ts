@@ -1,6 +1,6 @@
 /**
  * In-memory Supabase query double for the periodic AI source loaders (weekly, recent trades, monthly). It records every
- * query (table, filters, order, limit) and answers from `rows` with PostgREST-like semantics: eq, in, not.is (null),
+ * query (table, filters, order, limit) and answers from `rows` with PostgREST-like semantics: eq, in, is (null), not.is (null),
  * not.in, lte/gte/lt on instants, multi-key ordering, limit, exact count, head (count only, no rows) and maybeSingle.
  * `errors` makes a table fail.
  */
@@ -27,6 +27,8 @@ function matches(row: Record<string, unknown>, [kind, key, value]: [string, stri
     case "eq": return row[key] === value;
     case "in": return (value as unknown[]).includes(row[key]);
     case "not_null": return row[key] !== null && row[key] !== undefined;
+    // is.null: a missing column reads as null (fixtures without trashed_at are trades never deleted).
+    case "is": return (row[key] ?? null) === value;
     case "not_in": return !String(value).replace(/^\(|\)$/g, "").split(",").includes(String(row[key]));
     case "lte": return instant(row[key]) <= instant(value);
     case "gte": return instant(row[key]) >= instant(value);
@@ -70,6 +72,7 @@ export function periodicDb(state: PeriodicDbState) {
         },
         eq: (key: string, value: unknown) => { query.filters.push(["eq", key, value]); return chain; },
         in: (key: string, value: unknown) => { query.filters.push(["in", key, value]); return chain; },
+        is: (key: string, value: unknown) => { query.filters.push(["is", key, value]); return chain; },
         not: (key: string, operator: string, value: unknown) => {
           if (operator === "is" && value === null) query.filters.push(["not_null", key, null]);
           else if (operator === "in") query.filters.push(["not_in", key, value]);

@@ -56,15 +56,17 @@ describe("latest completed owner-only selection", () => {
     expect((await load(10)).facts.sample.tradeIds).toEqual(Array.from({ length: 10 }, (_, i) => planId(i)));
   });
 
-  it("excludes open, skipped, cancelled, foreign and future trades without leaking history", async () => {
+  it("excludes open, skipped, cancelled, foreign, future and deleted trades without leaking history", async () => {
     m.state.rows = periodicTables(light());
     const base = m.state.rows.journal_analytics[0];
     for (const status of ["TAKEN", "LOCKED", "CANCELLED", "SKIPPED"]) m.state.rows.journal_analytics.push({ ...base, id: ids.image, status });
     m.state.rows.journal_analytics.push({ ...base, id: ids.image, account_id: ids.image, exited_at: "2026-09-21T00:00:00.000Z" }, { ...base, id: ids.event, exited_at: "2099-01-01T00:00:00.000Z" });
+    m.state.rows.journal_analytics.push({ ...base, id: "f0000000-0000-4000-8000-0000000000aa", trashed_at: "2026-09-02T10:00:00.000Z" });
     const result = await load(30);
     expect(result.eligibleCount).toBe(35);
     expect(result.facts.sample.tradeIds).not.toContain(ids.image);
     expect(result.facts.sample.tradeIds).not.toContain(ids.event);
+    expect(result.facts.sample.tradeIds).not.toContain("f0000000-0000-4000-8000-0000000000aa");
   });
 
   it("reads only the sample's own records: versions, events, V2 identities, journal entries and tags; never screenshots", async () => {
