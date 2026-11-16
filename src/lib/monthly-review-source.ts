@@ -31,7 +31,7 @@ export async function ownedMonthlyAccount(accountId:string){
 export async function loadMonthlyFacts(owner:Awaited<ReturnType<typeof ownedMonthlyAccount>>,month:string){
  const {db,user,account}=owner,period=monthlyPeriod(month),capturedAt=new Date().toISOString(),limits=PERIODIC_V2_LIMITS.MONTHLY_REVIEW;
  if(Date.parse(period.endExclusive)>Date.parse(capturedAt))throw new MonthlyScopeError("Choose a completed month. Monthly Review starts at the next first day, 00:00 fixed UTC−5.");
- const q=await db.from("journal_analytics").select("*").eq("account_id",account.id).eq("status","CLOSED").gte("exited_at",period.start).lt("exited_at",period.endExclusive).order("exited_at").order("id").limit(limits.trades+1);
+ const q=await db.from("journal_analytics").select("*").eq("account_id",account.id).is("trashed_at",null).eq("status","CLOSED").gte("exited_at",period.start).lt("exited_at",period.endExclusive).order("exited_at").order("id").limit(limits.trades+1);
  if(q.error)throw new Error("Monthly trades unavailable");
  const trades=z.array(journalRow).parse(q.data);
  if(trades.length>limits.trades)throw new MonthlyScopeError(MONTHLY_TOO_MANY_TRADES);

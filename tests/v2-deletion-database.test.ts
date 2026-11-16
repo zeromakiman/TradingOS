@@ -498,11 +498,112 @@ describe("delete_trading_account", () => {
       "select public.delete_trading_account($1, 'Old demo', true) as value", [acc.accountId]);
     expect(result.tradeIds.sort()).toEqual([closed, dropped, finished].sort());
     expect(result.storagePaths.evidence).toEqual([`${OWNER}/${finished}/${evidence}`]);
+    // The cleanup is queued in the same transaction and survives the account (the queue has no account_id).
+    expect((await queued(OWNER)).map(({ id: _id, ...row }) => row)).toEqual(expect.arrayContaining([
+      { bucket: "trade-evidence", kind: "OBJECT", path: `${OWNER}/${finished}/${evidence}` },
+      ...[closed, dropped, finished].map(trade => ({ bucket: "trade-evidence", kind: "PREFIX", path: `${OWNER}/${trade}` })),
+    ]));
     expect(result.deleted).toMatchObject({ accounts: 1, trades: 3, custom_models: 1, external_loss_entries: 1 });
     const remaining = await snapshot(OWNER, acc.accountId);
     expect(Object.entries(remaining).filter(([, rows]) => rows.length > 0)).toEqual([]);
     expect(await snapshot(OWNER, a.accountId)).toEqual(ownerRest);
     expect(await snapshot(OTHER)).toEqual(other);
+  });
+});
+
+type QueueRow = { bucket: string; kind: string; path: string };
+async function queued(user: string): Promise<(QueueRow & { id: number })[]> {
+  await db.admin();
+  return (await db.query<QueueRow & { id: number }>("select id::int, bucket, kind, path from public.storage_cleanup_queue where user_id = $1 order by id", [user])).rows;
+}
+
+describe("storage cleanup queue", () => {
+  it("records a permanent deletion's objects and folders in the same transaction, owner-readable and completed only by the trusted server", async () => {
+    vi.setSystemTime(DAY1);
+    const id = await closedPlanned(a);
+    const keys = await tradeKeys(id);
+    const evidence = randomUUID();
+    await db.actor(OWNER, "service_role");
+    await db.query("select public.register_trade_evidence($1, $2::jsonb)", [OWNER, JSON.stringify({
+      id: evidence, tradeId: id, label: "CONTEXT", timeframe: "M5", originalFilename: "evidence.png", mimeType: "image/png", byteSize: 2048, sha256: SHA,
+      width: 64, height: 64, captureMethod: "PASTE" })]);
+    await trash(id);
+    // Refused while it counts toward today: nothing is queued (the queue is written inside the deletion's transaction).
+    const before = await queued(OWNER);
+    expect(await fails("select public.delete_trade_permanently($1, 'DELETE')", [id])).toMatch(/^TRADE_COUNTS_TODAY:/);
+    expect(await queued(OWNER)).toEqual(before);
+
+    vi.setSystemTime(new Date("2026-11-06T15:00:00Z"));
+    await deleteTrade(id);
+    const rows = (await queued(OWNER)).filter(row => !before.some(old => old.id === row.id));
+    expect(rows.map(({ id: _id, ...row }) => row)).toEqual(expect.arrayContaining([
+      { bucket: "trade-evidence", kind: "OBJECT", path: `${OWNER}/${id}/${evidence}` },
+      { bucket: "trade-evidence", kind: "PREFIX", path: `${OWNER}/${id}` },
+      ...keys.proposals.map(proposal => ({ bucket: "setup-screenshots", kind: "PREFIX", path: `${OWNER}/${proposal}` })),
+    ]));
+    expect(rows).toHaveLength(2 + keys.proposals.length);
+
+    // Owner-only reads; no API role writes; completion is the trusted server's, for the user it names only.
+    await db.actor(OWNER);
+    expect(await value<number>("select count(*)::int as value from public.storage_cleanup_queue")).toBeGreaterThanOrEqual(rows.length);
+    await db.actor(OTHER);
+    expect(await value<number>("select count(*)::int as value from public.storage_cleanup_queue")).toBe(0);
+    const ids = rows.map(row => row.id);
+    expect(await fails("insert into public.storage_cleanup_queue(user_id, bucket, kind, path) values ($1, 'trade-evidence', 'OBJECT', $2)", [OWNER, `${OWNER}/x`]))
+      .toMatch(/permission denied/);
+    expect(await fails("delete from public.storage_cleanup_queue where user_id = $1", [OWNER])).toMatch(/permission denied/);
+    expect(await fails("select public.complete_storage_cleanup($1, $2::bigint[])", [OWNER, ids])).toMatch(/permission denied/);
+    await db.actor("", "service_role");
+    expect(await value<number>("select public.complete_storage_cleanup($1, $2::bigint[]) as value", [OTHER, ids])).toBe(0);
+    expect(await value<number>("select public.complete_storage_cleanup($1, $2::bigint[]) as value", [OWNER, ids])).toBe(ids.length);
+    expect((await queued(OWNER)).filter(row => ids.includes(row.id))).toEqual([]);
+    // A path outside the user's own folder can never be queued.
+    await db.admin();
+    await expect(db.query("insert into public.storage_cleanup_queue(user_id, bucket, kind, path) values ($1, 'trade-evidence', 'OBJECT', $2)", [OWNER, `${OTHER}/x/y`]))
+      .rejects.toThrow(/check constraint/);
+  });
+});
+
+describe("periodic AI reviews after 0020", () => {
+  it("leave Deleted trades out of new samples, in journal_analytics and in the recent-trades and monthly start checks", async () => {
+    vi.setSystemTime(new Date("2026-10-14T15:00:00Z"));
+    const acc = await newAccount(OWNER, "Periodic sample");
+    const kept = await closedPlanned(acc);
+    const dropped = await closedPlanned(acc);
+    const keptPlan = (await tradeKeys(kept)).plan as string;
+    const droppedPlan = (await tradeKeys(dropped)).plan as string;
+    await trash(dropped);
+    vi.setSystemTime(new Date("2026-11-07T15:00:00Z"));
+
+    await db.actor(OWNER);
+    const sample = await value<{ id: string; trashed: boolean }[]>(
+      "select json_agg(json_build_object('id', id, 'trashed', trashed_at is not null) order by exited_at) as value from public.journal_analytics where account_id = $1",
+      [acc.accountId]);
+    expect(Object.fromEntries(sample.map(row => [row.id, row.trashed]))).toEqual({ [keptPlan]: false, [droppedPlan]: true });
+
+    const recent = async (tradeIds: string[]) => {
+      await db.actor(OWNER, "service_role");
+      const captured = new Date(Date.now() - 1000).toISOString();
+      const facts = { version: "RECENT_TRADES_FACTS_V2", capturedAt: captured, sample: { requested: 10, actual: tradeIds.length, tradeIds }, trades: tradeIds.map(tradeId => ({ tradeId })) };
+      return db.query("select public.start_recent_ai_analysis($1, $2, $3, 10, $4, $5, $6, $7, '{\"id\":\"RECENT_TRADES_ANALYSIS\"}', '{}')",
+        [randomUUID(), OWNER, acc.accountId, tradeIds, captured, JSON.stringify(facts), HASH]);
+    };
+    const monthly = async (tradeIds: string[]) => {
+      await db.actor(OWNER, "service_role");
+      const facts = {
+        version: "MONTHLY_REVIEW_FACTS_V2", period: { startDate: "2026-10-01", start: "2026-10-01T05:00:00.000Z", endExclusive: "2026-11-01T05:00:00.000Z" },
+        sample: { count: tradeIds.length, tradeIds }, trades: tradeIds.map(tradeId => ({ tradeId })), mode: "DETAILED",
+      };
+      return db.query("select public.start_monthly_ai_review($1, $2, $3, '2026-10-01', $4, $5, '{\"id\":\"MONTHLY_REVIEW\"}', '{}')",
+        [randomUUID(), OWNER, acc.accountId, JSON.stringify(facts), HASH]);
+    };
+    await expect(recent([droppedPlan, keptPlan])).rejects.toThrow(/Sample changed/);
+    await expect(monthly([keptPlan, droppedPlan])).rejects.toThrow(/exact trade IDs mismatch/);
+    await expect(monthly([keptPlan])).resolves.toBeTruthy();
+    await expect(recent([keptPlan])).resolves.toBeTruthy();
+    // Restored, it is part of the next sample again.
+    await restore(dropped);
+    await expect(monthly([keptPlan])).rejects.toThrow(/exact trade IDs mismatch/);
   });
 });
 
@@ -517,6 +618,7 @@ describe("erasure after 0020", () => {
     await db.query("select public.purge_user_trading_data($1, 'ERASE ALL MY TRADING OS DATA')", [OWNER]);
     const remaining = await snapshot(OWNER);
     expect(Object.entries(remaining).filter(([, rows]) => rows.length > 0)).toEqual([]);
+    expect(await queued(OWNER)).toEqual([]);
     expect(await snapshot(OTHER)).toEqual(other);
   });
 });

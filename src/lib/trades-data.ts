@@ -1,5 +1,6 @@
 import "server-only";
 import Decimal from "decimal.js";
+import { pendingStorageCleanup } from "./deletion-storage";
 import { cache } from "react";
 import { z } from "zod";
 import type { AccountStatus } from "@/domain/account-metrics";
@@ -1794,6 +1795,8 @@ export interface DeletedTradesView {
   contextLabel: string;
   trades: DeletedTradeEntry[];
   truncated: boolean;
+  /** Storage cleanup rows of the user still waiting after a permanent deletion (0020); 0 when every file is removed. */
+  pendingCleanup: number;
 }
 
 /**
@@ -1816,9 +1819,10 @@ export function countsTowardToday(
 }
 
 export async function loadDeletedTrades(): Promise<DeletedTradesView> {
-  const [{ db }, context, preferences] = await Promise.all([currentSession(), getAccountContext(), getPreferences()]);
+  const [{ db, user }, context, preferences] = await Promise.all([currentSession(), getAccountContext(), getPreferences()]);
   const display = preferences.timeDisplay;
   const now = new Date().toISOString();
+  const pendingCleanup = await pendingStorageCleanup(db, user.id);
   let query = ledgerSelect(db).not("trashed_at", "is", null);
   if (context.selected.mode === "account") query = query.eq("account_id", context.selected.account.id);
   const { data, error } = await query.order("trashed_at", { ascending: false }).order("id", { ascending: false }).limit(DELETED_TRADES_LIMIT + 1);
@@ -1842,5 +1846,6 @@ export async function loadDeletedTrades(): Promise<DeletedTradesView> {
     contextLabel: context.selected.mode === "account" ? context.selected.account.name : "All Accounts",
     trades,
     truncated: rows.length > DELETED_TRADES_LIMIT,
+    pendingCleanup,
   };
 }

@@ -10,7 +10,7 @@ import { isInstant, strategyDay } from "@/domain/time-display";
 import { sizeDeviationWarning } from "@/domain/plan-vs-reality";
 import { DELETE_TRADE_WORD } from "@/components/trade/copy";
 import { type Db, LAST_ACCOUNT_COOKIE, loadAccount, type Session, setContextCookie } from "@/lib/account-context";
-import { deletionStorageSchema, removeDeletedTradeStorage } from "@/lib/deletion-storage";
+import { deletionStorageSchema, drainStorageCleanup, STORAGE_PENDING_NOTE } from "@/lib/deletion-storage";
 import { copyEvidenceForDuplicate, EVIDENCE_LABELS, EVIDENCE_TIMEFRAMES } from "@/lib/evidence";
 import { operationalFailure } from "@/lib/operational-log";
 import { SCHEMA_OUTDATED_MESSAGE, writableSession } from "@/lib/schema-gate";
@@ -938,11 +938,29 @@ export async function deleteTradePermanently(_prev: ActionState, form: FormData)
     }
     const { data, error } = await session.db.rpc("delete_trade_permanently", { p_trade_id: tradeId.data, p_confirm: DELETE_TRADE_WORD });
     if (error) return rpcFailure(error, DELETION_COPY);
-    const result = permanentResult.parse(data);
-    const cleaned = await removeDeletedTradeStorage(session.user.id, [result.tradeId], result.storagePaths).catch(() => false);
-    if (!cleaned) operationalFailure("storage_cleanup_failed", 503);
+    permanentResult.parse(data);
+    // The deletion recorded its storage objects in the cleanup queue; this also retries anything an earlier deletion left.
+    const pending = await drainStorageCleanup(session.db, session.user.id).catch(() => null);
+    if (pending !== 0) operationalFailure("storage_cleanup_failed", 503);
     revalidateDeletion(tradeId.data);
-    return actionSuccess("Trade deleted permanently.");
+    return actionSuccess(`Trade deleted permanently.${pending !== 0 ? ` ${STORAGE_PENDING_NOTE}` : ""}`);
+  } catch (error) {
+    return unexpected(error);
+  }
+}
+
+/** Deleted trades → "Retry cleanup": drains the user's storage cleanup queue again. */
+export async function retryStorageCleanup(_prev: ActionState, _form: FormData): Promise<ActionState> {
+  try {
+    const session = await writableSession();
+    if (!session) return actionError(SCHEMA_OUTDATED_MESSAGE);
+    const pending = await drainStorageCleanup(session.db, session.user.id).catch(() => null);
+    revalidatePath("/trades/deleted");
+    if (pending !== 0) {
+      operationalFailure("storage_cleanup_failed", 503);
+      return actionError("Some files could not be removed yet. They stay unreadable to everyone; try again later.");
+    }
+    return actionSuccess("Every file of your permanently deleted trades is removed from storage.");
   } catch (error) {
     return unexpected(error);
   }

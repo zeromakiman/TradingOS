@@ -3,7 +3,7 @@
 import { RotateCcw, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type ReactElement, useState } from "react";
-import { deleteTradePermanently, restoreTrade, trashTrade } from "@/app/actions/trades";
+import { deleteTradePermanently, restoreTrade, retryStorageCleanup, trashTrade } from "@/app/actions/trades";
 import { Button } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { ConfirmDialog } from "@/components/ui/dialog";
@@ -11,7 +11,7 @@ import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { useNotify } from "./action-message";
 import { DELETE_TRADE_WORD, DELETION_COPY } from "./copy";
-import { callTradeAction, formOf } from "./use-trade-action";
+import { callTradeAction, formOf, useTradeAction } from "./use-trade-action";
 
 /**
  * Deleted trades (0020): move a trade to Deleted trades, restore it, delete it permanently. Shared by the trade page's
@@ -154,6 +154,27 @@ export function DeletedTradeActions({ tradeId, label, countsToday }: { tradeId: 
       ) : (
         <PermanentDeleteDialog tradeId={tradeId} label={label} trigger={<Button variant="danger" size="sm" icon={<Trash2 aria-hidden="true" />}>Delete permanently…</Button>} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Deleted trades → "Retry cleanup" (0020): drains the storage cleanup queue again when a permanent deletion could not
+ * remove every screenshot file at once. A refusal stays next to the button.
+ */
+export function RetryStorageCleanupButton() {
+  const notify = useNotify();
+  const router = useRouter();
+  const { state, pending, run } = useTradeAction(retryStorageCleanup, result => {
+    notify(result.message);
+    router.refresh();
+  });
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <Button variant="secondary" size="sm" icon={<RotateCcw aria-hidden="true" />} loading={pending} loadingText="Removing files…" onClick={() => run(formOf({}))}>
+        Retry cleanup
+      </Button>
+      {state.status === "error" && <p role="alert" className="t-caption text-neg">{state.message}</p>}
     </div>
   );
 }

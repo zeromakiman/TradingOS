@@ -64,7 +64,7 @@ async function largestFittingSample(accountId:string,requested:10|20|30,sourcesO
  */
 export async function loadRecentFacts(owner:Awaited<ReturnType<typeof ownedRecentAccount>>,sample:unknown=20){
  const {db,user,account}=owner,requested=recentSample(sample),capturedAt=new Date().toISOString(),limits=PERIODIC_V2_LIMITS.RECENT_TRADES_ANALYSIS;
- const q=await db.from("journal_analytics").select("*",{count:"exact"}).eq("account_id",account.id).eq("status","CLOSED").not("realized_r","is",null).lte("exited_at",capturedAt).order("exited_at",{ascending:false}).order("id",{ascending:true}).limit(requested);
+ const q=await db.from("journal_analytics").select("*",{count:"exact"}).eq("account_id",account.id).is("trashed_at",null).eq("status","CLOSED").not("realized_r","is",null).lte("exited_at",capturedAt).order("exited_at",{ascending:false}).order("id",{ascending:true}).limit(requested);
  if(q.error)throw new Error("Recent trades unavailable");
  const trades=z.array(journalRow).parse(q.data);
  const eligibleCount=z.number().int().min(trades.length).parse(q.count);

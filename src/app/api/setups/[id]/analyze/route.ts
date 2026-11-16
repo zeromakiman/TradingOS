@@ -26,6 +26,7 @@ export async function POST(request:Request,{params}:{params:Promise<{id:string}>
   // The body is validated before any evaluation work starts.
   const body=await analyzeBody(request);
   try{return Response.json(await analyzeSetup(id,body.evaluationId,body.mode),{headers:{"Cache-Control":"no-store"}});}catch(e){
+   if(e instanceof RequestError)throw e;
    if(e instanceof Error&&!e.message.startsWith("NEXT_"))throw new RequestError(e.message,503);throw e;
   }
  }catch(e){return routeError(e);}

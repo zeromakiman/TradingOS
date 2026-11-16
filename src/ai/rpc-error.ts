@@ -12,3 +12,6 @@ export function rpcErrorCode(error: { message?: unknown } | null | undefined): s
 export function rpcErrorMessage(error: { message?: unknown } | null | undefined): string {
   return typeof error?.message === "string" ? error.message : "";
 }
+
+/** A trade in Deleted trades (0020) takes no AI request until it is restored; nothing is written, reserved or sent. */
+export const TRADE_DELETED_AI_COPY = "This trade is in Deleted trades. Restore it to request AI; nothing was sent or charged.";

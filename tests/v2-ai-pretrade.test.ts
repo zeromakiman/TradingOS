@@ -207,6 +207,16 @@ describe("V2 pre-trade requests: nothing is written or sent unless the latest dr
     expect(m.rpc).not.toHaveBeenCalled();
   });
 
+  it("refuses a draft in Deleted trades with an expected outcome, before availability, any write or the provider (0020)", async () => {
+    fake.tables.trade_ledger = [ledger({ trashed_at: "2026-09-02T10:00:00.000Z" })];
+    expect(await analyzeTradeSetup(ids.trade, ids.request, [])).toEqual({
+      status: "TRADE_DELETED", message: "This trade is in Deleted trades. Restore it to request AI; nothing was sent or charged.",
+    });
+    expect(m.availability).not.toHaveBeenCalled();
+    expect(m.rpc).not.toHaveBeenCalled();
+    expect(m.gate).not.toHaveBeenCalled();
+  });
+
   it("refuses a request made for a revision the page no longer shows", async () => {
     expect(await analyzeTradeSetup(ids.trade, ids.request, [], 1)).toMatchObject({ status: "DRAFT_CHANGED" });
     expect(m.load).not.toHaveBeenCalled();
@@ -309,6 +319,7 @@ describe("V2 pre-trade requests: lifecycle", () => {
     ["Plan already locked", "LOCKED"],
     ["DRAFT_DISCARDED: This draft was discarded", "NOT_DRAFT"],
     ["Challenge already running", "IN_PROGRESS"],
+    ["TRADE_DELETED: Restore this trade first", "TRADE_DELETED"],
   ])("maps the start refusal %j to %s without dispatch", async (message, status) => {
     m.rpc.mockResolvedValueOnce({ data: null, error: { message } });
     expect(await analyzeTradeSetup(ids.trade, ids.request, [])).toMatchObject({ status });

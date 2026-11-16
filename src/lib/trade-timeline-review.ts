@@ -10,7 +10,7 @@ import { operationFor } from "@/ai/operations";
 import { ProviderError } from "@/ai/provider";
 import { providerKey } from "@/ai/provider-config";
 import { budgetedAiRequest } from "@/ai/request-gate";
-import { rpcErrorCode } from "@/ai/rpc-error";
+import { rpcErrorCode, TRADE_DELETED_AI_COPY } from "@/ai/rpc-error";
 import { downloadEvidenceImages, EvidenceSelectionError, selectEvidence } from "@/ai/trade-evidence";
 import { isClosedTrade, TimelineReviewScopeError, tradeTimelineReviewContext } from "@/ai/trade-timeline-review-context";
 import { type TradeTimelineReviewResult, TimelineReviewRejection, validateTradeTimelineReview } from "@/ai/trade-timeline-review-contract";
@@ -22,7 +22,7 @@ import { type TradeTimelineReviewResult, TimelineReviewRejection, validateTradeT
  */
 
 export type TimelineReviewStatus =
-  | "COMPLETED" | "FAILED" | "RECORDED" | "NOT_CLOSED" | "IN_PROGRESS" | "EVIDENCE_UNAVAILABLE" | "SCOPE_LIMIT"
+  | "COMPLETED" | "FAILED" | "RECORDED" | "NOT_CLOSED" | "IN_PROGRESS" | "EVIDENCE_UNAVAILABLE" | "SCOPE_LIMIT" | "TRADE_DELETED"
   | Exclude<AiAvailability["status"], "ENABLED">;
 
 export interface TimelineReviewOutcome {
@@ -45,6 +45,7 @@ const COPY = {
 
 /** Start errors that leave nothing written and map to a state the page can explain. */
 function startOutcome(code: string | null): TimelineReviewOutcome | null {
+  if (code === "TRADE_DELETED") return { status: "TRADE_DELETED", message: TRADE_DELETED_AI_COPY };
   if (code === "NOT_CLOSED") return { status: "NOT_CLOSED", message: COPY.NOT_CLOSED };
   if (code === "REVIEW_IN_PROGRESS") return { status: "IN_PROGRESS", message: COPY.IN_PROGRESS };
   if (code === "EVIDENCE_CHANGED" || code === "EVIDENCE_LIMIT") return { status: "EVIDENCE_UNAVAILABLE", message: COPY.EVIDENCE_UNAVAILABLE };
@@ -64,6 +65,7 @@ export async function reviewTradeTimeline(tradeId: string, requestId: string, se
   if (new Set(selectedIds).size !== selectedIds.length) throw new Error("Duplicate evidence selection");
   const owned = await ownedTimelineTrade(tradeId);
   const { db, user, trade } = owned;
+  if (trade.trashed_at !== null) return { status: "TRADE_DELETED", message: TRADE_DELETED_AI_COPY };
   if (!isClosedTrade(trade)) return { status: "NOT_CLOSED", message: COPY.NOT_CLOSED };
   const availability = await accountAiAvailability(trade.account_id, OPERATION);
   if (availability.status !== "ENABLED") return { status: availability.status, message: availability.message };

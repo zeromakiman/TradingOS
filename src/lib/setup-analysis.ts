@@ -13,6 +13,8 @@ import { budgetedAiRequest } from "@/ai/request-gate";
 import { accountAiAvailability, serverAiLedger } from "./ai-budget";
 import { runEvaluation } from "@/ai/run";
 import { aiAvailability } from "@/ai/availability";
+import { TRADE_DELETED_AI_COPY } from "@/ai/rpc-error";
+import { RequestError } from "./route-security";
 function canonical(value:unknown):string{if(Array.isArray(value))return `[${value.map(canonical).join(",")}]`;if(value&&typeof value==="object")return `{${Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;return JSON.stringify(value);}
 const hash=(v:unknown)=>createHash("sha256").update(canonical(v)).digest("hex");
 export async function analyzeSetup(proposalId:string,evaluationId:string,mode:"NORMAL"|"DEEP"){
@@ -37,6 +39,7 @@ export async function analyzeSetup(proposalId:string,evaluationId:string,mode:"N
  const manifest={proposal_id:s.proposal.id,strategy:s.strategy,instrument:s.instrument,proposal:s.proposal.proposal,risk_plan_version_id:risk.riskPlanVersionId,risk_evaluation_id:s.risk.id,planned_rr:risk.calculations?.plannedRR??null,session:risk.session,evaluated_at:risk.evaluatedAt,config,evaluator_version:EVALUATOR_VERSION,evaluator_hash:versionHash,screenshots:screenshots.map(x=>({id:x.id,role:x.role,sha256:x.sha256,mime_type:x.mime_type,byte_size:x.byte_size,width:x.width,height:x.height}))};
  const inputHash=hash(manifest), deadline=new Date(Date.now()+12*60*1000).toISOString();
  const {error:startError}=await admin.rpc("start_setup_evaluation",{p_record:{id:evaluationId,user_id:s.user.id,proposal_id:s.proposal.id,evaluator_version:EVALUATOR_VERSION,mode,model:config.model,manifest,input_hash:inputHash,deadline_at:deadline},p_screenshots:screenshots.map(x=>x.id)});
+ if(startError?.message.startsWith("TRADE_DELETED:"))throw new RequestError(TRADE_DELETED_AI_COPY,409);
  if(startError)throw new Error(startError.message.includes("already running")?"An analysis is already running. Its status survives refresh.":"Could not reserve the analysis. Refresh and try again.");
  try{
   const images:{sourceId:string;role:string;dataUrl:string}[]=[];

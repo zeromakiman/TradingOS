@@ -13,6 +13,10 @@ const POLICY_EXCEPTIONS: Record<string, string[]> = {
 };
 // 0004: global configuration, not tenant data (no user_id/account_id; erasure leaves it untouched).
 const NON_TENANT_TABLES = new Set(["evaluator_versions"]);
+// 0020: the storage cleanup outbox is scoped by user_id only. It must outlive a deleted trading account (its rows name
+// that account's objects), so it can carry no account foreign key; RLS, the owner policy, the immutability and
+// TRUNCATE guards and the revokes still apply, and the 0019 purge erases it with the user.
+const USER_SCOPED_TABLES = new Set(["storage_cleanup_queue"]);
 // §3.11: the schema marker reads nothing and is deliberately SECURITY INVOKER.
 const INVOKER_FUNCTIONS = new Set(["trading_os_schema"]);
 // 0004: trusted-server RPCs that predate the p_user_id convention used to recognise service-only functions.
@@ -120,7 +124,7 @@ describe("tables", () => {
         from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') order by c.relname`);
     const violations = rows
       .filter((r) => !NON_TENANT_TABLES.has(r.name))
-      .filter((r) => !r.user_column || (r.name !== "accounts" && (!r.account_column || !r.scoped_key)))
+      .filter((r) => !r.user_column || (r.name !== "accounts" && !USER_SCOPED_TABLES.has(r.name) && (!r.account_column || !r.scoped_key)))
       .map((r) => r.name);
     expect(violations).toEqual([]);
   });

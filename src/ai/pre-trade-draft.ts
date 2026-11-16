@@ -19,7 +19,7 @@ import { ProviderError } from "./provider";
 import { providerKey } from "./provider-config";
 import { estimateRequest } from "./request-estimate";
 import { budgetedAiRequest } from "./request-gate";
-import { rpcErrorCode, rpcErrorMessage } from "./rpc-error";
+import { rpcErrorCode, rpcErrorMessage, TRADE_DELETED_AI_COPY } from "./rpc-error";
 import { type AiEvidence, downloadEvidenceImages, EvidenceSelectionError, loadTradeEvidence, reviewEvidence, selectEvidence, type UserDb } from "./trade-evidence";
 import type { ReviewEvidence } from "./trade-review-context";
 
@@ -34,7 +34,7 @@ import type { ReviewEvidence } from "./trade-review-context";
 export type PreTradeOperation = Extract<CitationOperation, "ANALYZE_SETUP" | "CHALLENGE_BIAS">;
 export type DraftState = "OPEN" | "NOT_PLANNED" | "LOCKED" | "NOT_DRAFT";
 export type PreTradeStatus =
-  | "COMPLETED" | "FAILED" | "RECORDED" | Exclude<DraftState, "OPEN"> | "DRAFT_CHANGED" | "EVIDENCE_UNAVAILABLE" | "SCOPE_LIMIT" | "IN_PROGRESS"
+  | "COMPLETED" | "FAILED" | "RECORDED" | Exclude<DraftState, "OPEN"> | "DRAFT_CHANGED" | "EVIDENCE_UNAVAILABLE" | "SCOPE_LIMIT" | "IN_PROGRESS" | "TRADE_DELETED"
   | Exclude<AiAvailability["status"], "ENABLED">;
 
 export interface PreTradeOutcome {
@@ -104,6 +104,7 @@ export interface PreTradeOperationConfig<T> {
 function startOutcome(error: { message?: unknown }): PreTradeOutcome | null {
   const code = rpcErrorCode(error);
   const message = rpcErrorMessage(error);
+  if (code === "TRADE_DELETED") return { status: "TRADE_DELETED", message: TRADE_DELETED_AI_COPY };
   if (code === "NOT_LATEST_REVISION") return { status: "DRAFT_CHANGED", message: DRAFT_CHANGED };
   if (code === "PLAN_LOCKED" || message === "Plan already locked") return { status: "LOCKED", message: STATE_COPY.LOCKED };
   if (code === "DRAFT_DISCARDED" || code === "NOT_A_DRAFT") return { status: "NOT_DRAFT", message: STATE_COPY.NOT_DRAFT };
@@ -126,6 +127,7 @@ export async function runDraftRequest<T>(
   if (new Set(evidenceIds).size !== evidenceIds.length) throw new Error("Duplicate evidence selection");
   const draft = await loadTradeDraft(tradeId);
   const { trade } = draft;
+  if (trade.trashed_at !== null) return { status: "TRADE_DELETED", message: TRADE_DELETED_AI_COPY };
   const state = draftState(trade);
   if (state !== "OPEN") return { status: state, message: STATE_COPY[state] };
   if (trade.latest_proposal_id === null || trade.latest_revision === null) return { status: "NOT_DRAFT", message: STATE_COPY.NOT_DRAFT };

@@ -42,7 +42,7 @@ export async function ownedWeeklyAccount(accountId:string){
 export async function loadWeeklyFacts(owner:Awaited<ReturnType<typeof ownedWeeklyAccount>>,day:string){
  const {db,user,account}=owner,period=weeklyPeriod(day),capturedAt=new Date().toISOString(),limits=PERIODIC_V2_LIMITS.WEEKLY_REVIEW;
  if(Date.parse(period.endExclusive)>Date.parse(capturedAt))throw new WeeklyScopeError("Choose a completed week. Weekly Review starts after Sunday ends in fixed UTC−5.");
- const q=await db.from("journal_analytics").select("*").eq("account_id",account.id).eq("status","CLOSED").gte("exited_at",period.start).lt("exited_at",period.endExclusive).order("exited_at").order("id").limit(limits.trades+1);
+ const q=await db.from("journal_analytics").select("*").eq("account_id",account.id).is("trashed_at",null).eq("status","CLOSED").gte("exited_at",period.start).lt("exited_at",period.endExclusive).order("exited_at").order("id").limit(limits.trades+1);
  if(q.error)throw new Error("Weekly trades unavailable");
  const trades=z.array(journalRow).parse(q.data);
  if(trades.length>limits.trades)throw new WeeklyScopeError(WEEKLY_TOO_MANY_TRADES);

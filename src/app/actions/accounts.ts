@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { unstable_rethrow } from "next/navigation";
 import { z } from "zod";
 import { ACCOUNT_COOKIE, ALL_ACCOUNTS_VALUE, LAST_ACCOUNT_COOKIE, setContextCookie } from "@/lib/account-context";
-import { deletionStorageSchema, removeDeletedTradeStorage } from "@/lib/deletion-storage";
+import { deletionStorageSchema, drainStorageCleanup, STORAGE_PENDING_NOTE } from "@/lib/deletion-storage";
 import { operationalFailure } from "@/lib/operational-log";
 import { SCHEMA_OUTDATED_MESSAGE, writableSession } from "@/lib/schema-gate";
 import { loadLatestObservation } from "@/lib/workspace";
@@ -417,14 +417,15 @@ export async function deleteTradingAccount(_prev: ActionState<{ deleted: true }>
       p_account_id: accountId.data, p_confirm_name: confirmName.trim(), p_delete_trades: formFlag(form, "deleteTrades"),
     });
     if (error) return rpcFailure(error, [], ACCOUNT_DELETION_COPY);
-    const result = accountDeletionResult.parse(data);
-    const cleaned = await removeDeletedTradeStorage(session.user.id, result.tradeIds, result.storagePaths).catch(() => false);
-    if (!cleaned) operationalFailure("storage_cleanup_failed", 503);
+    accountDeletionResult.parse(data);
+    // The deletion recorded its storage objects in the cleanup queue; this also retries anything an earlier deletion left.
+    const pending = await drainStorageCleanup(session.db, session.user.id).catch(() => null);
+    if (pending !== 0) operationalFailure("storage_cleanup_failed", 503);
     const jar = await cookies();
     if (jar.get(ACCOUNT_COOKIE)?.value === accountId.data) await setContextCookie(ACCOUNT_COOKIE, ALL_ACCOUNTS_VALUE);
     if (jar.get(LAST_ACCOUNT_COOKIE)?.value === accountId.data) jar.delete(LAST_ACCOUNT_COOKIE);
     revalidatePath("/", "layout");
-    return actionSuccess("Trading account deleted.", { deleted: true });
+    return actionSuccess(`Trading account deleted.${pending !== 0 ? ` ${STORAGE_PENDING_NOTE}` : ""}`, { deleted: true });
   } catch (error) {
     return unexpected(error);
   }

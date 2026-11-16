@@ -1,6 +1,6 @@
 import { ArrowLeft, Trash2 } from "lucide-react";
 import Link from "next/link";
-import { DeletedTradeActions } from "@/components/trade/delete-dialogs";
+import { DeletedTradeActions, RetryStorageCleanupButton } from "@/components/trade/delete-dialogs";
 import { buttonClasses } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -36,6 +36,12 @@ export function DeletedTradesScreen({ view }: { view: DeletedTradesView }) {
         results; AI spend and accounting records are kept. A trade that counts toward today&apos;s limits can be deleted permanently from 00:00 UTC−5
         tomorrow.
       </Callout>
+      {view.pendingCleanup > 0 && (
+        <Callout tone="warning" title="Some screenshot files are still being removed" action={<RetryStorageCleanupButton />}>
+          A permanent deletion could not remove every screenshot file from storage yet. Nobody can open them, and Trading OS retries with every
+          permanent deletion; you can also retry now.
+        </Callout>
+      )}
       {view.trades.length === 0 ? (
         <EmptyState
           className="card"

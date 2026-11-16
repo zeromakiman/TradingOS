@@ -402,6 +402,23 @@ describe("reviewTradeTimeline: request lifecycle", () => {
     expect(m.gate).not.toHaveBeenCalled();
   });
 
+  it("refuses a trade in Deleted trades with an expected outcome, before availability, any write or the provider (0020)", async () => {
+    fake.tables.trade_ledger = [ledger({ trashed_at: "2026-09-02T10:00:00.000Z" })];
+    expect(await reviewTradeTimeline(ids.trade, ids.request, [ids.preEntryShot])).toEqual({
+      status: "TRADE_DELETED", message: "This trade is in Deleted trades. Restore it to request AI; nothing was sent or charged.",
+    });
+    expect(m.availability).not.toHaveBeenCalled();
+    expect(m.rpc).not.toHaveBeenCalled();
+    expect(m.gate).not.toHaveBeenCalled();
+  });
+
+  it("maps a start refused because the trade was just deleted to the same expected outcome, before any reservation", async () => {
+    m.rpc.mockResolvedValueOnce({ data: null, error: { message: "TRADE_DELETED: Restore this trade first" } });
+    expect(await reviewTradeTimeline(ids.trade, ids.request, [])).toMatchObject({ status: "TRADE_DELETED" });
+    expect(m.gate).not.toHaveBeenCalled();
+    expect(m.reserve).not.toHaveBeenCalled();
+  });
+
   it("an unexpected start failure is not retried and exposes no database detail", async () => {
     m.rpc.mockResolvedValueOnce({ data: null, error: { message: "SCOPE_MISMATCH: Review facts do not describe this trade" } });
     await expect(reviewTradeTimeline(ids.trade, ids.request, [])).rejects.toThrow(/Unable to start the review/);

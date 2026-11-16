@@ -99,10 +99,26 @@ create table public.trade_custom_models (
 create index trade_custom_models_latest on public.trade_custom_models(trade_id, id desc);
 create index trade_custom_models_model on public.trade_custom_models(model_id);
 
+-- Storage cleanup outbox. A permanent trade or account deletion records, in its own transaction, every storage object
+-- of what it deleted (OBJECT) and every folder to sweep for orphans of failed uploads (PREFIX). The trusted server
+-- removes them after the transaction and then deletes the rows (complete_storage_cleanup); a row stays until its
+-- objects are gone, so a failed removal is retried by the next deletion or by "Retry cleanup" on Deleted trades and is
+-- never forgotten. Scoped to the user only (no account_id, no trade_id): it must outlive the deleted account, and it is
+-- erased with the user (0019 purges every public table with user_id). Paths are always inside the user's own folder.
+create table public.storage_cleanup_queue (
+  id bigint generated always as identity primary key,
+  user_id uuid not null,
+  bucket text not null check (bucket in ('setup-screenshots', 'trade-evidence')),
+  kind text not null check (kind in ('OBJECT', 'PREFIX')),
+  path text not null check (pg_catalog.left(path, 37) = user_id::text || '/' and pg_catalog.strpos(path, '..') = 0 and pg_catalog.length(path) <= 300),
+  recorded_at timestamptz not null default clock_timestamp()
+);
+create index storage_cleanup_queue_user on public.storage_cleanup_queue(user_id, id);
+
 do $$
 declare t text;
 begin
-  foreach t in array array['trade_trash_events','custom_models','custom_model_revisions','trade_custom_models'] loop
+  foreach t in array array['trade_trash_events','custom_models','custom_model_revisions','trade_custom_models','storage_cleanup_queue'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('revoke all on public.%I from public, anon, authenticated, service_role', t);
     execute format('grant select on public.%I to authenticated', t);
@@ -111,7 +127,8 @@ begin
     execute format('create trigger truncate_guard before truncate on public.%I for each statement execute function private.reject_truncate()', t);
   end loop;
 end $$;
-revoke all on sequence public.trade_trash_events_id_seq, public.custom_model_revisions_id_seq, public.trade_custom_models_id_seq
+revoke all on sequence public.trade_trash_events_id_seq, public.custom_model_revisions_id_seq, public.trade_custom_models_id_seq,
+  public.storage_cleanup_queue_id_seq
   from public, anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------------------------------------------
@@ -345,6 +362,12 @@ begin
     from public.setup_screenshots s where s.proposal_id = any (v_proposals) and s.user_id = v_user;
   select coalesce(jsonb_agg(e.storage_path order by e.storage_path), '[]'::jsonb) into v_evidence
     from public.trade_evidence e where e.trade_id = v_trade and e.user_id = v_user;
+  -- Storage cleanup, recorded in this transaction: the registered objects, then the trade's and its proposals' folders.
+  insert into public.storage_cleanup_queue(user_id, bucket, kind, path)
+  select v_user, 'setup-screenshots', 'OBJECT', x.path from jsonb_array_elements_text(v_legacy) as x(path)
+  union all select v_user, 'trade-evidence', 'OBJECT', x.path from jsonb_array_elements_text(v_evidence) as x(path)
+  union all select v_user, 'trade-evidence', 'PREFIX', v_user::text || '/' || v_trade::text
+  union all select v_user, 'setup-screenshots', 'PREFIX', v_user::text || '/' || x.id::text from unnest(v_proposals) as x(id);
 
   -- AI results of the trade (never the spend records they point to).
   delete from public.trade_ai_review_results x using public.trade_ai_reviews a where x.review_id = a.id and a.plan_id = v_plan;
@@ -576,6 +599,14 @@ begin
     from public.setup_screenshots s where s.account_id = a.id and s.user_id = a.user_id;
   select coalesce(jsonb_agg(e.storage_path order by e.storage_path), '[]'::jsonb) into v_evidence
     from public.trade_evidence e where e.account_id = a.id and e.user_id = a.user_id;
+  -- Storage cleanup, recorded in this transaction (the queue has no account_id, so the loop below keeps it): the
+  -- registered objects, then every trade's folder and every proposal's legacy folder of the account.
+  insert into public.storage_cleanup_queue(user_id, bucket, kind, path)
+  select a.user_id, 'setup-screenshots', 'OBJECT', x.path from jsonb_array_elements_text(v_legacy) as x(path)
+  union all select a.user_id, 'trade-evidence', 'OBJECT', x.path from jsonb_array_elements_text(v_evidence) as x(path)
+  union all select a.user_id, 'trade-evidence', 'PREFIX', a.user_id::text || '/' || x.id::text from public.trades x where x.account_id = a.id
+  union all select a.user_id, 'setup-screenshots', 'PREFIX', a.user_id::text || '/' || x.id::text
+    from public.setup_proposals x where x.account_id = a.id and x.user_id = a.user_id;
 
   -- Every public table with user_id and account_id, children before parents (computed from the catalog, as the
   -- purge does), then the account row itself.
@@ -778,6 +809,107 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------------------------------------
+-- Storage cleanup completion: the trusted server deletes the queue rows whose objects it removed. Service role only;
+-- it only ever deletes rows of the user it names (the delete scope is that user, and the rows are filtered by it).
+-- ---------------------------------------------------------------------------------------------------------
+create function public.complete_storage_cleanup(p_user_id uuid, p_ids bigint[]) returns integer
+language plpgsql security definer set search_path = '' as $$
+declare v_count integer;
+begin
+  if p_user_id is null then raise exception 'INVALID_INPUT: A user is required'; end if;
+  perform pg_catalog.set_config('trading_os.delete_scope', p_user_id::text, true);
+  delete from public.storage_cleanup_queue q where q.user_id = p_user_id and q.id = any (coalesce(p_ids, '{}'::bigint[]));
+  get diagnostics v_count = row_count;
+  perform pg_catalog.set_config('trading_os.delete_scope', '', true);
+  return v_count;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
+-- Periodic AI reviews leave Deleted trades out of new requests. journal_analytics (the sample the app reads) gains
+-- trashed_at, rebuilt from its stored definition as trade_ledger is above, and the two start functions that recompute
+-- the sample in SQL (recent trades, monthly) skip trashed trades, so the app's sample and the database's agree.
+-- Their bodies are the 0018 bodies except that one condition. Stored reviews, their facts and every AI spend record
+-- are unchanged; the weekly start function checks no sample in SQL and is unchanged.
+-- ---------------------------------------------------------------------------------------------------------
+create function private.plan_trashed(p_plan_id uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce((select private.trade_trashed(l.trade_id) from public.trade_plan_links l where l.plan_id = p_plan_id), false)
+$$;
+
+do $$
+declare
+  v_search_path constant text := pg_catalog.current_setting('search_path');
+  v_column constant text := ' AS tag_source';
+  v_definition text;
+begin
+  perform pg_catalog.set_config('search_path', '', true);
+  v_definition := pg_catalog.rtrim(pg_catalog.pg_get_viewdef('public.journal_analytics'::pg_catalog.regclass), ';');
+  if pg_catalog.array_length(pg_catalog.string_to_array(v_definition, v_column), 1) is distinct from 2 then
+    raise exception 'JOURNAL_ANALYTICS_DEFINITION_CHANGED: journal_analytics.tag_source is not found exactly once';
+  end if;
+  execute 'create or replace view public.journal_analytics with (security_invoker = true) as '
+    || pg_catalog.replace(v_definition, v_column, v_column
+         || ', (select case when trash.event = ''TRASHED'' then trash.recorded_at end from public.trade_plan_links link'
+         || ' join public.trade_trash_events trash on trash.trade_id = link.trade_id where link.plan_id = p.id'
+         || ' order by trash.id desc limit 1) as trashed_at');
+  perform pg_catalog.set_config('search_path', v_search_path, true);
+end $$;
+revoke all on public.journal_analytics from public, anon, authenticated, service_role;
+grant select on public.journal_analytics to authenticated;
+
+create or replace function public.start_recent_ai_analysis(p_id uuid,p_user_id uuid,p_account_id uuid,p_requested integer,p_trade_ids uuid[],p_captured_at timestamptz,p_facts jsonb,p_hash text,p_operation jsonb,p_contract jsonb)
+returns boolean language plpgsql security definer set search_path='' as $$
+declare existing public.recent_ai_analyses; expected uuid[];
+begin
+ perform 1 from public.accounts where id=p_account_id and user_id=p_user_id for update;
+ if not found then raise exception 'Account not found'; end if;
+ select * into existing from public.recent_ai_analyses where id=p_id;
+ if found then
+  if existing.user_id<>p_user_id or existing.account_id<>p_account_id or existing.requested_sample<>p_requested then raise exception 'Analysis not found'; end if;
+  return false;
+ end if;
+ if p_requested is null or p_requested not in (10,20,30) or p_captured_at is null or p_captured_at>clock_timestamp() or p_captured_at<clock_timestamp()-interval '10 minutes' then raise exception 'Invalid sample snapshot'; end if;
+ select array(select p.id from public.trade_plans p join public.trade_outcomes o on o.plan_id=p.id and o.user_id=p.user_id and o.account_id=p.account_id where p.account_id=p_account_id and p.user_id=p_user_id and o.exited_at<=p_captured_at and not private.plan_trashed(p.id) order by o.exited_at desc,p.id asc limit p_requested) into expected;
+ if cardinality(expected)=0 or p_trade_ids is distinct from expected then raise exception 'Sample changed or is not the most recent completed trades; refresh'; end if;
+ if coalesce(p_facts->>'version','') not in ('RECENT_TRADES_FACTS_V1','RECENT_TRADES_FACTS_V2') or p_facts->'sample'->>'requested' is distinct from p_requested::text or p_facts->'sample'->>'actual' is distinct from cardinality(expected)::text or p_facts->'sample'->'tradeIds' is distinct from to_jsonb(expected) or (p_facts->>'capturedAt')::timestamptz is distinct from p_captured_at then raise exception 'Sample metadata mismatch'; end if;
+ if (select jsonb_agg(t->'tradeId' order by n) from jsonb_array_elements(p_facts->'trades') with ordinality as x(t,n)) is distinct from to_jsonb(expected) then raise exception 'Sample facts mismatch'; end if;
+ if exists(select 1 from public.recent_ai_analyses r where r.account_id=p_account_id and r.deadline_at>clock_timestamp() and not exists(select 1 from public.recent_ai_analysis_results x where x.review_id=r.id)) then raise exception 'Analysis already running'; end if;
+ insert into public.recent_ai_analyses(id,user_id,account_id,requested_sample,actual_sample,trade_ids,captured_at,facts,input_hash,operation,contract)
+ values(p_id,p_user_id,p_account_id,p_requested,cardinality(expected),expected,p_captured_at,p_facts,p_hash,p_operation,p_contract);
+ return true;
+end $$;
+
+create or replace function public.start_monthly_ai_review(p_id uuid,p_user_id uuid,p_account_id uuid,p_month_start date,p_facts jsonb,p_hash text,p_operation jsonb,p_contract jsonb)
+returns boolean language plpgsql security definer set search_path='' as $$
+declare existing public.monthly_ai_reviews; lower_bound timestamptz; upper_bound timestamptz; expected uuid[];
+begin
+ perform 1 from public.accounts where id=p_account_id and user_id=p_user_id for update;
+ if not found then raise exception 'Account not found'; end if;
+ select * into existing from public.monthly_ai_reviews where id=p_id;
+ if found then
+  if existing.user_id<>p_user_id or existing.account_id<>p_account_id or existing.month_start<>p_month_start then raise exception 'Review not found'; end if;
+  return false;
+ end if;
+ lower_bound:=(p_month_start::timestamp+interval '5 hours') at time zone 'UTC';
+ upper_bound:=(p_month_start::timestamp+interval '1 month 5 hours') at time zone 'UTC';
+ if p_month_start is null or extract(day from p_month_start)<>1 or p_month_start<date '2000-01-01' or p_month_start>date '2099-12-01' or upper_bound>clock_timestamp() then raise exception 'A completed calendar month is required'; end if;
+ select array(select p.id from public.trade_plans p join public.trade_outcomes o on o.plan_id=p.id and o.user_id=p.user_id and o.account_id=p.account_id where p.account_id=p_account_id and p.user_id=p_user_id and o.exited_at>=lower_bound and o.exited_at<upper_bound and not private.plan_trashed(p.id) order by o.exited_at,p.id limit 121) into expected;
+ if cardinality(expected)=0 or cardinality(expected)>120 then raise exception 'Monthly sample is empty or exceeds bounded limit'; end if;
+ if coalesce(p_facts->>'version','') not in ('MONTHLY_REVIEW_FACTS_V1','MONTHLY_REVIEW_FACTS_V2')
+  or p_facts->'period'->>'startDate' is distinct from p_month_start::text
+  or (p_facts->'period'->>'start')::timestamptz is distinct from lower_bound
+  or (p_facts->'period'->>'endExclusive')::timestamptz is distinct from upper_bound
+  or p_facts->'sample'->>'count' is distinct from cardinality(expected)::text
+  or p_facts->'sample'->'tradeIds' is distinct from to_jsonb(expected)
+  or (select jsonb_agg(t->'tradeId' order by n) from jsonb_array_elements(p_facts->'trades') with ordinality as x(t,n)) is distinct from to_jsonb(expected)
+ then raise exception 'Monthly scope or exact trade IDs mismatch; refresh'; end if;
+ if exists(select 1 from public.monthly_ai_reviews r where r.account_id=p_account_id and r.month_start=p_month_start and r.deadline_at>clock_timestamp() and not exists(select 1 from public.monthly_ai_review_results x where x.review_id=r.id)) then raise exception 'Review already running'; end if;
+ insert into public.monthly_ai_reviews(id,user_id,account_id,month_start,period_start,period_end_exclusive,trade_ids,sample_size,facts,input_hash,operation,contract)
+ values(p_id,p_user_id,p_account_id,p_month_start,lower_bound,upper_bound,expected,cardinality(expected),p_facts,p_hash,p_operation,p_contract);
+ return true;
+end $$;
+
+-- ---------------------------------------------------------------------------------------------------------
 -- §3.11 Schema marker.
 -- ---------------------------------------------------------------------------------------------------------
 create or replace function public.trading_os_schema() returns text
@@ -792,8 +924,13 @@ revoke all on function
   private.delete_account_rows(regclass, uuid, uuid), private.reserved_model_name(text), private.model_name_taken(uuid, text, uuid),
   private.model_name_input(jsonb), private.model_description_input(jsonb), private.lock_owned_model(uuid),
   private.lock_owned_trade_any(uuid, boolean), private.lock_owned_trade(uuid, boolean), private.refuse_trashed_trade(),
-  private.refuse_engine_model_with_custom()
+  private.refuse_engine_model_with_custom(), private.plan_trashed(uuid)
   from public, anon, authenticated, service_role;
+
+-- Trusted server only (storage cleanup runs with the secret key). The replaced periodic start functions keep their
+-- 0011-0013 grants (create or replace keeps them).
+revoke all on function public.complete_storage_cleanup(uuid, bigint[]) from public, anon, authenticated, service_role;
+grant execute on function public.complete_storage_cleanup(uuid, bigint[]) to service_role;
 
 revoke all on function
   public.trash_trade(uuid), public.restore_trade(uuid), public.delete_trade_permanently(uuid, text),
