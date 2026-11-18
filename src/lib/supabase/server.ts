@@ -4,6 +4,7 @@ import { isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { authCookieOptions, isSecureRequest } from "../cookie-security";
+import { requestFetch } from "../perf";
 import { publicConfig } from "./config";
 
 export function isConfigured() {
@@ -17,9 +18,11 @@ export function isConfigured() {
 export async function supabaseServer(writable = false) {
   const config = publicConfig();
   if (!config) throw new Error("Supabase has not been configured.");
-  const jar = await cookies();
-  const secure = writable && isSecureRequest(await headers());
+  const [jar, requestHeaders] = await Promise.all([cookies(), headers()]);
+  const secure = writable && isSecureRequest(requestHeaders);
+  const fetch = requestFetch(requestHeaders);
   return createServerClient(config.url, config.key, {
+    ...(fetch ? { global: { fetch } } : {}),
     cookieOptions: authCookieOptions(secure),
     cookies: {
       getAll: () => jar.getAll(),

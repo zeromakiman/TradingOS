@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { createContext, type ReactNode, startTransition, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { accountFields, callShellAction } from "./actions";
+import { notePerf } from "./perf-beacon";
 import {
   type ContextSyncEvent,
   type ContextSyncState,
@@ -90,15 +91,22 @@ export function AccountContextSync({ accounts, context, storedUnavailable = fals
     live.current.state = next;
     setState(next);
     if (effects.announce) channel.current?.postMessage({ value: effects.announce });
-    if (effects.refresh) startTransition(() => live.current.router.refresh());
+    if (effects.refresh) {
+      notePerf("refresh");
+      startTransition(() => live.current.router.refresh());
+    }
     const value = effects.persist;
     const action = live.current.action;
     if (value === undefined || !action) return;
+    notePerf("persist");
     startTransition(async () => {
       const outcome = await callShellAction(action, accountFields(value));
       // A refused context (archived or not the person's) renders again: the page shows All Accounts and the notice.
       if (outcome.ok) dispatch({ type: "stored", value });
-      else live.current.router.refresh();
+      else {
+        notePerf("refresh");
+        live.current.router.refresh();
+      }
     });
   }, []);
 
@@ -175,7 +183,10 @@ export function AccountContextSync({ accounts, context, storedUnavailable = fals
       if (document.visibilityState === "visible") dispatch({ type: "resumed" });
     };
     const restored = (event: PageTransitionEvent) => {
-      if (event.persisted) startTransition(() => live.current.router.refresh());
+      if (event.persisted) {
+        notePerf("refresh");
+        startTransition(() => live.current.router.refresh());
+      }
     };
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("focus", resume);

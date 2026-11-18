@@ -272,6 +272,15 @@ describe("account context from ?account= (§9.2)", () => {
     expect(forwarded(response, "cookie")).toContain(`tos_account=${ACTIVE}`);
     expect(storesNothing(response)).toBe(renderOnly);
   });
+
+  it("stamps page requests with their route and the proxy's auth time, replaces client stamps, and skips route handlers", async () => {
+    const page = await proxy(request("?account=all", { headers: { ...ROUTER_FETCH, "x-tos-perf-route": "/forged", "x-tos-perf-proxy": "1;1;forged" } }));
+    expect(forwarded(page, "x-tos-perf-route")).toBe("/journal");
+    expect(forwarded(page, "x-tos-perf-proxy")).toMatch(/^\d+;0$/);
+    expect(page.headers.get("server-timing")).toMatch(/^proxy;dur=\d+;desc="auth calls 0, [a-z0-9]+"$/);
+    const handler = await proxy(request("", { path: "/api/export", headers: { ...ROUTER_FETCH, "x-tos-perf-route": "/forged" } }));
+    expect(forwarded(handler, "x-tos-perf-route")).toBeNull();
+  });
 });
 
 describe("request classification", () => {

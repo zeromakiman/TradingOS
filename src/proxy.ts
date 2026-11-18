@@ -31,6 +31,9 @@ const ACCOUNT_NOTICE_HEADER = "x-tos-account-notice";
 const ACCOUNT_STORED_HEADER = "x-tos-account-stored";
 const ACCOUNT_UNAVAILABLE = "ACCOUNT_UNAVAILABLE";
 const ALL_ACCOUNTS = "all";
+/** Same names as src/lib/perf.ts: a page's request timing reads its route and the proxy's own time from them. */
+const PERF_ROUTE_HEADER = "x-tos-perf-route";
+const PERF_PROXY_HEADER = "x-tos-perf-proxy";
 const CONTEXT_COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -86,6 +89,8 @@ export async function proxy(request: NextRequest) {
   // The context headers are only ever set below; client-supplied ones are dropped.
   request.headers.delete(ACCOUNT_NOTICE_HEADER);
   request.headers.delete(ACCOUNT_STORED_HEADER);
+  request.headers.delete(PERF_ROUTE_HEADER);
+  request.headers.delete(PERF_PROXY_HEADER);
   let response = NextResponse.next({ request });
   const cacheHeaders = new Headers({ "Cache-Control": "private, no-cache, no-store, must-revalidate, max-age=0", Expires: "0", Pragma: "no-cache" });
   const path = request.nextUrl.pathname;
@@ -101,7 +106,13 @@ export async function proxy(request: NextRequest) {
     response = NextResponse.next({ request });
     for (const { name, value, options } of changed.values()) response.cookies.set(name, value, options);
   };
+  let authCalls = 0;
+  const countedFetch: typeof fetch = (input, init) => {
+    authCalls++;
+    return fetch(input, init);
+  };
   const supabase = createServerClient(config.url, config.key, {
+    global: { fetch: countedFetch },
     // Refreshed session cookies get the attributes of the server actions' client (src/lib/supabase/server.ts).
     cookieOptions: authCookieOptions(request.nextUrl.protocol === "https:"),
     cookies: {
@@ -116,7 +127,16 @@ export async function proxy(request: NextRequest) {
       },
     },
   });
+  const authStarted = performance.now();
   const { data, error } = await supabase.auth.getClaims();
+  // How long the session check took and how many Supabase calls it made (none: the JWT was verified locally).
+  const authMs = Math.round(performance.now() - authStarted);
+  cacheHeaders.set("Server-Timing", `proxy;dur=${authMs};desc="auth calls ${authCalls}, ${process.env.VERCEL_REGION ?? "local"}"`);
+  if (!isRouteHandler(path)) {
+    request.headers.set(PERF_ROUTE_HEADER, path);
+    request.headers.set(PERF_PROXY_HEADER, `${Math.min(authMs, 999999)};${Math.min(authCalls, 999)}`);
+    forward();
+  }
   const unavailable = error && (error.status === 429 || (error.status ?? 0) >= 500 || error.name === "AuthRetryableFetchError");
   if (isPrivate && !unavailable && (error || !data?.claims)) {
     const denied = NextResponse.redirect(new URL(hadSession ? "/login?reason=session" : "/login", request.url));

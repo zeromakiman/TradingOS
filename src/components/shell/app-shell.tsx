@@ -5,6 +5,7 @@ import { CommandPalette } from "./command-palette";
 import { ContextNotice } from "./context-notice";
 import { GlobalShortcuts } from "./global-shortcuts";
 import { MobileTabBar } from "./mobile-tab-bar";
+import { PerfBeacon } from "./perf-beacon";
 import { ShellProviders } from "./shell-providers";
 import { ShellFrame } from "./shell-state";
 import { ShortcutHelp } from "./shortcut-help";
@@ -114,6 +115,7 @@ export function AppShell({
       </AccountContextSync>
       <ShortcutHelp />
       <GlobalShortcuts />
+      <PerfBeacon />
     </ShellProviders>
   );
 }
