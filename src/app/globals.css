@@ -2239,6 +2239,30 @@
     color: var(--accent);
   }
 
+  /* Navigation click feedback (NavPending): a fixed-size dot, so it never shifts the layout. */
+  :is(.nav-link, .tabbar-item):has(> .nav-pending) {
+    position: relative;
+  }
+
+  .nav-pending {
+    position: absolute;
+    top: 0.375rem;
+    right: 0.375rem;
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease;
+  }
+
+  .nav-pending[data-pending] {
+    opacity: 1;
+    transition-delay: 120ms;
+    animation: ui-nav-pending 900ms ease-in-out 120ms infinite alternate;
+  }
+
   .sidebar-footer {
     display: flex;
     flex-direction: column;
@@ -3561,6 +3585,12 @@
 @keyframes ui-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes ui-nav-pending {
+  to {
+    opacity: 0.35;
   }
 }
 

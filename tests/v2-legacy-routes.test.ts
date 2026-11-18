@@ -267,7 +267,7 @@ describe("legacy links answer with real HTTP redirects and 404s, not a streamed 
   // redirect() thrown after it becomes a client-side redirect and notFound() a 200 page carrying the not-found marker
   // (node_modules/next/dist/docs/01-app/02-guides/streaming.md, "The HTTP contract" › "Status codes"). V1 had a root
   // src/app/loading.tsx, so its bookmarks answered 200 with a client-side redirect; the cleanup deleted it, and the app's
-  // pages keep their skeletons through src/app/(app)/loading.tsx, which is not above any legacy page. Keep it that way.
+  // pages keep their skeletons through route loading.tsx files inside src/app/(app), none above a legacy page. Keep it that way.
   const redirectPages = Object.entries(LEGACY_MAP).flatMap(([url, answer]) => ("redirect" in answer ? [[url, v2Pages.get(url) as string] as const] : []));
   /** Every folder from the page's own up to src/app: the segments whose loading, layout and template wrap the page. */
   const segmentFolders = (page: string) => {

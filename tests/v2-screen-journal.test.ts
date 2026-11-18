@@ -51,7 +51,6 @@ vi.mock("@/lib/trades-data", async importOriginal => ({
 const USER = "10000000-0000-4000-8000-000000000001";
 
 import JournalPage from "@/app/(app)/journal/page";
-import JournalRouteLoading from "@/app/(app)/journal/loading";
 import { ActiveFilterChips } from "@/components/journal/active-filter-chips";
 import { FilterMenu, MoreFiltersMenu, TextForm } from "@/components/journal/filter-menu";
 import { SheetForm } from "@/components/journal/filter-sheet";
@@ -624,13 +623,6 @@ describe("Journal empty states", () => {
     expect(visibleText(html)).toContain("No more trades.");
     expect(visibleText(html)).toContain("Back to newest");
     expect(hrefs(html)).toContain("/journal?model=OTE");
-  });
-
-  it("the route loading state is a labelled skeleton of the list", () => {
-    const html = renderToStaticMarkup(createElement(JournalRouteLoading));
-    expect(html).toContain('role="status"');
-    expect(html).toContain("Loading trades");
-    expect(html).toContain("skeleton");
   });
 });
 

@@ -1,8 +1,8 @@
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { LoadingState, Skeleton, SkeletonText } from "@/components/ui/skeleton";
 
-/** Route loading state inside the shell (§13.7): skeletons shaped like a page header, stat cards and a list. */
-export default function AppLoading() {
+/** Deleted trades loading state (§13.7): skeletons shaped like a page header, stat cards and a list. */
+export default function Loading() {
   return (
     <LoadingState label="Loading" className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">

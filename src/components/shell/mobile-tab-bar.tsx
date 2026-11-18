@@ -7,6 +7,7 @@ import { useState } from "react";
 import { Button } from "../ui/button";
 import { SegmentedControl } from "../ui/choice";
 import { Sheet, SheetContent } from "../ui/dialog";
+import { NavPending } from "./nav-pending";
 import { activeNavKey, LIVE_TRADE_HREF, type NavKey, newTradeAction, PLAN_TRADE_HREF } from "./navigation";
 import { THEME_OPTIONS, TIME_DISPLAY_OPTIONS } from "./preference-options";
 import type { SignOutAction } from "./types";
@@ -36,10 +37,12 @@ export function MobileTabBar({ email, signOutAction, ...preferences }: MobileTab
       <Link href="/today" className="tabbar-item" aria-current={current("today")}>
         <LayoutDashboard aria-hidden="true" />
         <span>Today</span>
+        <NavPending />
       </Link>
       <Link href="/journal" className="tabbar-item" aria-current={current("journal")}>
         <BookOpen aria-hidden="true" />
         <span>Journal</span>
+        <NavPending />
       </Link>
       <button type="button" className="tabbar-item" aria-haspopup="dialog" aria-current={newTrade ? "page" : undefined} onClick={() => setSheet("new")}>
         <span className="tabbar-plus" aria-hidden="true">
@@ -50,6 +53,7 @@ export function MobileTabBar({ email, signOutAction, ...preferences }: MobileTab
       <Link href="/accounts" className="tabbar-item" aria-current={current("accounts")}>
         <Wallet aria-hidden="true" />
         <span>Accounts</span>
+        <NavPending />
       </Link>
       <button type="button" className="tabbar-item" aria-haspopup="dialog" aria-current={active && MORE_KEYS.includes(active) ? "page" : undefined} onClick={() => setSheet("more")}>
         <Ellipsis aria-hidden="true" />

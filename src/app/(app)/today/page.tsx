@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import { OverviewLoading, OverviewSection } from "@/components/today/overview-section";
 import { loadTodayPage } from "@/components/today/load-today";
 import { TodayScreen } from "@/components/today/today-screen";
+import { parseOverviewRange } from "@/domain/all-accounts-overview";
 
 export const metadata: Metadata = { title: "Today · Trading OS" };
 
@@ -17,8 +18,13 @@ export default async function TodayPage({ searchParams }: { searchParams?: Searc
   const query = (await searchParams) ?? {};
   const options = { range: query.range, currency: query.currency };
   const page = await loadTodayPage({ ...options, deferOverview: true });
-  const overview = page.kind === "today" && page.view.context.mode === "all" ? (
-    <Suspense key={`${page.view.day}:${options.range ?? "d"}:${options.currency ?? ""}`} fallback={<OverviewLoading />}><OverviewSection options={options} display={page.view.display} /></Suspense>
-  ) : undefined;
+  if (page.kind !== "today" || page.view.context.mode !== "all") return <TodayScreen page={page} />;
+  const section = <OverviewSection options={options} display={page.view.display} />;
+  // The daily overview reuses this request's Today snapshot (no further read), so it renders with the page: a Suspense
+  // fallback would only hold it back (React reveals streamed content no sooner than 300 ms after a fallback painted).
+  // Other periods read their own ledger range and stream in without holding back the rest of Today.
+  const overview = parseOverviewRange(options.range) === "d" ? section : (
+    <Suspense key={`${page.view.day}:${options.range ?? "d"}:${options.currency ?? ""}`} fallback={<OverviewLoading />}>{section}</Suspense>
+  );
   return <TodayScreen page={page} overview={overview} />;
 }

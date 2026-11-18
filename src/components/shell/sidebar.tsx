@@ -5,6 +5,7 @@ import Link from "@/components/ui/app-link";
 import { usePathname } from "next/navigation";
 import { Tooltip } from "../ui/tooltip";
 import { NAV_ICONS } from "./nav-icons";
+import { NavPending } from "./nav-pending";
 import { activeNavKey, NAV_ITEMS, type NavItem } from "./navigation";
 import { useShellState } from "./shell-state";
 import { useMediaQuery } from "./use-media-query";
@@ -53,6 +54,7 @@ function NavLink({ item, current, rail }: { item: NavItem; current: boolean; rai
     <Link href={item.href} className="nav-link" aria-current={current ? "page" : undefined}>
       <Icon aria-hidden="true" />
       <span className="sidebar-label">{item.label}</span>
+      <NavPending />
     </Link>
   );
   return rail ? (

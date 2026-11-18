@@ -74,7 +74,6 @@ function database() {
   return { from: chain, rpc: m.rpc };
 }
 
-import TodayRouteLoading from "@/app/(app)/today/loading";
 import TodayPage from "@/app/(app)/today/page";
 import { saveDailyContext } from "@/app/(app)/today/actions";
 import { idleState } from "@/app/actions/state";
@@ -678,6 +677,16 @@ describe("Today · All Accounts", () => {
     expect(visibleText(html)).toContain("Total P&L (All Accounts) -\u20ac40.00, +$120.00");
   });
 
+  it("renders the daily overview with the core screen: it reads nothing more, so no fallback holds it back", async () => {
+    m.getToday.mockResolvedValue(todayData({ context: allContext(), accounts: [status(workspace(FTMO_ACCOUNT))], closed: [closedWin] }));
+    const html = await new Response(await renderToReadableStream(await TodayPage({ searchParams: Promise.resolve({}) }))).text();
+    expect(html).toContain("Trading status");
+    expect(visibleText(html)).toContain("Total P&L (All Accounts)");
+    // A streamed section would first render its fallback; the daily overview never has one.
+    expect(html).not.toContain("Loading account overview");
+    expect(m.loadLedgerRows).not.toHaveBeenCalled();
+  });
+
   it("keeps the reused daily ledger unknown when truncated or missing P&L, without a second query", async () => {
     const data = todayData({ context: allContext(), accounts: [status(workspace(FTMO_ACCOUNT))], closed: [closedWin] });
     data.truncated.closed = true;
@@ -881,12 +890,6 @@ describe("Today · starting points and empty states", () => {
     expect(text).toContain("Saved 06:10");
     expect(html).toContain("Bias: bearish below 1.1650.");
     expect(html).toMatch(/<details[^>]*open/);
-  });
-
-  it("renders a loading state shaped like the screen", () => {
-    const html = renderToStaticMarkup(TodayRouteLoading());
-    expect(html).toContain('role="status"');
-    expect(html).toContain("Loading Today");
   });
 });
 

@@ -1,6 +1,8 @@
+import { existsSync, readdirSync } from "node:fs";
+import path from "node:path";
 import { createElement, type ReactNode } from "react";
 import { renderToReadableStream } from "react-dom/server";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({ trades: vi.fn(), session: vi.fn(), ready: true }));
 vi.mock("server-only", () => ({}));
@@ -69,4 +71,31 @@ it("preserves authentication and schema gates before any palette loading", async
   expect(html).toContain("Database update required");
   expect(html).not.toContain("Private page");
   expect(m.trades).not.toHaveBeenCalled();
+});
+
+// React reveals a streamed Suspense boundary no sooner than 300 ms after its fallback painted (react-dom server `$RC`:
+// `$RT + 300`; client `globalMostRecentFallbackTime + 300`). With the shell no longer waiting for the palette, a route
+// skeleton above these pages always painted first, so their data, ready in ~150 ms, showed at 450-600 ms. The core of
+// Today, Journal and Accounts therefore renders in the first paint; only optional sections stream (the All Accounts
+// overview, the palette's trades). Other data routes keep their skeleton inside their own folder.
+describe("route loading boundaries", () => {
+  const APP = path.join(process.cwd(), "src", "app", "(app)");
+  const boundariesAbove = (route: string) => {
+    const found: string[] = [];
+    for (let folder = path.join(APP, route); folder.startsWith(APP); folder = path.dirname(folder)) {
+      if (readdirSync(folder).some(entry => /^loading\.(tsx|ts|jsx|js)$/.test(entry))) found.push(path.relative(APP, folder) || "(app)");
+      if (folder === APP) break;
+    }
+    return found;
+  };
+
+  it.each(["today", "journal", "accounts"])("%s renders its core content without a route skeleton above it", route => {
+    expect(boundariesAbove(route)).toEqual([]);
+  });
+
+  it("other data routes keep their own skeleton", () => {
+    for (const route of ["trades/deleted", "edge", "settings", path.join("accounts", "[id]"), path.join("trades", "[id]")]) {
+      expect(existsSync(path.join(APP, route, "loading.tsx"))).toBe(true);
+    }
+  });
 });

@@ -213,7 +213,7 @@ workspace…" in the V1 `padded`/`loading-grid`/`skeleton` classes). Deleted bec
 boundary above every page, it made Next.js commit to 200 before a page could redirect: every legacy bookmark answered a
 streamed 200 with a client-side redirect, and a legacy link to a missing or foreign record a 200 not-found page
 (node_modules/next/dist/docs/01-app/02-guides/streaming.md, "The HTTP contract" › "Status codes"). The V2 app keeps its
-skeletons through src/app/(app)/loading.tsx, which wraps only the (app) group, so no legacy page. Live
+skeletons through route loading.tsx files inside the (app) group, so above no legacy page. Live
 (2026-10-27): / → 307 /today, /preview → 307 /login, /analyze?… → 307 /trades/new?…, /analyze/[own proposal] and
 /journal/[own plan] → 307 /trades/[id], /edge/weekly|recent|monthly?… → 307 /review/…?…, /analyze/[foreign] and
 /journal/[foreign] → 404.

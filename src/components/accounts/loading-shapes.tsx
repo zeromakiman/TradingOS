@@ -1,7 +1,7 @@
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { LoadingState, Skeleton, SkeletonText } from "@/components/ui/skeleton";
 
-/** Skeletons shaped like the Accounts screens (spec §13.7), used by their route `loading.tsx` files. */
+/** Skeletons shaped like the account screens (spec §13.7), used by their route `loading.tsx` files. */
 
 function HeaderShape({ eyebrow = false }: { eyebrow?: boolean }) {
   return (
@@ -28,30 +28,6 @@ function StatCardShape({ stats = 5 }: { stats?: number }) {
         ))}
       </CardBody>
     </Card>
-  );
-}
-
-export function AccountsLoading() {
-  return (
-    <LoadingState label="Loading trading accounts" className="flex flex-col gap-6">
-      <HeaderShape />
-      <Card>
-        <CardBody className="flex flex-col gap-4">
-          {["row-1", "row-2", "row-3"].map(key => (
-            <div key={key} className="grid grid-cols-2 items-center gap-4 md:grid-cols-[2fr_1fr_1fr_1fr_1fr]">
-              <div className="flex flex-col gap-2">
-                <Skeleton width="8rem" height="1rem" />
-                <Skeleton width="6rem" height="0.75rem" />
-              </div>
-              <Skeleton width="70%" height="1rem" />
-              <Skeleton width="70%" height="1rem" className="hidden md:block" />
-              <Skeleton width="70%" height="1rem" className="hidden md:block" />
-              <Skeleton width="50%" height="1rem" className="hidden md:block" />
-            </div>
-          ))}
-        </CardBody>
-      </Card>
-    </LoadingState>
   );
 }
 
