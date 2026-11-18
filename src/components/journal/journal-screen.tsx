@@ -1,5 +1,5 @@
 import { BookOpen, SearchX, Trash2, Wallet } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { buttonClasses } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";
 import { EmptyState } from "@/components/ui/empty-state";

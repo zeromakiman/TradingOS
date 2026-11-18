@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, Layers, Wallet } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { useRouter } from "next/navigation";
 import { type MouseEvent, useState, useTransition } from "react";
 import {

@@ -1,5 +1,5 @@
 import { Activity } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { AccountSelector } from "./account-selector";
 import { PrimaryActions } from "./primary-actions";
 import { SearchButton } from "./search-button";

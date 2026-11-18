@@ -1,5 +1,6 @@
 import "server-only";
 import Decimal from "decimal.js";
+import { cache } from "react";
 import { z } from "zod";
 import type { LedgerTrade } from "@/domain/ledger";
 import { type DayResult, dayResult, isClosed } from "@/domain/performance";
@@ -383,8 +384,8 @@ export async function loadToday(deps: TodayDeps): Promise<TodayData> {
 }
 
 /** Today of the request's account context. */
-export async function getToday(): Promise<TodayData> {
+export const getToday = cache(async (): Promise<TodayData> => {
   const [{ db, user }, context, view] = await Promise.all([currentSession(), getAccountContext(), getWorkspace()]);
   const workspaces = view.mode === "account" ? [view.workspace] : view.workspaces;
   return loadToday({ db, userId: user.id, context, workspaces, now: view.now });
-}
+});

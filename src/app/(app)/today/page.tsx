@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
+import { OverviewLoading, OverviewSection } from "@/components/today/overview-section";
 import { loadTodayPage } from "@/components/today/load-today";
 import { TodayScreen } from "@/components/today/today-screen";
 
@@ -13,6 +15,10 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
  */
 export default async function TodayPage({ searchParams }: { searchParams?: SearchParams } = {}) {
   const query = (await searchParams) ?? {};
-  const page = await loadTodayPage({ range: query.range, currency: query.currency });
-  return <TodayScreen page={page} />;
+  const options = { range: query.range, currency: query.currency };
+  const page = await loadTodayPage({ ...options, deferOverview: true });
+  const overview = page.kind === "today" && page.view.context.mode === "all" ? (
+    <Suspense key={`${page.view.day}:${options.range ?? "d"}:${options.currency ?? ""}`} fallback={<OverviewLoading />}><OverviewSection options={options} display={page.view.display} /></Suspense>
+  ) : undefined;
+  return <TodayScreen page={page} overview={overview} />;
 }

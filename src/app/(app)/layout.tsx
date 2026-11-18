@@ -1,5 +1,6 @@
 import { DatabaseZap } from "lucide-react";
 import type { ReactNode } from "react";
+import { CommandPalette, type CommandPaletteProps } from "@/components/shell/command-palette";
 import { logout } from "@/app/actions";
 import { setAccountContext, setTheme, setTimeDisplay, signOut } from "@/app/actions/context";
 import { AppShell } from "@/components/shell/app-shell";
@@ -44,12 +45,14 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const now = new Date().toISOString();
   const accounts = shellAccounts(context);
   // The palette searches every account's trades; without it the shell still works, so a failed read degrades.
-  const trades = await loadPaletteTrades({ db, userId: user.id, scope: { mode: "all" }, accounts: context.accounts, now, display: preferences.timeDisplay })
+  const trades = loadPaletteTrades({ db, userId: user.id, scope: { mode: "all" }, accounts: context.accounts, now, display: preferences.timeDisplay })
     .catch(() => {
       operationalFailure("data_read_failed");
-      return EMPTY_PALETTE;
+      return null;
     });
-  const paletteIndex: PaletteIndex = { accounts, liveTrades: trades.liveTrades, recentTrades: trades.recentTrades };
+  const paletteIndex: PaletteIndex = { accounts, ...EMPTY_PALETTE };
+  const paletteProps: CommandPaletteProps = { index: paletteIndex, context: shellSelection(context), userEmail: user.email ?? "", selectAccountAction: setAccountContext };
+  const palette = <CommandPalette {...paletteProps} tradeData={trades} />;
   return (
     <AppShell
       user={{ email: user.email ?? "" }}
@@ -57,6 +60,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       context={shellSelection(context)}
       clock={{ nowIso: now }}
       paletteIndex={paletteIndex}
+      palette={palette}
       developerMode={preferences.developerMode}
       theme={preferences.theme}
       timeDisplay={preferences.timeDisplay}

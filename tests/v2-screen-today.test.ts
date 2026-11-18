@@ -1,6 +1,8 @@
 import Decimal from "decimal.js";
-import type { ReactElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
+import { loadAllAccountsOverview, loadTodayPage } from "@/components/today/load-today";
+import { TodayScreen } from "@/components/today/today-screen";
+import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Today (docs/V2_ARCHITECTURE.md §14.1, §2.4, §6.5, §8.4, §9.2–9.3, §13.8, §15): the page is rendered from its real
@@ -288,8 +290,7 @@ function instrumentRow(instrument: typeof previewInstrument) {
 }
 
 async function render(query: Record<string, string> = {}): Promise<string> {
-  const element = (await TodayPage({ searchParams: Promise.resolve(query) })) as ReactElement;
-  return renderToStaticMarkup(element);
+  return renderToStaticMarkup(createElement(TodayScreen, { page: await loadTodayPage(query) }));
 }
 
 const decode = (text: string) => text.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
@@ -648,7 +649,52 @@ describe("Today · All Accounts", () => {
     expect(hrefs(html)).toEqual(expect.arrayContaining(["/today", "/today?range=w", "/today?range=m", "/today?range=y", "/today?range=all"]));
     expect(html).toContain('aria-label="Chart currency"');
     expect(hrefs(html)).toContain(`/accounts/${FTMO}?account=${FTMO}`);
-    expect(m.loadLedgerRows).toHaveBeenCalledWith(expect.anything(), expect.anything(), { mode: "all" }, { closedFrom: DAY, closedTo: DAY }, { closedOnly: true });
+    expect(m.loadLedgerRows).not.toHaveBeenCalled();
+  });
+
+
+  it("streams core Today before a delayed overview and then exact figures", async () => {
+    let release!: (value: { rows: LedgerTrade[]; truncated: boolean }) => void;
+    m.loadLedgerRows.mockReturnValue(new Promise(resolve => { release = resolve; }));
+    const element = await TodayPage({ searchParams: Promise.resolve({ range: "w" }) });
+    const stream = await renderToReadableStream(element);
+    const reader = stream.getReader();
+    let html = new TextDecoder().decode((await reader.read()).value);
+    while (!html.includes("Trading status")) {
+      const next = await reader.read();
+      if (next.done) break;
+      html += new TextDecoder().decode(next.value);
+    }
+    expect(html).toContain("Trading status");
+    expect(html).toContain("Loading account overview");
+    expect(html).not.toContain("Total P&amp;L (All Accounts)");
+    release({ rows: [closedWin, closedLossEur], truncated: false });
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      html += new TextDecoder().decode(next.value);
+    }
+    expect(visibleText(html)).toContain("Total R +1.20R");
+    expect(visibleText(html)).toContain("Total P&L (All Accounts) -\u20ac40.00, +$120.00");
+  });
+
+  it("keeps the reused daily ledger unknown when truncated or missing P&L, without a second query", async () => {
+    const data = todayData({ context: allContext(), accounts: [status(workspace(FTMO_ACCOUNT))], closed: [closedWin] });
+    data.truncated.closed = true;
+    m.getToday.mockResolvedValue(data);
+    expect(visibleText(await render())).toContain("Total P&L (All Accounts) \u2014 Too many trades");
+    data.truncated.closed = false;
+    data.closedToday[0] = { ...data.closedToday[0], trade: { ...data.closedToday[0].trade, net_pnl: null } };
+    const unknown = visibleText(await render());
+    expect(unknown).toContain("Total P&L (All Accounts) \u2014");
+    expect(m.loadLedgerRows).not.toHaveBeenCalled();
+  });
+
+  it("never reuses one account's daily rows as the All Accounts ledger", async () => {
+    m.loadLedgerRows.mockResolvedValue({ rows: [closedWin, closedLossEur], truncated: false });
+    const figures = await loadAllAccountsOverview(database() as never, USER, todayData({ closed: [closedWin] }), "d");
+    expect(figures.trades).toBe(2);
+    expect(m.loadLedgerRows).toHaveBeenCalledWith(expect.anything(), USER, { mode: "all" }, { closedFrom: DAY, closedTo: DAY }, { closedOnly: true });
   });
 
   it("reads the chosen period and currency from the URL", async () => {
@@ -663,7 +709,7 @@ describe("Today · All Accounts", () => {
   });
 
   it("reads zero in each account currency when nothing closed in the period, never in a guessed currency", async () => {
-    m.loadLedgerRows.mockResolvedValue({ rows: [], truncated: false });
+    m.getToday.mockResolvedValue(todayData({ context: allContext(), accounts: [status(workspace(FTMO_ACCOUNT)), status(workspace(PERSONAL_ACCOUNT))] }));
     expect(visibleText(await render())).toContain("Total P&L (All Accounts) €0.00, $0.00");
     // EUR accounts only: no dollar figure anywhere on the card.
     m.context = allContext([PERSONAL_ACCOUNT]);
@@ -678,7 +724,7 @@ describe("Today · All Accounts", () => {
     const partial = visibleText(await render({ range: "all" }));
     expect(partial).toContain("Total P&L (All Accounts) — Too many trades in this period");
     m.loadLedgerRows.mockRejectedValue(new Error("down"));
-    const failed = visibleText(await render());
+    const failed = visibleText(await render({ range: "all" }));
     expect(failed).toContain("The All Accounts overview could not be loaded.");
     expect(failed).toContain("Trading status · All Accounts");
   });

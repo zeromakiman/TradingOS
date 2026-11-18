@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import type { ComponentProps, ReactNode } from "react";
 import { cx } from "./cx";
 import { prefetchFor } from "./links";

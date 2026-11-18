@@ -1,5 +1,5 @@
 import { Inbox, OctagonAlert } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import type { ReactNode } from "react";
 import { buttonClasses } from "./button";
 import { cx } from "./cx";

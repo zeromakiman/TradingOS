@@ -1,5 +1,5 @@
 import { ChevronRight, NotebookPen } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { buttonClasses } from "@/components/ui/button";
 import { NOTES_ALL_ACCOUNTS_COPY, NOTES_ARCHIVED_COPY, NOTES_TITLE } from "./copy";
 import { NotesEditor } from "./notes-editor";

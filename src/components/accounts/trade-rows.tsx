@@ -1,5 +1,5 @@
 import { ChevronRight } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import type { ReactNode } from "react";
 import { formatPercent } from "@/domain/format";
 import { formatDateTime, formatDuration, type TimeDisplay } from "@/domain/time-display";

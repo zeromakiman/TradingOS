@@ -31,6 +31,8 @@ export type AppShellProps = {
   /** Server time of this request (ISO 8601 with zone); the strategy clock ticks from it. */
   clock: { nowIso: string };
   paletteIndex: PaletteIndex;
+  /** Server-rendered palette boundary, inside the account and shell providers. */
+  palette?: ReactNode;
   /** Cookie `tos_dev`: Technical details render expanded (§13.9). */
   developerMode: boolean;
   /** Stored theme (cookie `tos_theme`); the root layout should also render it as `<html data-theme>`. */
@@ -72,6 +74,7 @@ export function AppShell({
   context,
   clock,
   paletteIndex,
+  palette,
   developerMode,
   theme,
   timeDisplay = STRATEGY_TIME,
@@ -107,7 +110,7 @@ export function AppShell({
           </div>
           <MobileTabBar {...preferences} />
         </ShellFrame>
-        <CommandPalette index={paletteIndex} context={context} userEmail={user.email} selectAccountAction={selectAccountAction} />
+        {palette ?? <CommandPalette index={paletteIndex} context={context} userEmail={user.email} selectAccountAction={selectAccountAction} />}
       </AccountContextSync>
       <ShortcutHelp />
       <GlobalShortcuts />

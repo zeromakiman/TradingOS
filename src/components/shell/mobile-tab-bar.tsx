@@ -1,7 +1,7 @@
 "use client";
 
 import { BookOpen, ChartNoAxesCombined, ClipboardCheck, Crosshair, Ellipsis, LayoutDashboard, LogOut, Plus, Radio, Settings2, Wallet } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { Button } from "../ui/button";

@@ -1,5 +1,5 @@
 import { ArrowLeft, Trash2 } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { DeletedTradeActions, RetryStorageCleanupButton } from "@/components/trade/delete-dialogs";
 import { buttonClasses } from "@/components/ui/button";
 import { Callout } from "@/components/ui/callout";

@@ -1,7 +1,7 @@
 "use client";
 
 import { X } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { useRouter } from "next/navigation";
 import { type MouseEvent, useEffect, useRef, useTransition } from "react";
 import { cx } from "./cx";

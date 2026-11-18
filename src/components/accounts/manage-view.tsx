@@ -1,5 +1,5 @@
 import { ChevronLeft, CircleCheck, PlusCircle } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import type { ReactNode } from "react";
 import { ACCOUNT_TYPE_LABELS, type AccountPlatform, type AccountType, PLATFORM_LABELS } from "@/domain/account-metrics";
 import { formatDecimal, formatMoney, formatMoneyExact, formatPercent, formatPrice, formatQuantity, formatSignedMoney, plural } from "@/domain/format";

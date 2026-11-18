@@ -1,7 +1,7 @@
 "use client";
 
 import { Activity, PanelLeftClose, PanelLeftOpen } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { usePathname } from "next/navigation";
 import { Tooltip } from "../ui/tooltip";
 import { NAV_ICONS } from "./nav-icons";

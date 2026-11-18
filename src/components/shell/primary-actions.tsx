@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { usePathname } from "next/navigation";
 import { buttonClasses } from "../ui/button";
 import { LIVE_TRADE_HREF, newTradeAction, PLAN_TRADE_HREF } from "./navigation";

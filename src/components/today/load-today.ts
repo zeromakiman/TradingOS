@@ -13,7 +13,7 @@ import { getToday, type TodayData } from "@/lib/today-data";
 import { inBatches, type TradeListRow } from "@/lib/trades-data";
 import { INSTRUMENT_SELECT, parseInstrumentRows, parseRiskPlanRow, RISK_PLAN_SELECT, toInstrument } from "@/lib/workspace";
 import { type LiveManagement, MANAGEMENT_COLUMNS, MANAGEMENT_KINDS, type ManagementRow, managementRow, summarizeManagement } from "./management";
-import type { TodayPage } from "./types";
+import type { OverviewState, TodayPage } from "./types";
 import { buildTodayView } from "./view-model";
 
 /**
@@ -183,7 +183,9 @@ export async function loadLiveManagement(db: Db, userId: string, data: TodayData
  */
 export async function loadAllAccountsOverview(db: Db, userId: string, data: TodayData, range: OverviewRange): Promise<OverviewFigures> {
   const { from, to } = overviewBounds(range, data.day);
-  const loaded = await loadLedgerRows(db, userId, { mode: "all" }, { ...(from ? { closedFrom: from } : {}), closedTo: to }, { closedOnly: true });
+  const loaded = range === "d" && data.context.selected.mode === "all"
+    ? { rows: data.closedToday.map(row => row.trade), truncated: data.truncated.closed }
+    : await loadLedgerRows(db, userId, { mode: "all" }, { ...(from ? { closedFrom: from } : {}), closedTo: to }, { closedOnly: true });
   return allAccountsOverview({
     range, today: data.day, trades: loaded.rows, truncated: loaded.truncated,
     accounts: data.context.accounts.map(account => ({ id: account.id, name: account.name, currency: account.currency, status: account.status })),
@@ -197,6 +199,8 @@ export async function loadAllAccountsOverview(db: Db, userId: string, data: Toda
 export interface TodayPageOptions {
   /** `?range=` of the All Accounts overview. */
   range?: string | string[];
+  /** The route supplies the overview through its own Suspense boundary. */
+  deferOverview?: boolean;
   /** `?currency=` of the overview's chart (several currencies). */
   currency?: string | string[];
 }
@@ -224,12 +228,20 @@ export async function loadTodayPage(options: TodayPageOptions = {}): Promise<Tod
     blockingReasons: extras.blockingReasons, management, requestKey: () => crypto.randomUUID(),
   });
   // The overview shows only in All Accounts; one account's Today is unchanged. A failed read leaves Today as it was.
-  if (data.context.selected.mode !== "all") return { kind: "today", view };
+  if (data.context.selected.mode !== "all" || options.deferOverview) return { kind: "today", view };
+  return { kind: "today", view: { ...view, overview: await loadTodayOverview(options) } };
+}
+
+/** Independent reader; React request cache shares the exact Today snapshot with the core screen. */
+export async function loadTodayOverview(options: TodayPageOptions = {}): Promise<OverviewState | null> {
+  const context = await getAccountContext();
+  if (!context.active.length || context.selected.mode !== "all") return null;
+  const [{ db, user }, data] = await Promise.all([currentSession(), getToday()]);
   const range = parseOverviewRange(options.range);
   const currency = (Array.isArray(options.currency) ? options.currency[0] : options.currency)?.toUpperCase() ?? null;
   const figures = await loadAllAccountsOverview(db, user.id, data, range).catch(() => {
     operationalFailure("data_read_failed");
     return null;
   });
-  return { kind: "today", view: { ...view, overview: { range, figures, currency } } };
+  return { range, figures, currency };
 }

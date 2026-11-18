@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import { AllAccountsOverview } from "./all-accounts-overview";
 import { ClosedTodaySection } from "./closed-section";
@@ -35,13 +36,13 @@ function Header({ view }: { view: TodayView }) {
   );
 }
 
-function Workspace({ view }: { view: TodayView }) {
+function Workspace({ view, overview }: { view: TodayView; overview?: ReactNode }) {
   const single = view.context.mode === "account" ? view.status[0] : undefined;
   return (
     <div className="flex flex-col gap-6">
       <Header view={view} />
       {/* All Accounts only (V2.1): the combined overview, between the header and the session ribbon. */}
-      {view.context.mode === "all" && view.overview && <AllAccountsOverview state={view.overview} display={view.display} />}
+      {view.context.mode === "all" && (overview ?? (view.overview && <AllAccountsOverview state={view.overview} display={view.display} />))}
       <SessionRibbon nowIso={view.now} />
       {view.live.length > 0 && (
         <LiveTradesSection trades={view.live} nowIso={view.now} showAccount={view.showAccount} truncated={view.liveTruncated} journalHref={view.liveJournalHref} />
@@ -66,10 +67,10 @@ function Workspace({ view }: { view: TodayView }) {
   );
 }
 
-export function TodayScreen({ page }: { page: TodayPage }) {
+export function TodayScreen({ page, overview }: { page: TodayPage; overview?: ReactNode }) {
   switch (page.kind) {
     case "today":
-      return <Workspace view={page.view} />;
+      return <Workspace view={page.view} overview={overview} />;
     case "onboarding":
       return (
         <div className="flex flex-col gap-6">

@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { type ChangeEvent, type ComponentProps, type ReactNode, useId } from "react";
 import { cx } from "./cx";
 

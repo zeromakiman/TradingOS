@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckCheck, Ellipsis, Filter, Pencil, Plus, RefreshCw, Settings2 } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { confirmAccountValuesUnchanged } from "@/app/actions/accounts";

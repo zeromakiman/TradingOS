@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowRight, ChevronUp, ImagePlus, NotebookPen } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, type Ref, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { focusLost } from "@/components/accounts/focus";

@@ -1,5 +1,5 @@
 import { Layers, Plus, TriangleAlert, Wallet } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { type AccountMetrics, type CurrencyTotals, type Known, UNKNOWN_REASONS } from "@/domain/account-metrics";
 import { plural } from "@/domain/format";
 import { formatDateTime, formatDay, strategyDay, type TimeDisplay } from "@/domain/time-display";

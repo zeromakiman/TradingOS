@@ -97,6 +97,11 @@ beforeEach(() => {
 });
 
 describe("AppShell", () => {
+  it("renders a streamed palette slot inside the shell without delaying the page", () => {
+    const markup = render(shellProps({ palette: createElement("aside", null, "Palette boundary") }));
+    expect(markup).toContain("Palette boundary");
+    expect(markup).toContain("<h1>Today</h1>");
+  });
   it("renders landmarks, the skip link and every primary navigation destination", () => {
     const markup = render(shellProps());
     expect(markup).toContain('<a class="skip-link" href="#main-content">Skip to main content</a>');
@@ -404,6 +409,15 @@ describe("Command palette index", () => {
 });
 
 describe("Command palette", () => {
+  it("announces pending and failed trade searches while keeping navigation and account options", () => {
+    for (const state of [{ tradesLoading: true }, { tradesUnavailable: true }]) {
+      const html = renderToStaticMarkup(createElement(RadixDialog.Root, { open: true }, createElement(CommandPaletteBody, { index: { accounts, liveTrades: [], recentTrades: [] }, context: { mode: "all" }, userEmail: "trader@example.com", onClose: () => undefined, ...state })));
+      expect(html).toContain(state.tradesLoading ? "Loading trades" : "Trade search is unavailable");
+      expect(html).toContain("FTMO 100K");
+      expect(html).toContain("/journal");
+      expect(html).not.toContain("No results");
+    }
+  });
   const palette = () =>
     renderToStaticMarkup(
       createElement(

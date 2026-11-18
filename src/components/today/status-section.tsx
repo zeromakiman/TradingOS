@@ -1,5 +1,5 @@
 import { ArrowRight, CircleCheck, OctagonX, Settings2, TriangleAlert } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { Fragment, type ReactNode } from "react";
 import { buttonClasses } from "@/components/ui/button";
 import { cx } from "@/components/ui/cx";

@@ -1,6 +1,6 @@
 import Decimal from "decimal.js";
 import { BookOpen, ChartNoAxesCombined, ChevronLeft, CircleAlert, CircleCheck, OctagonAlert, Plus, Settings2, TriangleAlert } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import type { ReactNode } from "react";
 import { type AccountMetrics, BALANCE_FROM_TRADES_LABEL } from "@/domain/account-metrics";
 import type { DailyAction, DailyStatus } from "@/domain/daily-status";
@@ -724,7 +724,7 @@ function QuickLinks({ dashboard }: { dashboard: AccountDashboard }) {
         <Link
           key={item.title}
           href={item.href}
-          prefetch={item.prefetch ? undefined : false}
+          prefetch={item.prefetch}
           className="card flex items-start gap-3 p-4 text-text no-underline transition-colors hover:border-border-strong hover:bg-surface-sunken"
         >
           <span className="flex size-8 flex-none items-center justify-center rounded-control bg-accent-soft text-accent [&_svg]:size-4">{item.icon}</span>

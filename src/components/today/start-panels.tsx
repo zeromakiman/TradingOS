@@ -1,5 +1,5 @@
 import { Archive, ArrowRight, Crosshair, Radio } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import type { ReactNode } from "react";
 import { CreateAccountForm } from "@/components/accounts/create-account-form";
 import { NewAccountGuide } from "@/components/accounts/new-account-guide";

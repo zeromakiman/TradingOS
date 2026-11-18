@@ -1,5 +1,5 @@
 import { ArrowRight, NotebookText, TriangleAlert } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { Fragment } from "react";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { TradeRowMenu } from "@/components/trade/trade-row-menu";

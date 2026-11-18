@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronsUpDown, Keyboard, LogOut, Settings2, UserRound } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import {
   DropdownMenu,
   DropdownMenuContent,

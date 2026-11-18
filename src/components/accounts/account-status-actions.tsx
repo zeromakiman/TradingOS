@@ -1,7 +1,7 @@
 "use client";
 
 import { Archive, ArchiveRestore, LayoutDashboard, MoreHorizontal, Scale, Settings2, Trash2 } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { useRouter } from "next/navigation";
 import { type ReactElement, useEffect, useRef, useState, useTransition } from "react";
 import { accountTradeCount, archiveAccount, deleteTradingAccount, restoreAccount } from "@/app/actions/accounts";

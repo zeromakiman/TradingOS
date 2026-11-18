@@ -18,7 +18,7 @@ import {
   TrendingUp,
   Wallet,
 } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { useRouter } from "next/navigation";
 import { Dialog as RadixDialog } from "radix-ui";
 import { type KeyboardEvent, type MouseEvent, useEffect, useId, useMemo, useState, useTransition } from "react";
@@ -51,6 +51,10 @@ const ICONS: Record<PaletteIcon, LucideIcon> = {
 
 export type CommandPaletteProps = {
   index: PaletteIndex;
+  /** Server promise streamed independently; the mounted dialog survives its resolution. */
+  tradeData?: Promise<Pick<PaletteIndex, "liveTrades" | "recentTrades"> | null>;
+  tradesLoading?: boolean;
+  tradesUnavailable?: boolean;
   context: AccountContextSelection;
   /** The signed-in user's email: recently used entries are remembered per user. */
   userEmail: string;
@@ -64,13 +68,26 @@ export type CommandPaletteProps = {
  */
 export function CommandPalette(props: CommandPaletteProps) {
   const { paletteOpen, setPaletteOpen } = useShellState();
+  const { tradeData } = props;
+  const [settled, setSettled] = useState<{ source: NonNullable<CommandPaletteProps["tradeData"]>; value: Awaited<NonNullable<CommandPaletteProps["tradeData"]>> } | null>(null);
+  useEffect(() => {
+    if (!tradeData) return;
+    let cancelled = false;
+    const settle = (value: Awaited<typeof tradeData>) => { if (!cancelled) setSettled({ source: tradeData, value }); };
+    void tradeData.then(settle, () => settle(null));
+    return () => { cancelled = true; };
+  }, [tradeData]);
+  const loaded = settled?.source === tradeData ? settled?.value : undefined;
+  const bodyProps = tradeData ? {
+    ...props, index: { ...props.index, ...loaded }, tradesLoading: loaded === undefined, tradesUnavailable: loaded === null,
+  } : props;
   return (
     <RadixDialog.Root open={paletteOpen} onOpenChange={setPaletteOpen}>
       <RadixDialog.Portal>
         <RadixDialog.Overlay className="overlay" />
         <RadixDialog.Content className="palette" data-command-palette="" aria-describedby={undefined}>
           <RadixDialog.Title className="sr-only">Search and commands</RadixDialog.Title>
-          <CommandPaletteBody {...props} onClose={() => setPaletteOpen(false)} />
+          <CommandPaletteBody {...bodyProps} onClose={() => setPaletteOpen(false)} />
         </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>
@@ -83,7 +100,7 @@ type Entry = { key: string; item: PaletteItem };
  * Search field, results and keyboard handling of the palette. It renders inside the palette
  * dialog (its Cancel button closes that dialog); `CommandPalette` is the component to mount.
  */
-export function CommandPaletteBody({ index, context: rendered, userEmail, selectAccountAction, onClose }: CommandPaletteProps & { onClose: () => void }) {
+export function CommandPaletteBody({ index, tradesLoading = false, tradesUnavailable = false, context: rendered, userEmail, selectAccountAction, onClose }: CommandPaletteProps & { onClose: () => void }) {
   const context = useAccountContextSelection(rendered);
   const noteStored = useContextStored();
   const currentHref = useCurrentHref();
@@ -181,6 +198,8 @@ export function CommandPaletteBody({ index, context: rendered, userEmail, select
           </Button>
         </RadixDialog.Close>
       </div>
+      {tradesLoading && <p role="status" className="palette-empty">Loading trades... Accounts and commands are ready.</p>}
+      {tradesUnavailable && <p role="status" className="palette-empty">Trade search is unavailable. Accounts and commands are ready.</p>}
       <div className="palette-list" id={listId} role="listbox" aria-label="Results">
         {sections.map((section) => {
           const labelId = `${baseId}-group-${section.group}`;
@@ -218,10 +237,10 @@ export function CommandPaletteBody({ index, context: rendered, userEmail, select
             </div>
           );
         })}
-        {entries.length === 0 && <p className="palette-empty">No results for “{query.trim()}”.</p>}
+        {entries.length === 0 && !tradesLoading && !tradesUnavailable && <p className="palette-empty">No results for “{query.trim()}”.</p>}
       </div>
       <p className="sr-only" aria-live="polite">
-        {query.trim() ? `${entries.length} ${entries.length === 1 ? "result" : "results"}` : ""}
+        {query.trim() && !tradesLoading && !tradesUnavailable ? `${entries.length} ${entries.length === 1 ? "result" : "results"}` : ""}
       </p>
       <div className="palette-footer" aria-hidden="true">
         <span>

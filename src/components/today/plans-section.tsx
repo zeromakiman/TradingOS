@@ -1,5 +1,5 @@
 import { ArrowRight, ClipboardList, OctagonX } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { StatusPill } from "@/components/ui/badge";
 import { TradeRowMenu } from "@/components/trade/trade-row-menu";
 import { buttonClasses } from "@/components/ui/button";

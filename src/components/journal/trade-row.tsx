@@ -1,6 +1,6 @@
 // biome-ignore-all lint/performance/noImgElement: owner-only evidence thumbnails are served privately (no-store) and must not enter the image optimizer cache.
 import { ImageOff, Sparkles } from "lucide-react";
-import Link from "next/link";
+import Link from "@/components/ui/app-link";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { CustomModelBadge, ModelName } from "@/components/trade/custom-model-label";
 import { cx } from "@/components/ui/cx";
